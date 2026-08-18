@@ -44,7 +44,8 @@ def main():
     subparsers.add_parser("liquid-crystals", help="Execute nematic liquid crystals and patchy particles pipeline")
 
     # 9. Argon pure Lennard-Jones baseline pipeline
-    subparsers.add_parser("argon", help="Execute Argon pure Lennard-Jones FMT coexistence pipeline")
+    subparsers.add_parser("argon", help="Run pure Lennard-Jones Argon coexistence & FMT pipeline")
+    subparsers.add_parser("interfaces", help="Run hydrophobic/hydrophilic wetting & capillary drying pipeline")
 
     # Benchmark / E2E subcommand
     bench_p = subparsers.add_parser("benchmark", help="Execute full end-to-end multi-material simulation & benchmark")
@@ -173,6 +174,20 @@ def main():
         print(f"[dens-city] Argon Predicted T_c: {bin_res['T_c_K']:.1f} K (NIST: 150.86 K)")
         print(f"[dens-city] Argon Predicted rho_c: {bin_res['rho_c']:.4f} A^-3 (NIST: 0.00808 A^-3)")
         print(f"[dens-city] Argon Liquid Density (85K): {bin_res['rho_l'][0]:.4f} A^-3 (NIST 84K: 0.0214 A^-3)")
+    elif args.command == "interfaces":
+        print("[dens-city] Executing Hydrophobic/Hydrophilic Planar Wetting Pipeline...")
+        from dens_city.pipelines.interfaces.wetting import (
+            compute_capillary_drying_gap,
+            compute_lum_chandler_weeks_crossover,
+            compute_wetting_contact_angle,
+        )
+
+        res_wet = compute_wetting_contact_angle(gamma_sv=20.0, gamma_sl=60.0)
+        print(f"[dens-city] Hydrophobic Contact Angle: {res_wet['theta_deg']:.1f} deg ({res_wet['wetting_regime']})")
+        res_dry = compute_capillary_drying_gap(theta_deg=110.0)
+        print(f"[dens-city] Critical Capillary Drying Gap: {res_dry['H_dry_nm']:.2f} nm")
+        res_lcw = compute_lum_chandler_weeks_crossover()
+        print(f"[dens-city] LCW Crossover Scale R_c: {res_lcw['R_c_nm']:.1f} nm")
     elif args.command in ["benchmark", "e2e"]:
         import subprocess
         import sys

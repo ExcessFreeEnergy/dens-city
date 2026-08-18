@@ -1,8 +1,8 @@
 """
 Argon Coexistence & Thermodynamic Isotherm Solver.
 Derived strictly from the pure Lennard-Jones pair potential (sigma = 3.405 A, eps/kB = 119.8 K).
-Combines analytical Barker-Henderson effective diameter with WCA attractive perturbation theory.
-No empirical patches or parameter fitting.
+Combines analytical Barker-Henderson effective diameter with WCA attractive perturbation theory
+and Macroscopic Compressibility Approximation (MCA) for second-order fluctuations.
 """
 
 from typing import Dict, List, Optional, Tuple
@@ -18,49 +18,21 @@ from dens_city.solver.dispersion import (
 ARGON_SIGMA = 3.405  # Angstroms
 ARGON_EPSILON_K = 119.8  # Kelvin (eps / kB)
 
-
-def compute_argon_a_wca(T: float) -> float:
-    """
-    Computes the effective integrated attractive dispersion energy for Argon:
-    a_WCA = 1.35 * (16 * pi / 9) * eps * sigma^3
-    where 1.35 accounts for the first coordination shell radial distribution g_hs(r).
-    """
-    return 1.35 * (16.0 * np.pi / 9.0) * ARGON_EPSILON_K * (ARGON_SIGMA**3)
+_SOLVER = LennardJonesFMTDispersion1D(ARGON_SIGMA, ARGON_EPSILON_K, use_mca=True)
 
 
 def compute_argon_chemical_potential(rho: float, T: float) -> float:
     """
-    Computes chemical potential mu(rho, T) in Kelvin.
+    Computes chemical potential mu(rho, T) in Kelvin using CS + MCA second-order dispersion.
     """
-    d_T = compute_barker_henderson_diameter(ARGON_SIGMA, ARGON_EPSILON_K, T)
-    a = compute_argon_a_wca(T)
-    eta = (np.pi / 6.0) * rho * (d_T**3)
-    if eta >= 0.99 or eta <= 0.0:
-        return 1e6
-
-    # Carnahan-Starling excess chemical potential
-    mu_ex_hs_k = T * (8.0 * eta - 9.0 * (eta**2) + 3.0 * (eta**3)) / ((1.0 - eta) ** 3)
-    mu_id_k = T * np.log(max(1e-12, rho))
-    mu_att_k = -2.0 * a * rho
-
-    return mu_id_k + mu_ex_hs_k + mu_att_k
+    return _SOLVER.compute_chemical_potential(rho, T)
 
 
 def compute_argon_pressure(rho: float, T: float) -> float:
     """
-    Computes bulk pressure P(rho, T) in bar.
+    Computes bulk pressure P(rho, T) in bar using CS + MCA second-order dispersion.
     """
-    d_T = compute_barker_henderson_diameter(ARGON_SIGMA, ARGON_EPSILON_K, T)
-    a = compute_argon_a_wca(T)
-    eta = (np.pi / 6.0) * rho * (d_T**3)
-    if eta >= 0.99 or eta <= 0.0:
-        return 1e6
-
-    Z_hs = (1.0 + eta + eta**2 - eta**3) / ((1.0 - eta) ** 3)
-    P_k_A3 = rho * T * Z_hs - a * (rho**2)
-    # Convert K / A^3 to bar
-    P_bar = P_k_A3 * 138.0649
-    return float(P_bar)
+    return _SOLVER.compute_bulk_pressure(rho, T)
 
 
 def solve_argon_coexistence_point(T: float) -> Optional[Tuple[float, float, float]]:
@@ -83,7 +55,7 @@ def solve_argon_coexistence_point(T: float) -> Optional[Tuple[float, float, floa
         return None
 
     r_v_init = rho_grid[max_idx[0]] * 0.1
-    r_l_init = rho_grid[min_idx[0]] * 1.5
+    r_l_init = rho_grid[min_idx[0]] * 1.3
 
     def objective(vars):
         rv, rl = vars
@@ -122,19 +94,15 @@ def compute_argon_binodal(temperatures: List[float] = None) -> Dict[str, np.ndar
             p_sat_list.append(psat)
             valid_temps.append(T)
 
-    # Critical point analysis from rectilinear diameter and 3D Ising scaling
     delta_rho = np.maximum(1e-5, np.array(rho_l_list) - np.array(rho_v_list))
     x_fit = np.array(valid_temps)
     y_fit = delta_rho ** (1.0 / 0.325)
     poly = np.polyfit(x_fit, y_fit, 1)
     T_c_pred = float(-poly[1] / poly[0])
 
-    # Rectilinear diameter for rho_c
     rho_mid = 0.5 * (np.array(rho_l_list) + np.array(rho_v_list))
     poly_d = np.polyfit(x_fit, rho_mid, 1)
     rho_c_pred = float(np.polyval(poly_d, T_c_pred))
-
-    # Critical pressure
     P_c_pred = float(compute_argon_pressure(rho_c_pred, T_c_pred))
 
     return {

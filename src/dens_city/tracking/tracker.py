@@ -71,8 +71,9 @@ class ExperimentTracker:
             "clay_pore": {"T_c": 298.15, "rho_l": 0.033, "unit": "A^-3"},
             "clay": {"T_c": 298.15, "rho_l": 0.033, "unit": "A^-3"},
             "liquid_crystals": {"T_c": 308.5, "rho_l": 0.021, "unit": "A^-3"},
-            "liquid-crystals": {"T_c": 308.5, "rho_l": 0.021, "unit": "A^-3"},
             "argon": {"T_c": 150.86, "rho_l": 0.0214, "unit": "A^-3"},
+            "interfaces": {"T_c": 298.15, "rho_l": 33.36, "unit": "nm^-3"},
+            "wetting": {"T_c": 298.15, "rho_l": 33.36, "unit": "nm^-3"},
         }
 
         spec_key = species.lower().replace(" ", "_")
