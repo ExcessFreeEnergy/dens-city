@@ -17,36 +17,12 @@ The result is a platform that delivers sub-Ångström atomistic accuracy, predic
 
 ---
 
-## 1. Compute Steps
-
-| Step | Formula / Operation | Implemented In |
-|---|---|---|
-| **1. Grand Potential** | $\Omega[\rho] = \mathcal{F}^{\rm id} + \mathcal{F}^{\rm ex} + \int dz \, \rho(z)(V^{\rm ext} - \mu)$ | `solver/thermo_integration.py` |
-| **2. Euler–Lagrange** | $c^{(1)}(z) = \ln(\zeta^{-1}\Lambda^3\rho) + \beta(V^{\rm ext} - \mu)$ | `envs/dens_city_env.c` |
-| **3. Short-Range LMFT** | $c^{(1)}(z) = c_{\rm R}^{(1)} - \beta\Delta\mu^{\rm SL} + \beta\phi^{\rm R}$ | `envs/dens_city_env.c` |
-| **4. 1D Restructuring** | $\phi^{\rm R}(z) = \phi(z) + \frac{1}{L_z} \sum_{k \neq 0} \frac{4\pi}{k^2} \tilde{n}(k) e^{ikz} e^{-k^2/4\kappa^2}$ | `envs/dens_city_env.c` |
-| **5. Stillinger–Lovett** | $\Delta\mu^{\rm SL} = \frac{1}{2\beta\rho_b\kappa^{-3}\sqrt{\pi}^3}\left(\frac{\epsilon-1}{\epsilon}\right) - \frac{2\rho_b^2}{3\kappa^{-3}\sqrt{\pi}}$ | `core/engine.cpp` |
-| **6. 3D Long-Range Ewald** | $U_{\rm recip} = \frac{1}{2V} \sum_{\mathbf{k} \neq 0} \frac{4\pi}{k^2} e^{-k^2/4\alpha^2} \|\tilde{\rho}(\mathbf{k})\|^2 - \frac{\alpha}{\sqrt{\pi}}\sum_i q_i^2$ | `core/cuda_kernels.cu` |
-| **7. Fundamental Measure Theory** | $\Phi_{\text{hs}} = -n_0 \ln(1-n_3) + \frac{n_1 n_2 - \mathbf{n}_1 \cdot \mathbf{n}_2}{1-n_3} + \frac{n_2^3 - 3n_2 \mathbf{n}_2^2}{24\pi(1-n_3)^2}$ | `solver/fmt.py` |
-| **8. Barker-Henderson Diameter** | $d(T) = \int_0^{r_{\rm min}} \left[1 - \exp\left(-\frac{u_0(r)}{k_B T}\right)\right] dr$ | `solver/dispersion.py` |
-| **9. Slab Attractive Dispersion** | $\bar{u}_{\rm att}(|z|) = 2\pi \int_{|z|}^{r_{\rm cut}} r \, u_{\rm att}(r) \, dr$ | `solver/dispersion.py` |
-| **10. COLN Operator** | $c_1(x, \theta, \phi) = \sum_{l,m} c_{ml}(x, \bar{\rho}) Y_{ml}(\theta, \phi) \cdot [1 + \hat{\rho}(\theta, \phi)]$ | `models/coln.py` |
-| **11. Nematic Order $S$** | $S_{\rm order}(z) = \frac{1}{\bar{\rho}(z)} \int d\Omega \, \rho(z, \theta, \phi) \left(\frac{3\cos^2\theta - 1}{2}\right)$ | `pipelines/co2/supercritical.py` |
-| **12. Buckingham Exp-6** | $u(r) = \frac{q_i q_j}{4\pi\epsilon_0 r}{\rm erf}\left(\frac{r}{\sqrt{2}\sigma_{ij}}\right) + A_{ij}e^{-B_{ij}r} - \frac{C_{ij}}{r^6}$ | `core/cuda_kernels.cu` |
-| **13. Hyper-DFT** | $\rho_{\rm H}(z) = \rho_{\rm H}^{(1)}(z; [\rho_{\rm O}], T)$ | `envs/train.py` |
-| **14. Line Integration** | $\mathcal{F}^{\rm ex} = -k_B T \int_0^1 d\lambda \int dz \, c^{(1)}(z; [\lambda\rho], T) \rho(z)$ | `solver/thermo_integration.py` |
-| **15. Bulk Pressure EOS** | $P(\rho_b, T) = k_B T \rho_b(1 - c^{(1)}) - \frac{\mathcal{F}^{\rm ex}}{V}$ | `solver/thermo_integration.py` |
-| **16. Structure Factor $S(k)$** | $S(k) = \frac{1}{1 - \rho_b \hat{c}^{(2)}(k)}$ where $c^{(2)} = -\frac{\delta c^{(1)}}{\delta \rho}$ | `solver/correlation.py` |
-| **17. Effective Pressure** | $\tilde{P}(H) = P + \Pi(H) = -\int dz \, \rho(z) \frac{dV_{\rm wall}}{dz}$ | `pipelines/water/confinement.py` |
-| **18. Fisher–Widom Line** | Crossover of correlation decay: $\alpha_0 = \tilde{\alpha}_0$ | `pipelines/co2/supercritical.py` |
-| **19. Widom Lines** | Maxima of correlation length $\xi$ and compressibility $\chi_T$ | `pipelines/co2/supercritical.py` |
-| **20. Binodal Solver** | Picard iteration with Anderson acceleration | `solver/picard_solver.py` |
-
----
-
-## 2. Physical Comparison with Experimental Reality
+## 1. Physical Comparison with Experimental Reality
 
 Quantitative validation across all 20 canonical fluid systems, interfacial phenomena, and extreme statistical mechanics edge cases against NIST experimental measurements and high-precision reference data:
+
+> [!NOTE]
+> For the complete mathematical formulation and implementation breakdown of all 20 statistical mechanics compute steps, see [COMPUTE_STEPS.md](COMPUTE_STEPS.md).
 
 ### Quantitative Error Rates & Multi-Property Benchmark (NIST vs dens-city)
 
@@ -194,7 +170,7 @@ Quantitative validation across all 20 canonical fluid systems, interfacial pheno
 
 ---
 
-## 3. Quickstart & Installation
+## 2. Quickstart & Installation
 
 ```bash
 # 1. Clone repository
@@ -216,7 +192,7 @@ uv run pytest tests/ -v
 
 ---
 
-## 4. Usage & CLI
+## 3. Usage & CLI
 
 ```bash
 # Unified Single-Run PufferLib Direct Training
@@ -259,7 +235,7 @@ uv run dens-city ui --functional dens_functional.pt
 
 ---
 
-## 5. Performance Benchmarks
+## 4. Performance Benchmarks
 
 Measured on an NVIDIA GeForce RTX 4090 GPU (24 GB VRAM, 16,384 CUDA cores):
 
@@ -274,7 +250,7 @@ Measured on an NVIDIA GeForce RTX 4090 GPU (24 GB VRAM, 16,384 CUDA cores):
 
 ---
 
-## 6. Citations
+## 5. Citations
 
 1. **A. T. Bui, S. J. Cox**, *"Dielectrocapillarity for exquisite control of fluids"*, arXiv:2503.09855 (2025).
 2. **A. T. Bui, S. J. Cox**, *"Learning classical density functionals for ionic fluids"*, *Phys. Rev. Lett.* **134**, 148001 (2025). [doi:10.1103/PhysRevLett.134.148001](https://doi.org/10.1103/PhysRevLett.134.148001)
@@ -284,6 +260,6 @@ Measured on an NVIDIA GeForce RTX 4090 GPU (24 GB VRAM, 16,384 CUDA cores):
 
 ---
 
-## 7. License
+## 6. License
 
 This program is free software: you can redistribute it and/or modify it under the terms of the **GNU General Public License as published by the Free Software Foundation**, either version 3 of the License, or (at your option) any later version. See [LICENSE](LICENSE) for details.
