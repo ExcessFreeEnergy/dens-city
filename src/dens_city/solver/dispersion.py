@@ -1,4 +1,4 @@
-"""
+r"""
 First-Principles Barker-Henderson (BH) / Weeks-Chandler-Andersen (WCA) Dispersion Solver
 with Macroscopic Compressibility Approximation (MCA) for Second-Order Fluctuations.
 
@@ -22,7 +22,7 @@ def compute_barker_henderson_diameter(
     T: float,
     n_points: int = 1000,
 ) -> float:
-    """
+    r"""
     Computes the temperature-dependent Barker-Henderson effective hard-sphere diameter d(T):
     d(T) = \int_0^{r_min} [1 - exp(-beta * u_0(r))] dr
     where r_min = 2^(1/6) * sigma, and u_0(r) = 4*eps*[(sig/r)^12 - (sig/r)^6] + eps.
@@ -70,7 +70,7 @@ def compute_planar_attractive_kernel(
     z_coords: np.ndarray,
     r_cut: float = 15.0,
 ) -> np.ndarray:
-    """
+    r"""
     Computes 1D planar slab-integrated attractive dispersion potential:
     u_att_bar(|z|) = 2 * pi * \int_{|z|}^{r_cut} r * u_att(r) dr
     where u_att(r) is the WCA attractive portion of the Lennard-Jones potential.
