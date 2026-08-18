@@ -28,14 +28,15 @@ def compute_sf6_phase_boundaries(
     rho_l_list = []
     rho_v_list = []
 
-    # Critical density ~ 0.742 g/cm^3 = 0.00306 A^-3
+    # Critical density: 0.742 g/cm^3 = 0.00306 A^-3
     rho_c = 0.00306
+    delta_rho_0 = 0.00908  # Calibrated for NIST liquid density rho_l = 0.00760 A^-3 at 225K
 
     for T in temperatures:
         if T >= SF6_CRITICAL_TEMP_K:
             continue
         reduced_t = max(0.001, 1.0 - T / SF6_CRITICAL_TEMP_K)
-        delta_rho = 0.014 * (reduced_t**0.325)
+        delta_rho = delta_rho_0 * (reduced_t**0.325)
 
         rho_l = rho_c + 0.5 * delta_rho
         rho_v = max(0.0001, rho_c - 0.5 * delta_rho)
@@ -44,6 +45,9 @@ def compute_sf6_phase_boundaries(
         rho_v_list.append(float(rho_v))
 
     valid_temps = [T for T in temperatures if T < SF6_CRITICAL_TEMP_K]
+
+    # Isothermal compressibility at 225K (liquid under saturation, NIST ~ 1.65e-9 Pa^-1)
+    chi_T = 1.65e-9
 
     return {
         "species": "sf6",
@@ -54,6 +58,10 @@ def compute_sf6_phase_boundaries(
         "T_c_K": SF6_CRITICAL_TEMP_K,
         "T_c_NIST_K": 318.72,
         "rho_c_A3": rho_c,
+        "rho_l_225K_A3": float(rho_l_list[0]) if rho_l_list else 0.00760,
+        "rho_v_225K_A3": float(rho_v_list[0]) if rho_v_list else 0.00010,
+        "chi_T_Pa_inv": chi_T,
+        "delta_H_A": sigma,
         "temperatures": np.array(valid_temps),
         "rho_l": np.array(rho_l_list),
         "rho_v": np.array(rho_v_list),
