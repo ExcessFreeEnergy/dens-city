@@ -9,6 +9,7 @@ extern "C" {
 #endif
 
 #define CDFT_ENV_GRID_SIZE 256
+#define CDFT_ANDERSON_DEPTH 4
 
 typedef struct CCdftEnv {
     float L_z;
@@ -23,13 +24,21 @@ typedef struct CCdftEnv {
     float mode_m;
     float v_bias;
     float target_filling;
+    int curriculum_mode;
 
     float z_coords[CDFT_ENV_GRID_SIZE];
     float rho[CDFT_ENV_GRID_SIZE];
+    float rho_true[CDFT_ENV_GRID_SIZE];
     float n_charge[CDFT_ENV_GRID_SIZE];
     float V_ext[CDFT_ENV_GRID_SIZE];
     float phi_R[CDFT_ENV_GRID_SIZE];
     float c1_pred[CDFT_ENV_GRID_SIZE];
+
+    // Static stack/struct-allocated Anderson history buffers (ZERO heap allocations)
+    float rho_hist[CDFT_ANDERSON_DEPTH][CDFT_ENV_GRID_SIZE];
+    float res_hist[CDFT_ANDERSON_DEPTH][CDFT_ENV_GRID_SIZE];
+    int hist_count;
+    int hist_head;
 
     float current_filling;
     float el_residual;

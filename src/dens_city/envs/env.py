@@ -17,6 +17,7 @@ else:
         _env_lib = None
 
 CDFT_GRID_SIZE = 256
+CDFT_ANDERSON_DEPTH = 4
 
 
 class CCdftEnvStruct(ctypes.Structure):
@@ -32,12 +33,18 @@ class CCdftEnvStruct(ctypes.Structure):
         ("mode_m", ctypes.c_float),
         ("v_bias", ctypes.c_float),
         ("target_filling", ctypes.c_float),
+        ("curriculum_mode", ctypes.c_int),
         ("z_coords", ctypes.c_float * CDFT_GRID_SIZE),
         ("rho", ctypes.c_float * CDFT_GRID_SIZE),
+        ("rho_true", ctypes.c_float * CDFT_GRID_SIZE),
         ("n_charge", ctypes.c_float * CDFT_GRID_SIZE),
         ("V_ext", ctypes.c_float * CDFT_GRID_SIZE),
         ("phi_R", ctypes.c_float * CDFT_GRID_SIZE),
         ("c1_pred", ctypes.c_float * CDFT_GRID_SIZE),
+        ("rho_hist", (ctypes.c_float * CDFT_GRID_SIZE) * CDFT_ANDERSON_DEPTH),
+        ("res_hist", (ctypes.c_float * CDFT_GRID_SIZE) * CDFT_ANDERSON_DEPTH),
+        ("hist_count", ctypes.c_int),
+        ("hist_head", ctypes.c_int),
         ("current_filling", ctypes.c_float),
         ("el_residual", ctypes.c_float),
         ("reward", ctypes.c_float),
@@ -100,6 +107,7 @@ class DensCityFluidEnv:
             "el_residual": float(env.el_residual),
             "T": float(env.T),
             "mu": float(env.mu_target),
+            "curriculum_mode": int(env.curriculum_mode),
         }
         return obs, reward, done, False, info
 
@@ -110,6 +118,10 @@ class DensCityFluidEnv:
         phi_r = np.ctypeslib.as_array(env.phi_R)
         scalars = np.array([env.T / 500.0, env.mu_target / 1e-19, env.target_filling], dtype=np.float32)
         return np.concatenate([rho, v_ext, phi_r, scalars]).astype(np.float32)
+
+    def get_ground_truth_rho(self, env_idx: int = 0) -> np.ndarray:
+        env = self._envs_ptr[env_idx]
+        return np.copy(np.ctypeslib.as_array(env.rho_true))
 
     # UI property bindings
     @property
@@ -151,6 +163,10 @@ class DensCityFluidEnv:
     @property
     def rho(self) -> np.ndarray:
         return np.copy(np.ctypeslib.as_array(self._envs_ptr[0].rho))
+
+    @property
+    def rho_true(self) -> np.ndarray:
+        return np.copy(np.ctypeslib.as_array(self._envs_ptr[0].rho_true))
 
     @property
     def phi_R(self) -> np.ndarray:

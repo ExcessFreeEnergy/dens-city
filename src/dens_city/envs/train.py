@@ -12,6 +12,8 @@ from dens_city.envs.env import DensCityFluidEnv
 # Disable cuDNN to use native robust CUDA 1D conv kernels without version mismatch
 torch.backends.cudnn.enabled = False
 
+KB = 1.380649e-23
+
 
 class ResidualBlock1D(nn.Module):
     def __init__(self, channels: int):
@@ -29,11 +31,12 @@ class ResidualBlock1D(nn.Module):
 
 class DensNeuralFunctional(nn.Module):
     """
-    Unified Multi-Scale Neural cDFT & Actor-Critic Policy.
+    Unified Multi-Scale Neural cDFT & Actor-Critic Policy with Pillar 3 Latent-mu Head.
     Simultaneously learns:
     1. Local one-body direct correlation functional c_R^(1)(z; [rho], T)
     2. Hyperdensity observable rho_H^(1)(z; [rho_O], T) (Hyper-DFT)
-    3. Active RL policy for closed-loop fluid manipulation
+    3. Latent chemical potential mu_latent (Pillar 3 regularizer)
+    4. Active RL policy for closed-loop fluid manipulation
     """
 
     def __init__(self, in_channels: int = 3, hidden_dim: int = 64, action_dim: int = 3):
@@ -61,8 +64,15 @@ class DensNeuralFunctional(nn.Module):
             nn.Softplus(),
         )
 
-        # 3. RL Policy Head
-        self.rl_pool = nn.AdaptiveAvgPool1d(1)
+        # 3. Pillar 3: Latent-mu Head
+        self.global_pool = nn.AdaptiveAvgPool1d(1)
+        self.mu_latent_head = nn.Sequential(
+            nn.Linear(hidden_dim + 3, 64),
+            nn.GELU(),
+            nn.Linear(64, 1),
+        )
+
+        # 4. RL Policy Head
         self.rl_fc = nn.Sequential(
             nn.Linear(hidden_dim + 3, 128),
             nn.GELU(),
@@ -73,7 +83,9 @@ class DensNeuralFunctional(nn.Module):
         self.actor_logstd = nn.Parameter(torch.zeros(action_dim))
         self.critic = nn.Linear(64, 1)
 
-    def forward(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self, obs: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # obs shape: [B, 771] -> rho(256), V_ext(256), phi_R(256), scalars(3)
         b_size = obs.shape[0]
         grid_feats = obs[:, :768].view(b_size, 3, 256)
@@ -87,20 +99,24 @@ class DensNeuralFunctional(nn.Module):
         # Hyper-DFT output [B, 256]
         rho_h_pred = self.hyper_head(feats).squeeze(1)
 
-        # Global features for RL
-        pooled = self.rl_pool(feats).squeeze(2)  # [B, hidden_dim]
+        # Global features
+        pooled = self.global_pool(feats).squeeze(2)  # [B, hidden_dim]
         combined = torch.cat([pooled, scalars], dim=1)
-        rl_feats = self.rl_fc(combined)
 
+        # Latent-mu output [B, 1]
+        mu_latent_pred = self.mu_latent_head(combined).squeeze(-1) * 1e-19  # Joules
+
+        # RL outputs
+        rl_feats = self.rl_fc(combined)
         action_mean = self.actor_mean(rl_feats)
         value = self.critic(rl_feats)
 
-        return action_mean, value, c1_pred, rho_h_pred
+        return action_mean, value, c1_pred, rho_h_pred, mu_latent_pred
 
     def get_action(
         self, obs: torch.Tensor, deterministic: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        action_mean, value, _, _ = self(obs)
+        action_mean, value, _, _, _ = self(obs)
         if deterministic:
             return torch.tanh(action_mean), torch.zeros(1), value
 
@@ -163,7 +179,7 @@ def train_unified(
 
         # Compute GAE and returns
         with torch.no_grad():
-            _, next_value, _, _ = model(obs_batch)
+            _, next_value, _, _, _ = model(obs_batch)
             next_value = next_value.squeeze(-1)
 
         returns = torch.zeros(rollout_len, num_envs, device=device)
@@ -202,7 +218,7 @@ def train_unified(
                 mb_adv = b_adv[idx]
                 mb_old_logp = b_logp[idx]
 
-                act_mean, value, c1_pred, rho_h_pred = model(mb_obs)
+                act_mean, value, c1_pred, rho_h_pred, mu_latent_pred = model(mb_obs)
                 std = torch.exp(model.actor_logstd)
                 dist = torch.distributions.Normal(act_mean, std)
                 new_logp = dist.log_prob(mb_act).sum(dim=-1)
@@ -213,15 +229,45 @@ def train_unified(
                 policy_loss = -torch.min(surr1, surr2).mean()
                 value_loss = 0.5 * ((value.squeeze(-1) - mb_ret) ** 2).mean()
 
-                # Self-consistent Euler-Lagrange residual loss on c1 functional
-                # c1_target = ln(rho/rho_b) + beta*(phi_r - mu)
+                # Pillar 3: Multi-Objective Loss Formulation
+                # 1. Density profiles
                 rho = mb_obs[:, :256]
                 phi_r = mb_obs[:, 512:768]
-                beta = 1.0 / (1.380649e-23 * 300.0)
-                c1_target = torch.log(torch.clamp(rho / 0.033, min=1e-4)) + beta * (phi_r - (-3000.0 * 1.380649e-23))
-                c1_loss = 0.1 * nn.functional.mse_loss(c1_pred, c1_target.detach())
+                T_scaled = mb_obs[:, 768] * 500.0
+                mu_target = mb_obs[:, 769] * 1e-19
 
-                total_loss = policy_loss + value_loss + c1_loss
+                beta = 1.0 / (KB * torch.clamp(T_scaled.unsqueeze(1), min=100.0))
+
+                # 2. Sqrt variance-stabilized density loss
+                rho_safe = torch.clamp(rho, min=1e-12)
+                # Predicted mapping from c1 and phi_R
+                arg = -beta * phi_r + c1_pred
+                arg_safe = torch.clamp(arg, -30.0, 15.0)
+                rho_pred = 0.033 * torch.exp(arg_safe)
+                loss_rho_sqrt = torch.mean((torch.sqrt(rho_pred) - torch.sqrt(rho_safe)) ** 2)
+
+                # 3. Euler-Lagrange residual
+                c1_target = torch.log(torch.clamp(rho / 0.033, min=1e-6)) + beta * (
+                    phi_r - mu_latent_pred.unsqueeze(1)
+                )
+                loss_el = nn.functional.mse_loss(c1_pred, c1_target.detach())
+
+                # 4. Contact Value Theorem sum rule: rho(0) = beta * P_bulk
+                p_bulk = 0.033 * KB * T_scaled.unsqueeze(1) * 1.5  # Approximate hard-sphere EOS
+                contact_target = beta * p_bulk
+                loss_contact = 0.01 * torch.mean((rho_pred[:, 0:1] - contact_target) ** 2)
+
+                # 5. Latent-mu regularization
+                loss_mu = 0.01 * nn.functional.mse_loss(mu_latent_pred, mu_target)
+
+                total_loss = (
+                    policy_loss
+                    + value_loss
+                    + 0.1 * loss_el
+                    + 10.0 * loss_rho_sqrt
+                    + loss_contact
+                    + loss_mu
+                )
 
                 optimizer.zero_grad()
                 total_loss.backward()
@@ -231,7 +277,7 @@ def train_unified(
         elapsed = time.time() - start_time
         sps = int(steps_done / elapsed) if elapsed > 0 else 0
         print(
-            f"[dens-city] Steps: {steps_done}/{total_timesteps} | SPS: {sps} | PolLoss: {policy_loss.item():.4f} | ValLoss: {value_loss.item():.4f}"
+            f"[dens-city] Steps: {steps_done}/{total_timesteps} | SPS: {sps} | PolLoss: {policy_loss.item():.4f} | ValLoss: {value_loss.item():.4f} | RhoSqrtLoss: {loss_rho_sqrt.item():.4e}"
         )
 
     # Save trained functional directly
@@ -239,7 +285,7 @@ def train_unified(
         {
             "state_dict": model.state_dict(),
             "total_timesteps": steps_done,
-            "arch": "DensNeuralFunctional_ResNet1D",
+            "arch": "DensNeuralFunctional_ResNet1D_LatentMu",
         },
         save_path,
     )

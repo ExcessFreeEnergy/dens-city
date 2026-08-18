@@ -20,6 +20,8 @@ dens-city Physical Pipelines:
 18. Colloidal Depletion (Asakura-Oosawa Entropic Attraction, Pure Entropic Demixing Without Energetic Potential)
 19. Supercooled Glasses (Kob-Andersen 80/20 Non-Additive LJ, Split Second Peak in g_AA(r), Avoided Crystallization)
 20. Steric Shielding (Sulfur Hexafluoride SF6 Octahedral Fluorine Cage, Giant Excluded Volume, Triple Point T_t=222.35 K)
+21. Quantum Water (SCAN, RPBE-D3 Ab Initio Multiscale Benchmark)
+22. Quantum CO2 (PBE-D3, BLYP-D3 Supercritical Crossover Benchmark)
 """
 
 from dens_city.pipelines import (
@@ -41,6 +43,8 @@ from dens_city.pipelines import (
     nitrogen,
     polymers,
     quantum,
+    quantum_co2,
+    quantum_water,
     surfactants,
     water,
 )
@@ -64,6 +68,8 @@ __all__ = [
     "nitrogen",
     "polymers",
     "quantum",
+    "quantum_co2",
+    "quantum_water",
     "surfactants",
     "water",
 ]
