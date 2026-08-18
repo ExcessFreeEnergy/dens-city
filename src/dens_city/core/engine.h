@@ -53,7 +53,8 @@ enum class PairPotentialKind : int {
     WCA = 2,
     HARD_SPHERE = 3,
     HARD_SPHERE_COULOMB = 4,
-    LJ_COULOMB_GT = 5
+    LJ_COULOMB_GT = 5,
+    BUCKINGHAM_EXP6_GAUSSIAN = 6
 };
 
 struct PairPotential {
@@ -67,6 +68,10 @@ struct PairPotential {
     double diameter = 0.0;
     double prefactor = 1.0;
     double shift_lj = 0.0;
+    double A_ij = 0.0;
+    double B_ij = 0.0;
+    double C_ij = 0.0;
+    double sigma_gauss_sq = 0.0;
 
     double evaluate(double r) const;
 };

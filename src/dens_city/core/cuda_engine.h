@@ -33,6 +33,10 @@ typedef struct CUDAPairPotential {
     float diameter;
     float prefactor;
     float shift_lj;
+    float A_ij;
+    float B_ij;
+    float C_ij;
+    float sigma_gauss_sq;
 } CUDAPairPotential;
 
 typedef struct CUDAExternalPotential {
