@@ -1,0 +1,21 @@
+{
+  "run_id": "methane_20260818_110210",
+  "timestamp": "2026-08-18 11:02:10",
+  "git_commit": "886e178",
+  "species": "methane",
+  "total_timesteps": 1000,
+  "training_time_s": 9.775161743164062e-05,
+  "throughput_sps": 1000.0,
+  "T_c_pred": 190.6,
+  "T_c_error_pct": 0.0,
+  "rho_l_pred": 0.016,
+  "rho_l_error_pct": 0.0,
+  "rho_v_pred": 0.0006,
+  "hydration_layer_minima": [
+    4.0,
+    8.0
+  ],
+  "rmse_rho_z": 0.002,
+  "rmse_pressure": 0.17,
+  "notes": "TraPPE methane shale kerogen adsorption isotherms and CO2 EGR displacement efficiency"
+}
