@@ -7,13 +7,11 @@
 
 I built `dens-city` to scale quantum-mechanical atomic accuracy to macroscopic fluid dynamics on a single high performance workstation.
 
-With current methods, simulating dense molecular liquids like water, supercritical carbon dioxide, or concentrated electrolytes under nanoconfinement or strong electric fields, is unfeasible. Electronic structure methods give you accurate sub-Ångström fidelity and quantum-mechanical precision but they hit an wall when you try to simulate more than a few thousand atoms across nanosecond timescales. On the other side of the scale, continuum hydrodynamics and classical equations of state can simulate gallons of fluid in seconds, but throw away molecular structure, hydrogen-bonding networks, dielectric saturation, and discrete interfacial layering.
+With current methods, simulating dense molecular liquids is unfeasible. Electronic structure methods give you accurate sub-Ångström fidelity and quantum-mechanical precision but they hit an wall when you try to simulate more than a few thousand atoms across nanosecond timescales. On the other side of the scale, continuum hydrodynamics and classical equations of state can simulate gallons of fluid in seconds, but throw away molecular structure, hydrogen-bonding networks, dielectric saturation, and discrete interfacial layering.
 
 Classical Density Functional Theory (cDFT) is the exact statistical-mechanical bridge between these two worlds. In theory, if you know the intrinsic excess free energy functional $\mathcal{F}^{\rm ex}[\rho]$, you can predict the exact equilibrium structure, phase coexistence, and interfacial surface tension of any fluid system by simply minimizing a grand potential functional $\Omega[\rho]$. This project is the first step in solving the exact functional for real-world polar and anisotropic molecular fluids.
 
 While Grand Canonical Monte Carlo (GCMC) samples fluid densities and extracts the one-body direct correlation function $c^{(1)}(r)$, standard GCMC is notoriously brutal on CPU clusters. Inserting and deleting rigid molecules into dense, subcritical liquid water has <0.01% acceptance rates. Non-spherical linear molecules, the joint positional and orientational space $(x, \theta, \phi)$ blow up GPU memory during neural network training. I \*entirely\* solve the simulation with vectorized zero-copy PufferLib C environments and resolve high-dimensional orientational scaling with Convoluted Operator Learning (COLN).
-
-The result is a platform that delivers sub-Ångström atomistic accuracy, predicts experimental water critical temperatures within +2.0% of NIST values, resolves discrete hydration layering in graphene slits, and executes over **10,000x faster** than traditional molecular dynamics.
 
 ---
 
