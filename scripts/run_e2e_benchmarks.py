@@ -85,6 +85,7 @@ from dens_city.pipelines.nitrogen.flue_gas import (  # noqa: E402
     compute_n2_orientational_isotherm,
 )
 from dens_city.pipelines.water.confinement import compute_confinement_isotherm  # noqa: E402
+from dens_city.solver.response_functions import compute_isothermal_compressibility_fourier  # noqa: E402
 from dens_city.solver.thermo_integration import compute_bulk_pressure  # noqa: E402
 from dens_city.tracking.tracker import ExperimentTracker  # noqa: E402
 
@@ -223,6 +224,10 @@ def run_water_benchmark(tracker: ExperimentTracker, timesteps: int = 50000) -> D
         _, _, _, rho_hydrogen_pred = model(torch.tensor(obs_hyper, dtype=torch.float32, device=DEVICE).unsqueeze(0))
         rho_h_max = float(np.max(rho_oxygen) * 2.0 * 1000.0)
 
+    # 5. Isothermal Compressibility via Fourier Static Structure Factor S(k=0)
+    chi_res = compute_isothermal_compressibility_fourier(neural_c1_fn, rho_bulk=0.033, T=300.0, grid_size=256)
+    chi_T_val = float(chi_res["chi_T_Pa"])
+
     exec_time = time.time() - t0
     rho_l_sim = 33.0  # nm^-3
     rho_v_sim = 0.002  # nm^-3
@@ -240,12 +245,16 @@ def run_water_benchmark(tracker: ExperimentTracker, timesteps: int = 50000) -> D
         hydration_layer_minima=layering_widths,
         rmse_rho_z=rmse_rho_z,
         rmse_pressure=rmse_pressure,
-        notes="Water SCAN/RPBE cDFT + 3D Ewald + Graphene slit nanoconfinement",
+        chi_T_pred=chi_T_val,
+        notes="Water SCAN/RPBE cDFT + 3D Ewald + Graphene slit nanoconfinement + Fourier chi_T",
     )
 
     print(f"  -> Predicted T_c: {T_c_pred:.1f} K (NIST: 647.1 K, Err: {record.T_c_error_pct:+.1f}%)")
     print(f"  -> Liquid Density: {rho_l_sim:.2f} nm^-3 (NIST: 33.36 nm^-3, Err: {record.rho_l_error_pct:+.1f}%)")
     print(f"  -> Hydration Layer Spacing: ~0.32 nm (Minima: {layering_widths} nm)")
+    print(
+        f"  -> Isothermal Compressibility: {chi_T_val:.2e} Pa^-1 (NIST: 4.59e-10 Pa^-1, Err: {record.chi_T_error_pct:+.1f}%)"
+    )
     print(f"  -> Hyper-DFT Peak Hydrogen: {rho_h_max:.1f} nm^-3 (Stoichiometric ~2x Oxygen)")
     return {"species": "water", "record": record, "T_c_pred": T_c_pred, "rho_l_pred": rho_l_sim}
 

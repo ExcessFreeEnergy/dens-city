@@ -29,6 +29,8 @@ class RunMetrics:
     hydration_layer_minima: List[float]
     rmse_rho_z: float
     rmse_pressure: float
+    chi_T_pred: float = 0.0
+    chi_T_error_pct: float = 0.0
     notes: str = ""
 
 
@@ -57,11 +59,12 @@ class ExperimentTracker:
         hydration_layer_minima: List[float],
         rmse_rho_z: float,
         rmse_pressure: float,
+        chi_T_pred: float = 0.0,
         notes: str = "",
     ) -> RunMetrics:
         # Species-specific experimental ground truths (NIST / literature verified)
         GROUND_TRUTHS = {
-            "water": {"T_c": 647.1, "rho_l": 33.36, "unit": "nm^-3"},
+            "water": {"T_c": 647.1, "rho_l": 33.36, "chi_T": 4.59e-10, "unit": "nm^-3"},
             "co2": {"T_c": 304.1, "rho_l": 0.015, "unit": "A^-3"},
             "electrolytes": {"T_c": 0.050, "rho_l": 0.020, "unit": "reduced"},
             "co2_water": {"T_c": 310.0, "rho_l": 0.033, "unit": "A^-3"},
@@ -84,6 +87,10 @@ class ExperimentTracker:
         t_c_err = ((T_c_pred - T_c_expt) / T_c_expt) * 100.0
         rho_l_err = ((rho_l_pred - rho_l_expt) / max(1e-6, rho_l_expt)) * 100.0
 
+        chi_T_err = 0.0
+        if chi_T_pred > 0.0 and "chi_T" in gt:
+            chi_T_err = ((chi_T_pred - gt["chi_T"]) / gt["chi_T"]) * 100.0
+
         run_id = f"{species}_{time.strftime('%Y%m%d_%H%M%S')}"
         record = RunMetrics(
             run_id=run_id,
@@ -101,6 +108,8 @@ class ExperimentTracker:
             hydration_layer_minima=hydration_layer_minima,
             rmse_rho_z=rmse_rho_z,
             rmse_pressure=rmse_pressure,
+            chi_T_pred=chi_T_pred,
+            chi_T_error_pct=chi_T_err,
             notes=notes,
         )
 
