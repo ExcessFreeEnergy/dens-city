@@ -1,6 +1,6 @@
 from typing import Callable, Optional, Tuple
+
 import numpy as np
-import torch
 
 KB = 1.380649e-23
 
@@ -43,7 +43,6 @@ class CdftPicardSolver:
         """
         beta = 1.0 / (KB * T)
         N = len(z_coords)
-        dz = z_coords[1] - z_coords[0] if N > 1 else 1.0
 
         if rho_init is None:
             rho = np.full(N, rho_bulk, dtype=np.float64)
@@ -52,10 +51,6 @@ class CdftPicardSolver:
 
         if delta_phi_r is None:
             delta_phi_r = np.zeros(N, dtype=np.float64)
-
-        # Anderson acceleration history buffers
-        history_rho = []
-        history_res = []
 
         converged = False
         final_res = 1.0

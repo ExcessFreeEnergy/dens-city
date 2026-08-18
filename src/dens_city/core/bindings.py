@@ -1,8 +1,6 @@
 import ctypes
-import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-import numpy as np
+from typing import Any, Dict, Optional
 
 # Load native shared library
 _lib_path = Path(__file__).parent / "libdens_city_core.so"
@@ -24,25 +22,55 @@ if _lib is not None:
     _lib.dens_city_set_thermodynamics.argtypes = [ctypes.c_void_p, ctypes.c_double, ctypes.c_double, ctypes.c_double]
     _lib.dens_city_set_box.argtypes = [ctypes.c_void_p, ctypes.c_double, ctypes.c_double, ctypes.c_double]
     _lib.dens_city_set_moves.argtypes = [
-        ctypes.c_void_p, ctypes.c_double, ctypes.c_double, ctypes.c_double,
-        ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double
+        ctypes.c_void_p,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
     ]
     _lib.dens_city_set_molecule_type.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_double]
     _lib.dens_city_set_electrostatics.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_double, ctypes.c_int]
 
     _lib.dens_city_set_pair_potential.argtypes = [
-        ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int,
-        ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double,
-        ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double,
-        ctypes.c_double, ctypes.c_double
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
     ]
 
     _lib.dens_city_set_external_potential.argtypes = [
-        ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
-        ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double,
-        ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double,
-        ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double,
-        ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
     ]
 
     _lib.dens_city_step.argtypes = [ctypes.c_void_p]
@@ -91,11 +119,18 @@ class DensCityEngine:
         # Molecule type
         mol_type_str = config.get("molecule_type", "single").lower()
         type_map = {
-            "single": 1, "single_site": 1,
-            "two_type": 2, "rpm": 2,
-            "abc": 3, "dipole": 3,
-            "water": 4, "h2o": 4, "spce": 4, "tip4p": 4,
-            "co2": 5, "trappe": 5
+            "single": 1,
+            "single_site": 1,
+            "two_type": 2,
+            "rpm": 2,
+            "abc": 3,
+            "dipole": 3,
+            "water": 4,
+            "h2o": 4,
+            "spce": 4,
+            "tip4p": 4,
+            "co2": 5,
+            "trappe": 5,
         }
         mol_type = type_map.get(mol_type_str, 1)
         bond_len = float(config.get("bond_length", 1.0))
@@ -109,29 +144,81 @@ class DensCityEngine:
         _lib.dens_city_set_electrostatics(self._handle, mode, ewald_alpha, ewald_kmax)
 
     def set_pair_potential(
-        self, type_i: int, type_j: int, kind: int,
-        epsilon_lj: float = 0.0, sigma_lj: float = 0.0, rc: float = 10.0,
-        epsilon_c: float = 0.0, q1: float = 0.0, q2: float = 0.0,
-        kappa_inv: float = 4.5, diameter: float = 0.0, prefactor: float = 1.67101e-19,
-        shift_lj: float = 0.0
+        self,
+        type_i: int,
+        type_j: int,
+        kind: int,
+        epsilon_lj: float = 0.0,
+        sigma_lj: float = 0.0,
+        rc: float = 10.0,
+        epsilon_c: float = 0.0,
+        q1: float = 0.0,
+        q2: float = 0.0,
+        kappa_inv: float = 4.5,
+        diameter: float = 0.0,
+        prefactor: float = 1.67101e-19,
+        shift_lj: float = 0.0,
     ):
         _lib.dens_city_set_pair_potential(
-            self._handle, type_i, type_j, kind,
-            epsilon_lj, sigma_lj, rc, epsilon_c, q1, q2,
-            kappa_inv, diameter, prefactor, shift_lj
+            self._handle,
+            type_i,
+            type_j,
+            kind,
+            epsilon_lj,
+            sigma_lj,
+            rc,
+            epsilon_c,
+            q1,
+            q2,
+            kappa_inv,
+            diameter,
+            prefactor,
+            shift_lj,
         )
 
     def set_external_potential(
-        self, type_i: int, kind: int,
-        low: float = 0.0, high: float = 20.0, width: float = 0.0, L: float = 20.0,
-        epsilon: float = 0.0, sigma: float = 0.0, cutoff: float = 0.0, shift: float = 0.0, q: float = 0.0,
-        A1: float = 0.0, A2: float = 0.0, A3: float = 0.0, A4: float = 0.0,
-        phi1: float = 0.0, phi2: float = 0.0, phi3: float = 0.0, phi4: float = 0.0
+        self,
+        type_i: int,
+        kind: int,
+        low: float = 0.0,
+        high: float = 20.0,
+        width: float = 0.0,
+        L: float = 20.0,
+        epsilon: float = 0.0,
+        sigma: float = 0.0,
+        cutoff: float = 0.0,
+        shift: float = 0.0,
+        q: float = 0.0,
+        A1: float = 0.0,
+        A2: float = 0.0,
+        A3: float = 0.0,
+        A4: float = 0.0,
+        phi1: float = 0.0,
+        phi2: float = 0.0,
+        phi3: float = 0.0,
+        phi4: float = 0.0,
     ):
         _lib.dens_city_set_external_potential(
-            self._handle, type_i, kind,
-            low, high, width, L, epsilon, sigma, cutoff, shift, q,
-            A1, A2, A3, A4, phi1, phi2, phi3, phi4
+            self._handle,
+            type_i,
+            kind,
+            low,
+            high,
+            width,
+            L,
+            epsilon,
+            sigma,
+            cutoff,
+            shift,
+            q,
+            A1,
+            A2,
+            A3,
+            A4,
+            phi1,
+            phi2,
+            phi3,
+            phi4,
         )
 
     def step(self):

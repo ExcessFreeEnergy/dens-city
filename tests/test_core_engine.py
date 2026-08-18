@@ -1,5 +1,3 @@
-import pytest
-import numpy as np
 from dens_city.core.bindings import DensCityEngine
 
 
@@ -7,7 +5,9 @@ def test_core_engine_initialization():
     cfg = {
         "T": 300.0,
         "mu": -3000.0 * 1.380649e-23,
-        "box_x": 20.0, "box_y": 20.0, "box_z": 20.0,
+        "box_x": 20.0,
+        "box_y": 20.0,
+        "box_z": 20.0,
         "molecule_type": "single",
         "electrostatics_mode": "short_range",
     }
@@ -21,7 +21,9 @@ def test_core_engine_gcmc_steps():
     cfg = {
         "T": 300.0,
         "mu": -1000.0 * 1.380649e-23,
-        "box_x": 20.0, "box_y": 20.0, "box_z": 20.0,
+        "box_x": 20.0,
+        "box_y": 20.0,
+        "box_z": 20.0,
         "molecule_type": "single",
         "prob_insert": 0.5,
         "prob_delete": 0.2,
@@ -37,7 +39,9 @@ def test_core_engine_long_range_ewald():
     cfg = {
         "T": 300.0,
         "mu": -2000.0 * 1.380649e-23,
-        "box_x": 20.0, "box_y": 20.0, "box_z": 20.0,
+        "box_x": 20.0,
+        "box_y": 20.0,
+        "box_z": 20.0,
         "molecule_type": "abc",
         "electrostatics_mode": "long_range",
         "ewald_alpha": 0.35,

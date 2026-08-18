@@ -1,7 +1,6 @@
 """
 Immediate-Mode UI Widgets for dens-city Raylib Dashboard.
 """
-from typing import Callable, Optional, Tuple
 
 try:
     import pyray as rl
@@ -9,7 +8,9 @@ except ImportError:
     rl = None
 
 
-def draw_panel(x: int, y: int, width: int, height: int, title: str, bg_color=(20, 24, 30, 230), border_color=(50, 60, 75, 255)):
+def draw_panel(
+    x: int, y: int, width: int, height: int, title: str, bg_color=(20, 24, 30, 230), border_color=(50, 60, 75, 255)
+):
     if rl is None:
         return
     rl.draw_rectangle(x, y, width, height, bg_color)
@@ -20,8 +21,14 @@ def draw_panel(x: int, y: int, width: int, height: int, title: str, bg_color=(20
 
 
 def draw_slider(
-    x: int, y: int, width: int, height: int,
-    label: str, value: float, min_val: float, max_val: float,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    label: str,
+    value: float,
+    min_val: float,
+    max_val: float,
     format_str: str = "{:.2f}",
 ) -> float:
     if rl is None:
@@ -54,7 +61,7 @@ def draw_button(x: int, y: int, width: int, height: int, text: str, active: bool
     if rl is None:
         return False
     mouse = rl.get_mouse_position()
-    hover = (x <= mouse.x <= x + width and y <= mouse.y <= y + height)
+    hover = x <= mouse.x <= x + width and y <= mouse.y <= y + height
 
     bg = (0, 160, 240, 255) if active else ((55, 68, 85, 255) if hover else (40, 48, 60, 255))
     rl.draw_rectangle(x, y, width, height, bg)

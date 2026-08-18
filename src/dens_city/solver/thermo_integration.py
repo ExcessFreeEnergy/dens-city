@@ -1,4 +1,5 @@
 from typing import Callable
+
 import numpy as np
 
 KB = 1.380649e-23
@@ -51,7 +52,7 @@ def compute_grand_potential(
 
     # Ideal free energy: F_id = k_B T \int \rho(z) [ln(\Lambda^3 \rho(z)) - 1] dz
     rho_safe = np.maximum(rho, 1e-15)
-    f_id = KB * T * np.sum(rho_safe * (np.log(rho_safe * (lambda_db ** 3)) - 1.0)) * dz
+    f_id = KB * T * np.sum(rho_safe * (np.log(rho_safe * (lambda_db**3)) - 1.0)) * dz
 
     # Excess free energy via line integration
     f_ex = compute_excess_free_energy(c1_functional, rho, T, z_coords)
@@ -80,7 +81,7 @@ def compute_bulk_pressure(
     c1_val = float(np.mean(c1_arr))
 
     f_ex = compute_excess_free_energy(c1_functional, rho_arr, T, z_coords)
-    volume = L_z * 1.0 * 1.0 # 1D per unit area
+    volume = L_z * 1.0 * 1.0  # 1D per unit area
     f_ex_density = f_ex / volume
 
     pressure = KB * T * rho_bulk * (1.0 - c1_val) - f_ex_density

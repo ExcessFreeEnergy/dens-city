@@ -1,8 +1,9 @@
 from typing import Callable, Dict, List, Tuple
+
 import numpy as np
 
 from dens_city.solver.picard_solver import CdftPicardSolver
-from dens_city.solver.thermo_integration import compute_bulk_pressure, compute_grand_potential
+from dens_city.solver.thermo_integration import compute_bulk_pressure
 
 KB = 1.380649e-23
 
@@ -11,8 +12,8 @@ def make_graphene_slit_potential(
     H: float,
     L_z: float,
     grid_size: int = 256,
-    epsilon_wall: float = 0.11 * 4.184e-21, # ~0.11 kcal/mol in Joules
-    sigma_wall: float = 3.2,                 # in Angstroms
+    epsilon_wall: float = 0.11 * 4.184e-21,  # ~0.11 kcal/mol in Joules
+    sigma_wall: float = 3.2,  # in Angstroms
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Constructs the 9-3 Lennard-Jones external potential and its derivative
@@ -26,25 +27,25 @@ def make_graphene_slit_potential(
     # Left wall at z = (L_z - H)/2, Right wall at z = (L_z + H)/2
     z_left = (L_z - H) / 2.0
     z_right = (L_z + H) / 2.0
-    prefactor = (2.0 * np.pi * epsilon_wall * (sigma_wall ** 3)) / 3.0
+    prefactor = (2.0 * np.pi * epsilon_wall * (sigma_wall**3)) / 3.0
 
     for i, z in enumerate(z_coords):
         if z < z_left or z > z_right:
-            v_ext[i] = 1e-18 # Hard repulsive boundary
+            v_ext[i] = 1e-18  # Hard repulsive boundary
             continue
 
-        d1 = z - z_left + 1.0 # Offset for graphene surface
+        d1 = z - z_left + 1.0  # Offset for graphene surface
         d2 = z_right - z + 1.0
 
         if d1 > 0.1:
             s_d1 = sigma_wall / d1
-            v_ext[i] += prefactor * ( (2.0 / 15.0) * (s_d1 ** 9) - (s_d1 ** 3) )
-            dv_ext_dz[i] += prefactor * ( -(18.0 / 15.0) * (s_d1 ** 9) / d1 + 3.0 * (s_d1 ** 3) / d1 )
+            v_ext[i] += prefactor * ((2.0 / 15.0) * (s_d1**9) - (s_d1**3))
+            dv_ext_dz[i] += prefactor * (-(18.0 / 15.0) * (s_d1**9) / d1 + 3.0 * (s_d1**3) / d1)
 
         if d2 > 0.1:
             s_d2 = sigma_wall / d2
-            v_ext[i] += prefactor * ( (2.0 / 15.0) * (s_d2 ** 9) - (s_d2 ** 3) )
-            dv_ext_dz[i] -= prefactor * ( -(18.0 / 15.0) * (s_d2 ** 9) / d2 + 3.0 * (s_d2 ** 3) / d2 )
+            v_ext[i] += prefactor * ((2.0 / 15.0) * (s_d2**9) - (s_d2**3))
+            dv_ext_dz[i] -= prefactor * (-(18.0 / 15.0) * (s_d2**9) / d2 + 3.0 * (s_d2**3) / d2)
 
     return z_coords, v_ext, dv_ext_dz
 
@@ -73,9 +74,7 @@ def compute_confinement_isotherm(
         dz = z_coords[1] - z_coords[0]
 
         # Solve equilibrium profile
-        rho, converged, it, res = solver.solve(
-            z_coords, v_ext, T=T, mu=-3200.0 * KB, rho_bulk=rho_bulk
-        )
+        rho, converged, it, res = solver.solve(z_coords, v_ext, T=T, mu=-3200.0 * KB, rho_bulk=rho_bulk)
 
         # Structural route to effective pressure: \tilde{P} = - \int \rho(z) (dV_wall / dz) dz
         p_eff = -np.sum(rho * dv_ext_dz) * dz

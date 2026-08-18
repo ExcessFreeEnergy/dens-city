@@ -1,4 +1,5 @@
 from typing import Callable, Tuple
+
 import numpy as np
 import torch
 
@@ -20,7 +21,7 @@ def compute_radial_c2(
     z_coords = np.linspace(0, L_z, grid_size, endpoint=False)
 
     rho_t = torch.full((1, grid_size), rho_bulk, dtype=torch.float32, requires_grad=True)
-    c1_t = torch_c1_fn(rho_t, T) # [1, grid_size]
+    c1_t = torch_c1_fn(rho_t, T)  # [1, grid_size]
 
     # Compute Jacobian row by row or centered at midpoint
     mid = grid_size // 2
@@ -52,7 +53,7 @@ def compute_structure_factor(
 
     for i, k in enumerate(k_vals):
         if k == 0.0:
-            c2_k = 2.0 * np.sum(c2_r) * dr # 1D Fourier zero mode
+            c2_k = 2.0 * np.sum(c2_r) * dr  # 1D Fourier zero mode
         else:
             c2_k = 2.0 * np.sum(c2_r * np.cos(k * r_coords)) * dr
 

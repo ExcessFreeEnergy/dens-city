@@ -1,7 +1,5 @@
 import argparse
-import math
-import sys
-from pathlib import Path
+
 import numpy as np
 
 try:
@@ -10,7 +8,7 @@ except ImportError:
     rl = None
 
 from dens_city.envs.env import DensCityFluidEnv
-from dens_city.ui.widgets import draw_panel, draw_slider, draw_button
+from dens_city.ui.widgets import draw_button, draw_panel, draw_slider
 
 
 def run_viewer(functional_path: str = "dens_functional.pt"):
@@ -58,7 +56,6 @@ def run_viewer(functional_path: str = "dens_functional.pt"):
 
         rho = env.rho
         phi_r = env.phi_R
-        z_coords = env.z_coords
         max_rho = max(0.06, float(np.max(rho)))
 
         # Draw grid lines
@@ -94,7 +91,9 @@ def run_viewer(functional_path: str = "dens_functional.pt"):
 
         # 2. Control Panel (Right)
         draw_panel(840, 20, 420, 480, "Closed-Loop Control Parameters")
-        target_filling = draw_slider(860, 60, 380, 40, "Target Pore Filling Fraction (theta*)", target_filling, 0.05, 0.95, "{:.2f}")
+        target_filling = draw_slider(
+            860, 60, 380, 40, "Target Pore Filling Fraction (theta*)", target_filling, 0.05, 0.95, "{:.2f}"
+        )
         phi_0 = draw_slider(860, 120, 380, 40, "Harmonic Voltage Amplitude phi_0 (V)", phi_0, -5.0, 5.0, "{:.2f} V")
         mode_m = draw_slider(860, 180, 380, 40, "Harmonic Spatial Mode (m)", mode_m, 1.0, 5.0, "{:.0f}")
         v_bias = draw_slider(860, 240, 380, 40, "DC Gate Bias Offset V_bias (V)", v_bias, -2.0, 2.0, "{:.2f} V")
@@ -105,9 +104,19 @@ def run_viewer(functional_path: str = "dens_functional.pt"):
             paused = not paused
 
         # Live Metrics
-        rl.draw_text(f"Current Pore Filling:   {env.current_filling:.3f} (Target: {target_filling:.2f})", 860, 370, 14, (180, 220, 255, 255))
-        rl.draw_text(f"Euler-Lagrange Res:     {float(env._envs_ptr[0].el_residual):.6f}", 860, 400, 14, (180, 220, 255, 255))
-        rl.draw_text(f"Slit Width (L_z):        {float(env._envs_ptr[0].L_z):.1f} A", 860, 430, 14, (180, 220, 255, 255))
+        rl.draw_text(
+            f"Current Pore Filling:   {env.current_filling:.3f} (Target: {target_filling:.2f})",
+            860,
+            370,
+            14,
+            (180, 220, 255, 255),
+        )
+        rl.draw_text(
+            f"Euler-Lagrange Res:     {float(env._envs_ptr[0].el_residual):.6f}", 860, 400, 14, (180, 220, 255, 255)
+        )
+        rl.draw_text(
+            f"Slit Width (L_z):        {float(env._envs_ptr[0].L_z):.1f} A", 860, 430, 14, (180, 220, 255, 255)
+        )
         rl.draw_text(f"Temperature (T):         {float(env._envs_ptr[0].T):.1f} K", 860, 460, 14, (180, 220, 255, 255))
 
         # 3. 2D Slit-Pore Fluid Meniscus Visualization (Bottom)
@@ -135,7 +144,9 @@ def run_viewer(functional_path: str = "dens_functional.pt"):
 
 def main():
     parser = argparse.ArgumentParser(description="dens-city Real-Time Raylib Scientific Dashboard")
-    parser.add_argument("--functional", type=str, default="dens_functional.pt", help="Path to trained neural functional")
+    parser.add_argument(
+        "--functional", type=str, default="dens_functional.pt", help="Path to trained neural functional"
+    )
     args = parser.parse_args()
     run_viewer(functional_path=args.functional)
 

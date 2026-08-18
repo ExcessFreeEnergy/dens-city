@@ -1,7 +1,7 @@
 import ctypes
-import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
+
 import numpy as np
 
 # Load native shared library

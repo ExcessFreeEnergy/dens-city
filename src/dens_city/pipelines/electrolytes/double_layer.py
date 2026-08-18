@@ -1,4 +1,5 @@
 from typing import Callable, Dict, List, Tuple
+
 import numpy as np
 
 KB = 1.380649e-23
@@ -7,12 +8,12 @@ E_CHARGE = 1.602176634e-19
 
 def solve_electric_double_layer(
     c1_functional: Callable[[np.ndarray, float], np.ndarray],
-    voltage: float, # in Volts
+    voltage: float,  # in Volts
     T: float = 300.0,
-    rho_bulk: float = 0.005, # ~0.005 A^-3 (~8.3 M)
+    rho_bulk: float = 0.005,  # ~0.005 A^-3 (~8.3 M)
     L_z: float = 40.0,
     grid_size: int = 256,
-    kappa_inv: float = 5.0, # 5.0 A for RPM electrolyte
+    kappa_inv: float = 5.0,  # 5.0 A for RPM electrolyte
 ) -> Dict[str, np.ndarray]:
     """
     Solves the Electric Double Layer structure for a 1:1 RPM electrolyte

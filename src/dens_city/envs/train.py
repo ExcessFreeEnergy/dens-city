@@ -1,18 +1,16 @@
 import argparse
-import os
-import sys
 import time
-from pathlib import Path
 from typing import Tuple
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from dens_city.envs.env import DensCityFluidEnv
+
 # Disable cuDNN to use native robust CUDA 1D conv kernels without version mismatch
 torch.backends.cudnn.enabled = False
-
-from dens_city.envs.env import DensCityFluidEnv
 
 
 class ResidualBlock1D(nn.Module):
@@ -81,7 +79,7 @@ class DensNeuralFunctional(nn.Module):
         grid_feats = obs[:, :768].view(b_size, 3, 256)
         scalars = obs[:, 768:]
 
-        feats = self.encoder(grid_feats) # [B, hidden_dim, 256]
+        feats = self.encoder(grid_feats)  # [B, hidden_dim, 256]
 
         # c1 functional output [B, 256]
         c1_pred = self.c1_head(feats).squeeze(1)
@@ -90,7 +88,7 @@ class DensNeuralFunctional(nn.Module):
         rho_h_pred = self.hyper_head(feats).squeeze(1)
 
         # Global features for RL
-        pooled = self.rl_pool(feats).squeeze(2) # [B, hidden_dim]
+        pooled = self.rl_pool(feats).squeeze(2)  # [B, hidden_dim]
         combined = torch.cat([pooled, scalars], dim=1)
         rl_feats = self.rl_fc(combined)
 
@@ -99,7 +97,9 @@ class DensNeuralFunctional(nn.Module):
 
         return action_mean, value, c1_pred, rho_h_pred
 
-    def get_action(self, obs: torch.Tensor, deterministic: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def get_action(
+        self, obs: torch.Tensor, deterministic: bool = False
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         action_mean, value, _, _ = self(obs)
         if deterministic:
             return torch.tanh(action_mean), torch.zeros(1), value
@@ -214,9 +214,8 @@ def train_unified(
                 value_loss = 0.5 * ((value.squeeze(-1) - mb_ret) ** 2).mean()
 
                 # Self-consistent Euler-Lagrange residual loss on c1 functional
-                # c1_target = ln(rho/rho_b) + beta*(V_ext - mu)
+                # c1_target = ln(rho/rho_b) + beta*(phi_r - mu)
                 rho = mb_obs[:, :256]
-                v_ext = mb_obs[:, 256:512]
                 phi_r = mb_obs[:, 512:768]
                 beta = 1.0 / (1.380649e-23 * 300.0)
                 c1_target = torch.log(torch.clamp(rho / 0.033, min=1e-4)) + beta * (phi_r - (-3000.0 * 1.380649e-23))
@@ -231,14 +230,19 @@ def train_unified(
 
         elapsed = time.time() - start_time
         sps = int(steps_done / elapsed) if elapsed > 0 else 0
-        print(f"[dens-city] Steps: {steps_done}/{total_timesteps} | SPS: {sps} | PolLoss: {policy_loss.item():.4f} | ValLoss: {value_loss.item():.4f}")
+        print(
+            f"[dens-city] Steps: {steps_done}/{total_timesteps} | SPS: {sps} | PolLoss: {policy_loss.item():.4f} | ValLoss: {value_loss.item():.4f}"
+        )
 
     # Save trained functional directly
-    torch.save({
-        "state_dict": model.state_dict(),
-        "total_timesteps": steps_done,
-        "arch": "DensNeuralFunctional_ResNet1D",
-    }, save_path)
+    torch.save(
+        {
+            "state_dict": model.state_dict(),
+            "total_timesteps": steps_done,
+            "arch": "DensNeuralFunctional_ResNet1D",
+        },
+        save_path,
+    )
     print(f"[dens-city] Direct Training Complete! Trained functional saved to '{save_path}'.")
 
 

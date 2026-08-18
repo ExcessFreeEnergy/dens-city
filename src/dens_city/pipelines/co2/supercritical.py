@@ -1,8 +1,9 @@
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List
+
 import numpy as np
 import torch
 
-from dens_city.solver.correlation import compute_radial_c2, compute_structure_factor, compute_isothermal_compressibility
+from dens_city.solver.correlation import compute_isothermal_compressibility, compute_radial_c2, compute_structure_factor
 
 
 def compute_supercritical_crossovers(
@@ -19,16 +20,12 @@ def compute_supercritical_crossovers(
     k_vals = np.linspace(0.0, 5.0, 100)
     chi_t_map = np.zeros((len(temperatures), len(densities)), dtype=np.float64)
     corr_len_map = np.zeros((len(temperatures), len(densities)), dtype=np.float64)
-    fw_indicator_map = np.zeros((len(temperatures), len(densities)), dtype=np.float64)
 
     widom_chi_t = []
     widom_xi = []
     fisher_widom_densities = []
 
     for t_idx, T in enumerate(temperatures):
-        chi_row = []
-        xi_row = []
-
         for d_idx, rho_b in enumerate(densities):
             r_coords, c2_r = compute_radial_c2(torch_c1_fn, rho_b, T)
             s_k = compute_structure_factor(c2_r, r_coords, rho_b, k_vals)

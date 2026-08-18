@@ -1,6 +1,7 @@
 import os
-import pytest
+
 import torch
+
 from dens_city.envs.train import DensNeuralFunctional, train_unified
 
 

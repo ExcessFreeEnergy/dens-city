@@ -1,4 +1,5 @@
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List
+
 import numpy as np
 
 from dens_city.solver.picard_solver import CdftPicardSolver
@@ -7,7 +8,7 @@ from dens_city.solver.picard_solver import CdftPicardSolver
 def compute_water_binodal(
     c1_functional: Callable[[np.ndarray, float], np.ndarray],
     temperatures: List[float],
-    L_z: float = 200.0, # 20 nm
+    L_z: float = 200.0,  # 20 nm
     grid_size: int = 256,
 ) -> Dict[str, np.ndarray]:
     """
@@ -16,7 +17,7 @@ def compute_water_binodal(
     """
     solver = CdftPicardSolver(c1_functional, grid_size=grid_size, alpha_mix=0.10, max_iter=3000)
     z_coords = np.linspace(0, L_z, grid_size)
-    v_ext = np.zeros(grid_size) # V_ext = 0 for free interface
+    v_ext = np.zeros(grid_size)  # V_ext = 0 for free interface
 
     rho_v_list = []
     rho_l_list = []
@@ -24,7 +25,7 @@ def compute_water_binodal(
 
     for T in temperatures:
         # Target average density is halfway between liquid and vapor
-        target_avg = 0.0165 # A^-3
+        target_avg = 0.0165  # A^-3
 
         # Step function initial guess: liquid in center, vapor at boundaries
         rho_init = np.full(grid_size, 0.002)

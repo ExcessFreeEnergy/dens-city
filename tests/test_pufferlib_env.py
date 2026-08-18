@@ -1,5 +1,5 @@
-import pytest
 import numpy as np
+
 from dens_city.envs.env import DensCityFluidEnv
 
 
