@@ -11,7 +11,7 @@ With current methods, simulating dense molecular liquids like water, supercritic
 
 Classical Density Functional Theory (cDFT) is the exact statistical-mechanical bridge between these two worlds. In theory, if you know the intrinsic excess free energy functional $\mathcal{F}^{\rm ex}[\rho]$, you can predict the exact equilibrium structure, phase coexistence, and interfacial surface tension of any fluid system by simply minimizing a grand potential functional $\Omega[\rho]$. This project is the first step in solving the exact functional for real-world polar and anisotropic molecular fluids.
 
-While Grand Canonical Monte Carlo (GCMC) samples fluid densities and extracts the one-body direct correlation function $c^{(1)}(r)$, standard GCMC is notoriously brutal on CPU clusters. Inserting and deleting rigid molecules into dense, subcritical liquid water has acceptance rates well under 0.01%. Much of the current research focuses on workarounds for generating even modest datasets. For non-spherical linear molecules, the joint positional and orientational space $(x, \theta, \phi)$ blows up GPU VRAM instantly. I entirely solve this problem by relying on recent RL engineering accomplishments in PufferLib.
+While Grand Canonical Monte Carlo (GCMC) samples fluid densities and extracts the one-body direct correlation function $c^{(1)}(r)$, standard GCMC is notoriously brutal on CPU clusters. Inserting and deleting rigid molecules into dense, subcritical liquid water has acceptance rates well under 0.01%. Furthermore, for non-spherical linear molecules, the joint positional and orientational space $(x, \theta, \phi)$ blows up GPU memory during neural network training. I solve the simulation throughput bottleneck using vectorized zero-copy PufferLib C environments and resolve high-dimensional orientational scaling with Convoluted Operator Learning (COLN).
 
 `dens-city` is the result of several modern research paths and engineering breakthroughs fused into a cohesive codebase:
 
@@ -55,14 +55,14 @@ Validation against published benchmarks in **Bui & Cox (2026)** ([arXiv:2603.204
 
 | Property | Expt (NIST) | `dens-city` | SCAN | RPBE | TIP4P | Error vs. Expt |
 |---|---|---|---|---|---|---|
-| **$T_c$ (Critical Temp)** | **$647.1\,\text{K}$** | **$660.0\,\text{K}$** | $695.0\,\text{K}$ | $584.0\,\text{K}$ | $657.0\,\text{K}$ | **+2.0% (Best Match)** |
-| **$\rho_l$ (Liquid at 300K)** | **$33.36\,\text{nm}^{-3}$** | **$33.0\,\text{nm}^{-3}$** | $34.5\,\text{nm}^{-3}$ | $32.8\,\text{nm}^{-3}$ | $33.2\,\text{nm}^{-3}$ | **-1.1%** |
-| **$\rho_v$ (Vapor at 300K)** | **$0.001\,\text{nm}^{-3}$** | **$0.002\,\text{nm}^{-3}$** | $0.001\,\text{nm}^{-3}$ | $0.003\,\text{nm}^{-3}$ | $0.001\,\text{nm}^{-3}$ | **Order Match** |
-| **$\Delta H$ (Layer Spacing)** | **$\sim 0.31\,\text{nm}$** | **$\sim 0.32\,\text{nm}$** | $\sim 0.31\,\text{nm}$ | $\sim 0.32\,\text{nm}$ | $\sim 0.31\,\text{nm}$ | **Discrete Layering** |
-| **$\chi_T$ (Compressibility)** | **$4.59 \times 10^{-10}$** | **$4.82 \times 10^{-10}$** | $5.20 \times 10^{-10}$ | $4.10 \times 10^{-10}$ | $4.65 \times 10^{-10}$ | **+5.0%** |
-| **$P$ RMSE (Pressure)** | **Exact EOS** | **$0.29 \times 10^3\,\text{atm}$** | $0.79 \times 10^3$ | $0.33 \times 10^3$ | $0.21 \times 10^3$ | **Beats SCAN DFT** |
-| **$\rho(z)$ RMSE (Profile)** | **Atomistic** | **$0.42\,\text{nm}^{-3}$** | $0.58\,\text{nm}^{-3}$ | $0.64\,\text{nm}^{-3}$ | $0.24\,\text{nm}^{-3}$ | **Sub-Ångström** |
-| **Throughput** | **N/A** | **>480,000 steps/s** | CPU (~hours) | CPU (~hours) | CPU (~hours) | **>10,000x Speedup** |
+| **$T_c$ (Critical Temp, $\text{K}$)** | **$647.1$** | **$660.0$** | $695.0$ | $584.0$ | $657.0$ | **+2.0% (Best Match)** |
+| **$\rho_l$ (Liquid at 300K, $\text{nm}^{-3}$)** | **$33.36$** | **$33.0$** | $34.5$ | $32.8$ | $33.2$ | **-1.1%** |
+| **$\rho_v$ (Vapor at 300K, $\text{nm}^{-3}$)** | **$0.001$** | **$0.002$** | $0.001$ | $0.003$ | $0.001$ | **Order Match** |
+| **$\Delta H$ (Layer Spacing, $\text{nm}$)** | **$\sim 0.31$** | **$\sim 0.32$** | $\sim 0.31$ | $\sim 0.32$ | $\sim 0.31$ | **Discrete Layering** |
+| **$\chi_T$ (Compressibility, $\text{Pa}^{-1}$)** | **$4.59 \times 10^{-10}$** | **$4.82 \times 10^{-10}$** | $5.20 \times 10^{-10}$ | $4.10 \times 10^{-10}$ | $4.65 \times 10^{-10}$ | **+5.0%** |
+| **$P$ RMSE (Pressure, $\text{atm}$)** | **Exact EOS** | **$0.29 \times 10^3$** | $0.79 \times 10^3$ | $0.33 \times 10^3$ | $0.21 \times 10^3$ | **Beats SCAN DFT** |
+| **$\rho(z)$ RMSE (Profile, $\text{nm}^{-3}$)** | **Atomistic** | **$0.42$** | $0.58$ | $0.64$ | $0.24$ | **Sub-Ångström** |
+| **Throughput (Steps/sec)** | **N/A** | **>480,000** | CPU (~hours) | CPU (~hours) | CPU (~hours) | **>10,000x Speedup** |
 
 ---
 
