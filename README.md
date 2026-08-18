@@ -11,7 +11,7 @@ With current methods, simulating dense molecular liquids like water, supercritic
 
 Classical Density Functional Theory (cDFT) is the exact statistical-mechanical bridge between these two worlds. In theory, if you know the intrinsic excess free energy functional $\mathcal{F}_{\text{intr}}^{\text{ex}}[\rho]$, you can predict the exact equilibrium structure, phase coexistence, and interfacial surface tension of any fluid system by simply minimizing a grand potential functional $\Omega[\rho]$. This project is the first step in solving the exact functional for real-world polar and anisotropic molecular fluids.
 
-While Grand Canonical Monte Carlo (GCMC) samples fluid densities and extracts the one-body direct correlation function $c^{(1)}(\mathbf{r})$, standard GCMC is notoriously brutal on CPU clusters. Inserting and deleting rigid molecules into dense, subcritical liquid water has acceptance rates well under $0.01\%$. Much of the current research focuses on workarounds for generating even modest datasets. Non-spherical linear molecules the joint positional and orientational space $(x, \theta, \phi)$ blows up GPU VRAM instantly. I \*entirely solve\* this problem by relying on recent RL engineering acomplishments in PufferLib.
+While Grand Canonical Monte Carlo (GCMC) samples fluid densities and extracts the one-body direct correlation function $c^{(1)}(\mathbf{r})$, standard GCMC is notoriously brutal on CPU clusters. Inserting and deleting rigid molecules into dense, subcritical liquid water has acceptance rates well under $0.01\%$. Much of the current research focuses on workarounds for generating even modest datasets. I \*entirely solve\* this problem by relying on recent RL engineering acomplishments in PufferLib.
 
 `dens-city` is the result of several modern research paths and engineering breakthrus fused into a cohesive codebase:
 
@@ -89,14 +89,29 @@ pytest tests/ -v
 # Unified Single-Run PufferLib Direct Training
 python -m dens_city.envs.train --timesteps 50000 --envs 16 --save dens_functional.pt
 
-# Execute Water Nanoconfinement & Binodal Pipeline
+# 1. Execute Water Nanoconfinement & Binodal Pipeline
 dens-city water
 
-# Execute Supercritical CO2 Crossover Pipeline
+# 2. Execute Supercritical CO2 Crossover Pipeline
 dens-city co2
 
-# Execute RPM Electrolyte Pipeline
+# 3. Execute RPM Electrolyte Double Layer Pipeline
 dens-city electrolytes
+
+# 4. Execute Binary CO2 / H2O Mutual Solubility & Slit Adsorption Pipeline
+dens-city co2-water
+
+# 5. Execute N2 Linear Diatomic Flue Gas Separation Pipeline
+dens-city nitrogen
+
+# 6. Execute Methane (CH4) Shale Gas Recovery Pipeline
+dens-city methane
+
+# 7. Execute Montmorillonite Clay Mineral Swelling Pipeline
+dens-city clay
+
+# 8. Execute Nematic Liquid Crystals & Patchy Particles Pipeline
+dens-city liquid-crystals
 
 # Launch Real-Time Raylib Scientific Dashboard
 dens-city ui --functional dens_functional.pt
