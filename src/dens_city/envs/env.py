@@ -55,13 +55,9 @@ class CCdftEnvStruct(ctypes.Structure):
 if _env_lib is not None:
     _env_lib.cdft_env_create.argtypes = [ctypes.c_int, ctypes.c_uint64]
     _env_lib.cdft_env_create.restype = ctypes.POINTER(CCdftEnvStruct)
-
     _env_lib.cdft_env_destroy.argtypes = [ctypes.POINTER(CCdftEnvStruct)]
-
     _env_lib.cdft_env_reset.argtypes = [ctypes.POINTER(CCdftEnvStruct), ctypes.c_int]
     _env_lib.cdft_env_step.argtypes = [ctypes.POINTER(CCdftEnvStruct), ctypes.c_int]
-    _env_lib.cdft_env_compute_restructuring_phi_r.argtypes = [ctypes.POINTER(CCdftEnvStruct)]
-    _env_lib.cdft_env_picard_relaxation_step.argtypes = [ctypes.POINTER(CCdftEnvStruct), ctypes.c_float]
 
 
 class DensCityFluidEnv:
