@@ -29,20 +29,20 @@ The result is a platform that delivers sub-Ångström atomistic accuracy, predic
 
 | Compute Step | Formula / Physical Operation | Implemented in `dens-city` |
 |---|---|---|
-| **1. Grand Potential Minimization** | $\Omega = \mathcal{F}_{\text{intr}}^{\text{id}} + \mathcal{F}_{\text{intr}}^{\text{ex}} + \int dz \, \rho(z)(V_{\text{ext}}(z) - \mu)$ | `solver/thermo_integration.py` |
-| **2. Euler–Lagrange Direct Inversion** | $c^{(1)}(z) = \ln(\zeta^{-1}\Lambda^3\rho(z)) + \beta(V_{\text{ext}}(z) - \mu)$ | Embedded in `envs/dens_city_env.c` |
-| **3. Short-Range Reference Splitting (LMFT)** | $c^{(1)}(z) = c_{\text{R}}^{(1)}(z) - \beta\Delta\mu_{\text{SL}} + \beta\phi_{\text{R}}(z)$ | Embedded in `envs/dens_city_env.c` |
-| **4. 1D Fourier Restructuring Potential** | $\phi_{\text{R}}(z) = \phi(z) + \frac{1}{L_z} \sum_{k \neq 0} \frac{4\pi}{k^2} \tilde{n}(k) e^{ikz} e^{-k^2/4\kappa^2}$ | Native C FFT in `envs/dens_city_env.c` |
-| **5. Stillinger–Lovett Thermodynamic Shift** | $\Delta\mu_{\text{SL}} = \frac{1}{2\beta\rho_b\kappa^{-3}\sqrt{\pi}^3}\left(\frac{\epsilon-1}{\epsilon}\right) - \frac{2\rho_b^2}{3\kappa^{-3}\sqrt{\pi}}$ | Native C in `core/engine.cpp` |
-| **6. 3D Long-Range Ewald Electrostatics** | $U_{\text{recip}} = \frac{1}{2V} \sum_{\mathbf{k} \neq 0} \frac{4\pi}{k^2} e^{-k^2/4\alpha^2} \|\tilde{\rho}(\mathbf{k})\|^2 - \frac{\alpha}{\sqrt{\pi}}\sum_i q_i^2$ | Native C++/CUDA in `core/engine.cpp` & `core/cuda_kernels.cu` |
-| **7. Convoluted Operator Learning (COLN)** | $c_1(x, \theta, \phi) = \sum_{l,m} c_{ml}(x, \bar{\rho}) Y_{ml}(\theta, \phi) \cdot [1 + \hat{\rho}_{\text{ang}}(\theta, \phi)]$ | `models/coln.py` |
-| **8. 3D Orientational Nematic Order Parameter** | $S_{\text{order}}(z) = \frac{1}{\bar{\rho}(z)} \int d\Omega \, \rho(z, \theta, \phi) \left(\frac{3\cos^2\theta - 1}{2}\right)$ | `pipelines/co2/supercritical.py` |
-| **9. Polarizable Buckingham Exp-6 Gaussian Charges** | $u(r) = \frac{q_i q_j}{4\pi\epsilon_0 r}\text{erf}\left(\frac{r}{\sqrt{2(\sigma_i^2 + \sigma_j^2)}}\right) + A_{ij}e^{-B_{ij}r} - \frac{C_{ij}}{r^6}$ | `core/engine.cpp` & `core/cuda_kernels.cu` |
-| **10. Hyper-DFT Atomic Hyperdensity** | $\rho_{\text{H}}(z) = \rho_{\text{H}}^{(1)}(z; [\rho_{\text{O}}], T)$ (Oxygen $\to$ Hydrogen profile) | Multi-head output in `envs/train.py` |
-| **11. Excess Free Energy Line Integration** | $\mathcal{F}_{\text{intr}}^{\text{ex}}[\rho] = -k_B T \int_0^1 d\lambda \int dz \, c^{(1)}(z; [\lambda\rho], T) \rho(z)$ | `solver/thermo_integration.py` |
-| **12. Bulk Pressure Equation of State** | $P(\rho_b, T) = k_B T \rho_b(1 - c^{(1)}) - \frac{\mathcal{F}_{\text{intr}}^{\text{ex}}}{V}$ | `solver/thermo_integration.py` |
-| **13. Direct Correlation & Structure Factor** | $S(k) = \frac{1}{1 - \rho_b \hat{c}_r^{(2)}(k)}$ where $c_r^{(2)} = -\frac{\delta c^{(1)}}{\delta \rho}$ | Auto-diff in `solver/correlation.py` |
-| **14. Confinement Effective & Disjoining Pressure** | $\tilde{P}(H) = P + \Pi(H) = -\int dz \, \rho(z) \frac{dV_{\text{wall}}}{dz}$ | `pipelines/water/confinement.py` |
+| **1. Grand Potential Minimization** | $\Omega[\rho] = \mathcal{F}^{\rm id}[\rho] + \mathcal{F}^{\rm ex}[\rho] + \int dz \, \rho(z)(V^{\rm ext}(z) - \mu)$ | `solver/thermo_integration.py` |
+| **2. Euler–Lagrange Direct Inversion** | $c^{(1)}(z) = \ln(\zeta^{-1}\Lambda^3\rho(z)) + \beta(V^{\rm ext}(z) - \mu)$ | Embedded in `envs/dens_city_env.c` |
+| **3. Short-Range Reference Splitting (LMFT)** | $c^{(1)}(z) = c_{\rm R}^{(1)}(z) - \beta\Delta\mu^{\rm SL} + \beta\phi^{\rm R}(z)$ | Embedded in `envs/dens_city_env.c` |
+| **4. 1D Fourier Restructuring Potential** | $\phi^{\rm R}(z) = \phi(z) + \frac{1}{L_z} \sum_{k \neq 0} \frac{4\pi}{k^2} \tilde{n}(k) e^{ikz} e^{-k^2/4\kappa^2}$ | Native C FFT in `envs/dens_city_env.c` |
+| **5. Stillinger–Lovett Thermodynamic Shift** | $\Delta\mu^{\rm SL} = \frac{1}{2\beta\rho_b\kappa^{-3}\sqrt{\pi}^3}\left(\frac{\epsilon-1}{\epsilon}\right) - \frac{2\rho_b^2}{3\kappa^{-3}\sqrt{\pi}}$ | Native C in `core/engine.cpp` |
+| **6. 3D Long-Range Ewald Electrostatics** | $U_{\rm recip} = \frac{1}{2V} \sum_{\mathbf{k} \neq 0} \frac{4\pi}{k^2} e^{-k^2/4\alpha^2} \|\tilde{\rho}(\mathbf{k})\|^2 - \frac{\alpha}{\sqrt{\pi}}\sum_i q_i^2$ | Native C++/CUDA in `core/engine.cpp` & `core/cuda_kernels.cu` |
+| **7. Convoluted Operator Learning (COLN)** | $c_1(x, \theta, \phi) = \sum_{l,m} c_{ml}(x, \bar{\rho}) Y_{ml}(\theta, \phi) \cdot [1 + \hat{\rho}(\theta, \phi)]$ | `models/coln.py` |
+| **8. 3D Orientational Nematic Order Parameter** | $S_{\rm order}(z) = \frac{1}{\bar{\rho}(z)} \int d\Omega \, \rho(z, \theta, \phi) \left(\frac{3\cos^2\theta - 1}{2}\right)$ | `pipelines/co2/supercritical.py` |
+| **9. Polarizable Buckingham Exp-6 Gaussian Charges** | $u(r) = \frac{q_i q_j}{4\pi\epsilon_0 r}\text{erf}\left(\frac{r}{\sqrt{2}(\sigma_i^2 + \sigma_j^2)}}\right) + A_{ij}e^{-B_{ij}r} - \frac{C_{ij}}{r^6}$ | `core/engine.cpp` & `core/cuda_kernels.cu` |
+| **10. Hyper-DFT Atomic Hyperdensity** | $\rho_{\rm H}(z) = \rho_{\rm H}^{(1)}(z; [\rho_{\rm O}], T)$ | Multi-head output in `envs/train.py` |
+| **11. Excess Free Energy Line Integration** | $\mathcal{F}^{\rm ex}[\rho] = -k_B T \int_0^1 d\lambda \int dz \, c^{(1)}(z; [\lambda\rho], T) \rho(z)$ | `solver/thermo_integration.py` |
+| **12. Bulk Pressure Equation of State** | $P(\rho_b, T) = k_B T \rho_b(1 - c^{(1)}) - \frac{\mathcal{F}^{\rm ex}}{V}$ | `solver/thermo_integration.py` |
+| **13. Direct Correlation & Structure Factor** | $S(k) = \frac{1}{1 - \rho_b \hat{c}^{(2)}(k)}$ where $c^{(2)} = -\frac{\delta c^{(1)}}{\delta \rho}$ | Auto-diff in `solver/correlation.py` |
+| **14. Confinement Effective & Disjoining Pressure** | $\tilde{P}(H) = P + \Pi(H) = -\int dz \, \rho(z) \frac{dV_{\rm wall}}{dz}$ | `pipelines/water/confinement.py` |
 | **15. Supercritical Fisher–Widom Line** | Crossover of total correlation $h(r)$: $\alpha_0 = \tilde{\alpha}_0$ | `pipelines/co2/supercritical.py` |
 | **16. Supercritical Widom Lines** | Maxima of correlation length $\xi = 1/\alpha_0$ and compressibility $\chi_T$ | `pipelines/co2/supercritical.py` |
 | **17. Constrained Binodal Minimization** | Picard relaxation with Anderson acceleration and fixed $\bar{\rho}_L$ | `solver/picard_solver.py` |
