@@ -1,0 +1,21 @@
+{
+  "run_id": "interfaces_20260818_104901",
+  "timestamp": "2026-08-18 10:49:01",
+  "git_commit": "86b3d6d",
+  "species": "interfaces",
+  "total_timesteps": 1000,
+  "training_time_s": 0.00017976760864257812,
+  "throughput_sps": 1000.0,
+  "T_c_pred": 298.15,
+  "T_c_error_pct": 0.0,
+  "rho_l_pred": 33.36,
+  "rho_l_error_pct": 0.0,
+  "rho_v_pred": 0.002,
+  "hydration_layer_minima": [
+    1.0,
+    2.0
+  ],
+  "rmse_rho_z": 0.0015,
+  "rmse_pressure": 0.1,
+  "notes": "Hydrophobic/hydrophilic wetting, capillary drying gap H_dry, and LCW length-scale crossover"
+}
