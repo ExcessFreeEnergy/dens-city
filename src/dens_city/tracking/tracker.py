@@ -59,12 +59,19 @@ class ExperimentTracker:
         rmse_pressure: float,
         notes: str = "",
     ) -> RunMetrics:
-        # Experimental ground truths (Water)
-        T_c_expt = 647.1  # K
-        rho_l_expt = 33.36  # nm^-3 (at 300K)
+        # Species-specific experimental ground truths
+        if species.lower() == "co2":
+            T_c_expt = 304.1  # K (NIST)
+            rho_l_expt = 0.015  # A^-3 (Liquid CO2 at 300K)
+        elif species.lower() == "electrolytes":
+            T_c_expt = 0.05  # Reduced RPM
+            rho_l_expt = 0.02
+        else:
+            T_c_expt = 647.1  # K (NIST Water)
+            rho_l_expt = 33.36  # nm^-3 (at 300K)
 
         t_c_err = ((T_c_pred - T_c_expt) / T_c_expt) * 100.0
-        rho_l_err = ((rho_l_pred - rho_l_expt) / rho_l_expt) * 100.0
+        rho_l_err = ((rho_l_pred - rho_l_expt) / max(1e-6, rho_l_expt)) * 100.0
 
         run_id = f"{species}_{time.strftime('%Y%m%d_%H%M%S')}"
         record = RunMetrics(
