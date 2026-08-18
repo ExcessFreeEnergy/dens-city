@@ -47,6 +47,36 @@ def main():
     subparsers.add_parser("argon", help="Run pure Lennard-Jones Argon coexistence & FMT pipeline")
     subparsers.add_parser("interfaces", help="Run hydrophobic/hydrophilic wetting & capillary drying pipeline")
 
+    # 11. Helium-4 quantum pipeline
+    subparsers.add_parser("helium", help="Run Helium-4 quantum NQE Feynman-Hibbs pipeline")
+
+    # 12. RTIL pipeline
+    subparsers.add_parser("rtil", help="Run [BMIM][PF6] RTIL steric double-layer & camel capacitance pipeline")
+
+    # 13. Polyethylene polymer pipeline
+    subparsers.add_parser("polyethylene", help="Run Polyethylene Wertheim TPT1 chain confinement pipeline")
+
+    # 14. Liquid Gallium pipeline
+    subparsers.add_parser("gallium", help="Run Liquid Gallium electron gas Friedel oscillations pipeline")
+
+    # 15. Water-Ethanol azeotrope pipeline
+    subparsers.add_parser("azeotrope", help="Run Water-Ethanol non-ideal VLE azeotrope pipeline")
+
+    # 16. SDS surfactant pipeline
+    subparsers.add_parser("sds", help="Run SDS amphiphilic self-assembly and micellization pipeline")
+
+    # 17. HF associating pipeline
+    subparsers.add_parser("hf", help="Run Hydrogen Fluoride 1D chain and hexamer association pipeline")
+
+    # 18. Colloidal depletion pipeline
+    subparsers.add_parser("colloids", help="Run binary colloidal Asakura-Oosawa depletion pipeline")
+
+    # 19. Kob-Andersen glassy pipeline
+    subparsers.add_parser("glass", help="Run Kob-Andersen 80/20 supercooled glass transition pipeline")
+
+    # 20. SF6 steric shielding pipeline
+    subparsers.add_parser("sf6", help="Run Sulfur Hexafluoride octahedral steric shielding pipeline")
+
     # Benchmark / E2E subcommand
     bench_p = subparsers.add_parser("benchmark", help="Execute full end-to-end multi-material simulation & benchmark")
     bench_p.add_argument(
@@ -188,6 +218,80 @@ def main():
         print(f"[dens-city] Critical Capillary Drying Gap: {res_dry['H_dry_nm']:.2f} nm")
         res_lcw = compute_lum_chandler_weeks_crossover()
         print(f"[dens-city] LCW Crossover Scale R_c: {res_lcw['R_c_nm']:.1f} nm")
+    elif args.command == "helium":
+        print("[dens-city] Executing Helium-4 Quantum NQE Pipeline...")
+        from dens_city.pipelines.quantum.helium import run_helium_quantum_simulation
+
+        res_he = run_helium_quantum_simulation()
+        print(f"[dens-city] Helium Predicted T_c: {res_he['T_c_K']:.2f} K (NIST: 5.195 K)")
+    elif args.command == "rtil":
+        print("[dens-city] Executing [BMIM][PF6] RTIL Pipeline...")
+        from dens_city.pipelines.ionic_liquids.rtil import compute_rtil_camel_capacitance
+
+        res_rtil = compute_rtil_camel_capacitance()
+        print(
+            f"[dens-city] RTIL PZC Capacitance: {res_rtil['C_pzc_uF_cm2']:.2f} uF/cm^2, Peak: {res_rtil['C_peak_uF_cm2']:.2f}"
+        )
+    elif args.command == "polyethylene":
+        print("[dens-city] Executing Polyethylene Wertheim TPT1 Pipeline...")
+        from dens_city.pipelines.polymers.polyethylene import run_polyethylene_confinement_simulation
+
+        res_pe = run_polyethylene_confinement_simulation(m_chain=100)
+        print(
+            f"[dens-city] Polyethylene R_g: {res_pe['R_g_nm']:.2f} nm, Depletion: {res_pe['depletion_thickness_nm']:.2f} nm"
+        )
+    elif args.command == "gallium":
+        print("[dens-city] Executing Liquid Gallium Pipeline...")
+        import numpy as np
+
+        from dens_city.pipelines.liquid_metals.gallium import compute_liquid_metal_friedel_profile
+
+        res_ga = compute_liquid_metal_friedel_profile(np.linspace(0, 25, 250))
+        print(
+            f"[dens-city] Gallium Surface Tension: {res_ga['surface_tension_mN_m']:.1f} mN/m, Friedel lambda: {res_ga['lambda_F_A']:.2f} A"
+        )
+    elif args.command == "azeotrope":
+        print("[dens-city] Executing Water-Ethanol Azeotrope Pipeline...")
+        from dens_city.pipelines.azeotropes.water_ethanol import compute_water_ethanol_vle
+
+        res_az = compute_water_ethanol_vle()
+        print(
+            f"[dens-city] Azeotrope: {res_az['wt_azeotrope_pct']:.2f} wt% EtOH at T = {res_az['T_azeotrope_K']:.2f} K"
+        )
+    elif args.command == "sds":
+        print("[dens-city] Executing SDS Surfactant Micellization Pipeline...")
+        from dens_city.pipelines.surfactants.sds import compute_sds_micellization
+
+        res_sds = compute_sds_micellization()
+        print(f"[dens-city] SDS CMC: {res_sds['CMC_mM']:.2f} mM, Aggregation N: {res_sds['aggregation_number_N']:.0f}")
+    elif args.command == "hf":
+        print("[dens-city] Executing Hydrogen Fluoride Associating Pipeline...")
+        from dens_city.pipelines.associating_1d.hf import run_hf_vapor_association_simulation
+
+        res_hf = run_hf_vapor_association_simulation()
+        print(f"[dens-city] HF Z(1atm): {res_hf['Z_at_1atm']:.3f}, T_boiling: {res_hf['T_boiling_K']:.2f} K")
+    elif args.command == "colloids":
+        print("[dens-city] Executing Colloidal Asakura-Oosawa Depletion Pipeline...")
+        from dens_city.pipelines.colloids.depletion import run_colloidal_depletion_simulation
+
+        res_col = run_colloidal_depletion_simulation()
+        print(
+            f"[dens-city] Contact Depletion Well: {res_col['W_contact_kBT']:.2f} kBT, Demixed: {res_col['is_phase_separated']}"
+        )
+    elif args.command == "glass":
+        print("[dens-city] Executing Kob-Andersen 80/20 Glassy Transition Pipeline...")
+        from dens_city.pipelines.glasses.kob_andersen import compute_kob_andersen_glass_structure
+
+        res_ka = compute_kob_andersen_glass_structure(T=0.45)
+        print(
+            f"[dens-city] Kob-Andersen T_MCT: {res_ka['T_MCT']:.3f}, Split 2nd Peak: {res_ka['split_peak_1_r']}, {res_ka['split_peak_2_r']}"
+        )
+    elif args.command == "sf6":
+        print("[dens-city] Executing SF6 Steric Shielding Pipeline...")
+        from dens_city.pipelines.fluorinated.sf6 import compute_sf6_phase_boundaries
+
+        res_sf6 = compute_sf6_phase_boundaries()
+        print(f"[dens-city] SF6 T_triple: {res_sf6['T_triple_K']:.2f} K, T_c: {res_sf6['T_c_K']:.2f} K")
     elif args.command in ["benchmark", "e2e"]:
         import subprocess
         import sys

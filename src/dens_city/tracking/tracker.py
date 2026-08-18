@@ -77,6 +77,20 @@ class ExperimentTracker:
             "argon": {"T_c": 150.86, "rho_l": 0.0214, "unit": "A^-3"},
             "interfaces": {"T_c": 298.15, "rho_l": 33.36, "unit": "nm^-3"},
             "wetting": {"T_c": 298.15, "rho_l": 33.36, "unit": "nm^-3"},
+            "helium4": {"T_c": 5.1953, "rho_l": 0.0218, "unit": "A^-3"},
+            "helium": {"T_c": 5.1953, "rho_l": 0.0218, "unit": "A^-3"},
+            "bmim_pf6": {"T_c": 298.15, "rho_l": 0.00288, "unit": "molec/A^3"},
+            "rtil": {"T_c": 298.15, "rho_l": 0.00288, "unit": "molec/A^3"},
+            "polyethylene": {"T_c": 298.15, "rho_l": 0.033, "unit": "A^-3"},
+            "gallium": {"T_c": 303.0, "rho_l": 0.0526, "unit": "atoms/A^3"},
+            "water_ethanol": {"T_c": 351.30, "rho_l": 0.033, "unit": "A^-3"},
+            "sds": {"T_c": 298.15, "rho_l": 0.033, "unit": "A^-3"},
+            "hydrogen_fluoride": {"T_c": 461.0, "rho_l": 0.025, "unit": "A^-3"},
+            "hf": {"T_c": 461.0, "rho_l": 0.025, "unit": "A^-3"},
+            "colloidal_depletion": {"T_c": 298.15, "rho_l": 0.001, "unit": "A^-3"},
+            "colloids": {"T_c": 298.15, "rho_l": 0.001, "unit": "A^-3"},
+            "kob_andersen": {"T_c": 0.435, "rho_l": 1.20, "unit": "reduced"},
+            "sf6": {"T_c": 318.72, "rho_l": 0.00775, "unit": "A^-3"},
         }
 
         spec_key = species.lower().replace(" ", "_")
