@@ -272,7 +272,7 @@ def run_water_benchmark(tracker: ExperimentTracker, timesteps: int = 50000) -> D
     ).astype(np.float32)
     with torch.no_grad():
         out_hyper = model(torch.tensor(obs_hyper, dtype=torch.float32, device=DEVICE).unsqueeze(0))
-        rho_hydrogen_pred = out_hyper[3]
+        out_hyper[3]
         rho_h_max = float(np.max(rho_oxygen) * 2.0 * 1000.0)
 
     # 5. Isothermal Compressibility via Fourier Static Structure Factor S(k=0)

@@ -4,10 +4,8 @@ Based on Bui & Cox (2026) (arXiv:2603.20493 / spec2.md).
 """
 
 from typing import Any, Dict
-import numpy as np
 
 from dens_city.mlip.oracle import QuantumFluidSurrogate
-from dens_city.solver.quantum_oz import compute_c_hat_zero_volume_integral
 from dens_city.solver.response_functions import compute_isothermal_compressibility_fourier
 
 KB = 1.380649e-23

@@ -6,20 +6,16 @@ import numpy as np
 import pytest
 
 from dens_city.pipelines.argon.coexistence import (
-    compute_argon_binodal,
     solve_argon_coexistence_point,
 )
 from dens_city.pipelines.interfaces.wetting import compute_capillary_drying_gap
 from dens_city.pipelines.methane.shale import (
-    compute_methane_binodal,
     solve_methane_coexistence_point,
 )
-from dens_city.solver.dispersion import LennardJonesFMTDispersion1D
 from dens_city.solver.quantum_surrogates import (
     compute_atm_chemical_potential_correction,
     compute_atm_mca_second_order,
     compute_atm_pressure_correction,
-    compute_atm_three_body_energy,
 )
 from dens_city.solver.stretched_grid import TanhStretchedGrid1D
 

@@ -3,9 +3,7 @@ Integration & Validation Tests for Equivariant MLIP & Quantum Fluid Surrogates.
 """
 
 import numpy as np
-import pytest
 
-from dens_city.mlip.core_shield import ZBLRepulsiveShield
 from dens_city.mlip.oracle import EquivariantMLIPOracle, QuantumFluidSurrogate
 
 

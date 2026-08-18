@@ -162,7 +162,7 @@ class LennardJonesFMTDispersion1D:
             return 1e6
 
         Z_hs = (1.0 + eta + eta**2 - eta**3) / ((1.0 - eta) ** 3)
-        
+
         if self.use_atm:
             red_t = max(0.0, 1.0 - T / self.t_c_ref)
             a1_scale = 1.31 + 0.70 * (red_t**0.70)
@@ -198,7 +198,7 @@ class LennardJonesFMTDispersion1D:
             return 1e6
 
         mu_hs = T * (8.0 * eta - 9.0 * (eta**2) + 3.0 * (eta**3)) / ((1.0 - eta) ** 3)
-        
+
         if self.use_atm:
             red_t = max(0.0, 1.0 - T / self.t_c_ref)
             a1_scale = 1.31 + 0.70 * (red_t**0.70)

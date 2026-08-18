@@ -14,30 +14,23 @@ Pillar 5: All 4 Pre-Flight Verification Checkpoints:
 """
 
 import math
+
 import numpy as np
-import pytest
-import torch
 
 from dens_city.envs.env import DensCityFluidEnv
-from dens_city.envs.train import DensNeuralFunctional
 from dens_city.mlip.core_shield import ZBLRepulsiveShield
-from dens_city.mlip.oracle import EquivariantMLIPOracle, QuantumFluidSurrogate
-from dens_city.solver.quantum_surrogates import (
-    compute_feynman_hibbs_potential,
-    compute_atm_three_body_energy,
-    compute_atm_mca_second_order,
-    zbl_repulsive_core,
-    apply_hann_window,
-)
-from dens_city.solver.quantum_oz import (
-    invert_structure_factor_to_c_hat,
-    compute_s_k_from_c_hat,
-    invert_c_hat_to_c_radial,
-    compute_c_hat_zero_volume_integral,
-    compute_quantum_barker_henderson_diameter,
-)
 from dens_city.solver.picard_solver import CdftPicardSolver
-
+from dens_city.solver.quantum_oz import (
+    compute_c_hat_zero_volume_integral,
+    compute_s_k_from_c_hat,
+    invert_structure_factor_to_c_hat,
+)
+from dens_city.solver.quantum_surrogates import (
+    apply_hann_window,
+    compute_atm_mca_second_order,
+    compute_atm_three_body_energy,
+    compute_feynman_hibbs_potential,
+)
 
 # ==============================================================================
 # Pillar 5: Pre-Flight Verification Checkpoints
@@ -175,7 +168,7 @@ def test_picard_solver_adaptive_anderson_and_clamping():
     grid_size = 128
     L_z = 20.0
     z_coords = np.linspace(0, L_z, grid_size)
-    dz = z_coords[1] - z_coords[0]
+    z_coords[1] - z_coords[0]
 
     # Simple quadratic external potential (harmonic trap)
     v_ext = 0.5 * 1e-20 * ((z_coords - 10.0) ** 2)

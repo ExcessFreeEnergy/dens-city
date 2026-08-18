@@ -16,6 +16,7 @@ array topology with ZERO dynamic heap allocations.
 """
 
 from typing import Optional, Tuple
+
 import numpy as np
 
 
@@ -56,14 +57,14 @@ class TanhStretchedGrid1D:
         self.dz_center = float(self.z_coords[self.grid_size // 2] - self.z_coords[self.grid_size // 2 - 1])
 
     def integrate(self, f_values: np.ndarray) -> float:
-        """
+        r"""
         Computes 1D spatial integral \int_0^{L_z} f(z) dz via flat array vector product:
           \int f(z) dz = \sum_i f_i * w_i
         """
         return float(np.sum(f_values * self.weights))
 
     def differentiate(self, f_values: np.ndarray) -> np.ndarray:
-        """
+        r"""
         Computes non-uniform spatial derivative df/dz using chain rule:
           df/dz = (df/ds) / J(s)
         """

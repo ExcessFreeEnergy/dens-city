@@ -10,7 +10,8 @@ Provides:
 3. Zero-wavenumber limit \hat{c}(k=0) evaluation via spatial volume integration to avoid 0/0 singularities.
 """
 
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional
+
 import numpy as np
 
 from dens_city.solver.quantum_surrogates import apply_hann_window, zbl_repulsive_core
@@ -45,7 +46,7 @@ def compute_quantum_barker_henderson_diameter(
     u_min = float(u_total[min_idx])
 
     # WCA split: u_0(r) = u(r) - u(r_min) for r < r_min
-    r_sub = r_grid[:min_idx + 1]
+    r_grid[:min_idx + 1]
     u_0 = u_total[:min_idx + 1] - u_min
     u_0 = np.maximum(u_0, 0.0)
 

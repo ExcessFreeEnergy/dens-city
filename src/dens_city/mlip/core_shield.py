@@ -12,6 +12,7 @@ where t = (r_core - r) / r_core.
 """
 
 from typing import Union
+
 import numpy as np
 
 from dens_city.solver.quantum_surrogates import zbl_repulsive_core

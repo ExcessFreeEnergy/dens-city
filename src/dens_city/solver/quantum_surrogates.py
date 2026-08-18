@@ -8,7 +8,8 @@ Provides closed-form, zero-dependency quantum and many-body kernels:
 4. Hann / cosine correlation tail windowing to eliminate Fourier Gibbs ringing.
 """
 
-from typing import Tuple, Union
+from typing import Union
+
 import numpy as np
 
 # Physical constants

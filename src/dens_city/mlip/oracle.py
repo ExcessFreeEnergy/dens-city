@@ -9,21 +9,21 @@ Provides an upstream quantum potential oracle for classical density functional t
 4. Hard-core ZBL repulsive shield below r <= 0.8 A.
 """
 
-from typing import Any, Callable, Dict, Optional, Tuple
 import math
+from typing import Dict, Optional, Tuple
+
 import numpy as np
 
 from dens_city.mlip.core_shield import ZBLRepulsiveShield
-from dens_city.solver.quantum_surrogates import (
-    compute_feynman_hibbs_potential,
-    compute_atm_mca_second_order,
-    apply_hann_window,
-)
 from dens_city.solver.quantum_oz import (
-    compute_quantum_barker_henderson_diameter,
-    invert_structure_factor_to_c_hat,
-    invert_c_hat_to_c_radial,
     compute_c_hat_zero_volume_integral,
+    compute_quantum_barker_henderson_diameter,
+    invert_c_hat_to_c_radial,
+    invert_structure_factor_to_c_hat,
+)
+from dens_city.solver.quantum_surrogates import (
+    compute_atm_mca_second_order,
+    compute_feynman_hibbs_potential,
 )
 
 KB = 1.380649e-23

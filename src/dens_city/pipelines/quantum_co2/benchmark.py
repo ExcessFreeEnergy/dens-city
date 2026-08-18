@@ -4,7 +4,6 @@ Based on Bui & Cox (2026) (spec2.md) and Yang et al. (2024) (spec3.md).
 """
 
 from typing import Any, Dict
-import numpy as np
 
 from dens_city.mlip.oracle import QuantumFluidSurrogate
 
