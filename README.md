@@ -76,12 +76,17 @@ Validation against published benchmarks in **Bui & Cox (2026)** ([arXiv:2603.204
 git clone git@github.com:ExcessFreeEnergy/dens-city.git
 cd dens-city
 
-# 2. Compile native C++/CUDA shared libraries
+# 2. Set up virtual environment and install dependencies with uv
+uv venv
+source .venv/bin/activate
+uv pip install -e .
+
+# 3. Compile native C++/CUDA shared libraries
 cd src/dens_city/core && nvcc -O3 -shared -Xcompiler -fPIC engine.cpp c_api.cpp cuda_kernels.cu -lz -o libdens_city_core.so && cd ../../..
 cd src/dens_city/envs && gcc -O3 -shared -fPIC -lm dens_city_env.c -o libdens_city_env.so && cd ../../..
 
-# 3. Run automated test suite
-pytest tests/ -v
+# 4. Run automated test suite
+uv run pytest tests/ -v
 ```
 
 ---
@@ -90,41 +95,41 @@ pytest tests/ -v
 
 ```bash
 # Unified Single-Run PufferLib Direct Training
-python -m dens_city.envs.train --timesteps 50000 --envs 16 --save dens_functional.pt
+uv run python -m dens_city.envs.train --timesteps 50000 --envs 16 --save dens_functional.pt
 
 # 1. Execute Water Nanoconfinement & Binodal Pipeline
-dens-city water
+uv run dens-city water
 
 # 2. Execute Supercritical CO2 Crossover Pipeline
-dens-city co2
+uv run dens-city co2
 
 # 3. Execute RPM Electrolyte Double Layer Pipeline
-dens-city electrolytes
+uv run dens-city electrolytes
 
 # 4. Execute Binary CO2 / H2O Mutual Solubility & Slit Adsorption Pipeline
-dens-city co2-water
+uv run dens-city co2-water
 
 # 5. Execute N2 Linear Diatomic Flue Gas Separation Pipeline
-dens-city nitrogen
+uv run dens-city nitrogen
 
 # 6. Execute Methane (CH4) Shale Gas Recovery Pipeline
-dens-city methane
+uv run dens-city methane
 
 # 7. Execute Montmorillonite Clay Mineral Swelling Pipeline
-dens-city clay
+uv run dens-city clay
 
 # 8. Execute Nematic Liquid Crystals & Patchy Particles Pipeline
-dens-city liquid-crystals
+uv run dens-city liquid-crystals
 
 # 9. Execute Pure Lennard-Jones Argon Coexistence Pipeline
-dens-city argon
+uv run dens-city argon
 
 # Full End-to-End Multi-Material Simulation & Physical Reality Benchmarking
-dens-city benchmark
-dens-city benchmark --materials argon methane water co2
+uv run dens-city benchmark
+uv run dens-city benchmark --materials argon methane water co2
 
 # Launch Real-Time Raylib Scientific Dashboard
-dens-city ui --functional dens_functional.pt
+uv run dens-city ui --functional dens_functional.pt
 ```
 
 ---
@@ -143,30 +148,7 @@ Measured on an NVIDIA GeForce RTX 4090 GPU (24 GB VRAM, 16,384 CUDA cores):
 
 ---
 
-## 6. Extreme Statistical Mechanics Trapdoors & Universal Convergence
-
-Standard molecular pipelines often test only trivial Lennard-Jones thermodynamics where mean-field approximations artificially succeed. To guarantee that `dens-city` can blindly ingest complex materials without mathematical breakdown, hallucinated crystal phases, or divergence, we benchmark against **10 prototypical trapdoors of statistical mechanics**:
-
-1. **Nuclear Quantum Effects (NQEs)**: Helium-4 ($^4\text{He}$) zero-point fluid stability ($T_c = 5.20\,\text{K}$ vs NIST $5.195\,\text{K}$).
-2. **Steric Crowding & Overscreening**: Room-Temperature Ionic Liquids ([BMIM][PF6]) bimodal camel capacitance $C(V)$.
-3. **Macromolecular Chain Entropy**: Polyethylene ($N=100$) Wertheim TPT1 near-wall depletion ($\delta = 2.62\,\text{nm}$).
-4. **Conduction Electron Coupling**: Liquid Gallium ($\text{Ga}$) Friedel oscillations ($\lambda_F = 2.56\,\text{Å}$, $\gamma = 714\,\text{mN/m}$).
-5. **Non-Ideal Vapor-Liquid Azeotropes**: Water-Ethanol minimum-boiling azeotrope ($95.63\,\text{wt}\%$ at $351.30\,\text{K}$).
-6. **Amphiphilic Self-Assembly**: SDS surfactant spontaneous micellization ($\text{CMC} = 8.20\,\text{mM}$, $N_{\rm agg} = 62$).
-7. **Strong Multi-Site Hydrogen Bonding**: Hydrogen Fluoride ($\text{HF}$) $(\text{HF})_6$ ring association ($Z = 0.285 < 0.50$).
-8. **Purely Entropic Demixing**: Binary Colloidal Asakura-Oosawa depletion attraction ($W_0 = -3.20\,k_B T, \epsilon = 0$).
-9. **Supercooled Jammed Glass Dynamics**: Kob-Andersen 80/20 avoided crystallization ($T_{\rm MCT} = 0.435$, split second peak).
-10. **Giant Octahedral Shielding**: Sulfur Hexafluoride ($\text{SF}_6$) excluded volume cage ($\sigma = 5.20\,\text{Å}$, $T_t = 222.35\,\text{K}$).
-
-<p align="center">
-  <img src="docs/extreme_edge_cases_comparison_chart.png" alt="10 Extreme Statistical Mechanics Trapdoors Verification" width="100%" />
-</p>
-
-All 20 canonical materials across both classical and extreme regimes converge directly onto NIST / experimental ground truth within **$< 2\%$ relative error**. Full benchmark results and physical proofs are documented in [`PHYSICAL_COMPARISON_BENCHMARKS.md`](../PHYSICAL_COMPARISON_BENCHMARKS.md).
-
----
-
-## 7. Citations
+## 6. Citations
 
 - **Original Source & Context**: [https://github.com/annatbui/gcmc](https://github.com/annatbui/gcmc)
 - **References**:
@@ -178,6 +160,6 @@ All 20 canonical materials across both classical and extreme regimes converge di
 
 ---
 
-## 8. License
+## 7. License
 
 This program is free software: you can redistribute it and/or modify it under the terms of the **GNU General Public License as published by the Free Software Foundation**, either version 3 of the License, or (at your option) any later version. See [LICENSE](LICENSE) for details.
