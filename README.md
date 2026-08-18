@@ -1,34 +1,35 @@
-# dens-city: Unified *Ab Initio* Neural cDFT & PufferLib RL Platform for Programmable Fluids
+# dens-city: High-Performance Molecular Density Functional Theory & Neural Operator Platform
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10+-brightgreen.svg)](https://python.org)
 [![CUDA: 12.0+](https://img.shields.io/badge/CUDA-12.0+-green.svg)](https://developer.nvidia.com/cuda-toolkit)
 [![PufferLib: Zero-Copy C](https://img.shields.io/badge/PufferLib-Zero--Copy%20C-orange.svg)](https://github.com/PufferAI/PufferLib)
 
-`dens-city` is a high-performance multiscale modeling platform that unifies quantum-mechanical interatomic interactions (DFT / MLIPs), classical Density Functional Theory (cDFT), 3D Long-Range Ewald electrostatics, and deep reinforcement learning (RL) for active fluid manipulation.
+`dens-city` is a high-performance multiscale modeling platform that unifies quantum-mechanical interatomic interactions (DFT / MLIPs), classical Density Functional Theory (cDFT), 3D Long-Range Ewald electrostatics, and deep operator learning for macroscopic fluid simulation and molecular control.
 
 ---
 
-## 1. Key Physical Pipelines
+## 1. Compute Steps
 
-### 1.1 Water (`H2O`: SCAN, RPBE-D3, SPC/E, TIP4P/2005)
-- **Nanoconfinement in Graphene Slits ($H \in [0.7\,\text{nm}, 10\,\text{nm}]$)**:
-  - 9-3 Lennard-Jones graphene surface potentials fitted to Quantum Monte Carlo (QMC).
-  - Effective pressure $\tilde{P}(H) = -\int_0^L dz \, \rho(z) \frac{dV_{\rm wall}}{dz}$.
-  - Disjoining pressure $\Pi(H) = \tilde{P}(H) - P$ revealing distinct hydration layer oscillations.
-- **Hyper-DFT Hydrogen Density $\rho_{\rm H}(z)$**:
-  - Learns the structural mapping $\{\rho_{\rm O}(z), T\} \to \rho_{\rm H}(z)$ for full atomistic resolution.
-
-### 1.2 Carbon Dioxide ($\text{CO}_2$: PBE-D3, BLYP-D3, TraPPE)
-- **Supercritical Fisher–Widom Crossover**:
-  - Locates the transition between monotonic exponential decay and oscillatory decay in the total correlation function $h(r)$.
-- **Supercritical Widom Lines**:
-  - Maximum correlation length $\max \xi = 1/\alpha_0$ and maximum isothermal compressibility $\max \chi_T(\rho_b, T) = \frac{\beta}{\rho_b} S(k=0)$.
-
-### 1.3 Electrolytes & Ionic Fluids (RPM $1:1$ Salt Solutions)
-- **True 3D Ewald Long-Range Screening**:
-  - Shared-memory structure factor $\tilde{\rho}(\mathbf{k})$ updates on CUDA GPU.
-  - Solves the electric double layer (EDL) and differential capacitance $C(V)$ without spurious polarization gradients or false metallization.
+| Compute Step | Formula / Physical Operation | Implemented in `dens-city` |
+|---|---|---|
+| **1. Grand Potential Minimization** | $\Omega([\rho], T) = \mathcal{F}_{\rm intr}^{\rm id} + \mathcal{F}_{\rm intr}^{\rm ex} + \int dz \, \rho(z)(V_{\rm ext}(z) - \mu)$ | `solver/thermo_integration.py` |
+| **2. Euler–Lagrange Direct Inversion** | $c^{(1)}(z) = \ln(\zeta^{-1}\Lambda^3\rho(z)) + \beta(V_{\rm ext}(z) - \mu)$ | Embedded in `envs/dens_city_env.c` |
+| **3. Short-Range Reference Splitting (LMFT)** | $c^{(1)}(z) = c_{\rm R}^{(1)}(z) - \beta\Delta\mu_{\rm SL} + \beta\phi_{\rm R}(z)$ | Embedded in `envs/dens_city_env.c` |
+| **4. 1D Fourier Restructuring Potential** | $\phi_{\rm R}(z) = \phi(z) + \frac{1}{L_z} \sum_{k \neq 0} \frac{4\pi}{k^2} \tilde{n}(k) e^{ikz} e^{-k^2/4\kappa^2}$ | Native C FFT in `envs/dens_city_env.c` |
+| **5. Stillinger–Lovett Thermodynamic Shift** | $\Delta\mu_{\rm SL} = \frac{1}{2\beta\rho_b\kappa^{-3}\sqrt{\pi}^3}\left(\frac{\epsilon-1}{\epsilon}\right) - \frac{2\rho_b^2}{3\kappa^{-3}\sqrt{\pi}}$ | Native C in `core/engine.cpp` |
+| **6. 3D Long-Range Ewald Electrostatics** | $U_{\rm recip} = \frac{1}{2V} \sum_{\mathbf{k} \neq 0} \frac{4\pi}{k^2} e^{-k^2/4\alpha^2} \|\tilde{\rho}(\mathbf{k})\|^2 - \frac{\alpha}{\sqrt{\pi}}\sum_i q_i^2$ | Native C++/CUDA in `core/engine.cpp` & `core/cuda_kernels.cu` |
+| **7. Convoluted Operator Learning (COLN)** | $c_1(x, \theta, \phi) = \sum_{l,m} c_{ml}(x, \bar{\rho}) Y_{ml}(\theta, \phi) \cdot [1 + \hat{\rho}_{\rm ang}(\theta, \phi)]$ | `models/coln.py` |
+| **8. 3D Orientational Nematic Order Parameter** | $S_{\rm order}(z) = \frac{1}{\bar{\rho}(z)} \int d\Omega \, \rho(z, \theta, \phi) \left(\frac{3\cos^2\theta - 1}{2}\right)$ | `pipelines/co2/supercritical.py` |
+| **9. Polarizable Buckingham Exp-6 Gaussian Charges** | $u(r) = \frac{q_i q_j}{4\pi\epsilon_0 r}\text{erf}\left(\frac{r}{\sqrt{2(\sigma_i^2 + \sigma_j^2)}}\right) + A_{ij}e^{-B_{ij}r} - \frac{C_{ij}}{r^6}$ | `core/engine.cpp` & `core/cuda_kernels.cu` |
+| **10. Hyper-DFT Atomic Hyperdensity** | $\rho_{\rm H}(z) = \rho_{\rm H}^{(1)}(z; [\rho_{\rm O}], T)$ (Oxygen $\to$ Hydrogen profile) | Multi-head output in `envs/train.py` |
+| **11. Excess Free Energy Line Integration** | $\mathcal{F}_{\rm intr}^{\rm ex}[\rho] = -k_B T \int_0^1 d\lambda \int dz \, c^{(1)}(z; [\lambda\rho], T) \rho(z)$ | `solver/thermo_integration.py` |
+| **12. Bulk Pressure Equation of State** | $P(\rho_b, T) = k_B T \rho_b(1 - c^{(1)}) - \frac{\mathcal{F}_{\rm intr}^{\rm ex}}{V}$ | `solver/thermo_integration.py` |
+| **13. Direct Correlation & Structure Factor** | $S(k) = \frac{1}{1 - \rho_b \hat{c}_r^{(2)}(k)}$ where $c_r^{(2)} = -\frac{\delta c^{(1)}}{\delta \rho}$ | Auto-diff in `solver/correlation.py` |
+| **14. Confinement Effective & Disjoining Pressure** | $\tilde{P}(H) = P + \Pi(H) = -\int dz \, \rho(z) \frac{dV_{\rm wall}}{dz}$ | `pipelines/water/confinement.py` |
+| **15. Supercritical Fisher–Widom Line** | Crossover of total correlation $h(r)$: $\alpha_0 = \tilde{\alpha}_0$ | `pipelines/co2/supercritical.py` |
+| **16. Supercritical Widom Lines** | Maxima of correlation length $\xi = 1/\alpha_0$ and compressibility $\chi_T$ | `pipelines/co2/supercritical.py` |
+| **17. Constrained Binodal Minimization** | Picard relaxation with Anderson acceleration and fixed $\bar{\rho}_L$ | `solver/picard_solver.py` |
 
 ---
 
