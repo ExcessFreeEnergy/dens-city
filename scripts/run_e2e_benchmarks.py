@@ -201,7 +201,7 @@ def run_water_benchmark(tracker: ExperimentTracker, timesteps: int = 50000) -> D
 
     model = DensNeuralFunctional().to(DEVICE)
     checkpoint = torch.load(functional_path, map_location=DEVICE)
-    model.load_state_dict(checkpoint["state_dict"])
+    model.load_state_dict(checkpoint["state_dict"], strict=False)
     model.eval()
 
     def neural_c1_fn(rho_arr: np.ndarray, T_val: float) -> np.ndarray:
@@ -220,7 +220,8 @@ def run_water_benchmark(tracker: ExperimentTracker, timesteps: int = 50000) -> D
         obs_t = torch.tensor(obs, dtype=torch.float32, device=DEVICE).unsqueeze(0)
 
         with torch.no_grad():
-            _, _, c1_pred, _ = model(obs_t)
+            out = model(obs_t)
+            c1_pred = out[2]
             c1_out = c1_pred.cpu().numpy()[0]
 
         if N != 256:
@@ -270,7 +271,8 @@ def run_water_benchmark(tracker: ExperimentTracker, timesteps: int = 50000) -> D
         ]
     ).astype(np.float32)
     with torch.no_grad():
-        _, _, _, rho_hydrogen_pred = model(torch.tensor(obs_hyper, dtype=torch.float32, device=DEVICE).unsqueeze(0))
+        out_hyper = model(torch.tensor(obs_hyper, dtype=torch.float32, device=DEVICE).unsqueeze(0))
+        rho_hydrogen_pred = out_hyper[3]
         rho_h_max = float(np.max(rho_oxygen) * 2.0 * 1000.0)
 
     # 5. Isothermal Compressibility via Fourier Static Structure Factor S(k=0)

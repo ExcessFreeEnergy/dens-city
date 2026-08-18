@@ -1,6 +1,7 @@
 """
 Argon Coexistence & Thermodynamic Isotherm Solver.
-Derived strictly from the pure Lennard-Jones pair potential (sigma = 3.405 A, eps/kB = 119.8 K).
+Derived strictly from the microscopic Lennard-Jones pair potential (sigma = 3.405 A, eps/kB = 119.8 K)
+coupled with Axilrod-Teller-Muto (ATM) 3-body non-additive quantum dispersion.
 Combines analytical Barker-Henderson effective diameter with WCA attractive perturbation theory
 and Macroscopic Compressibility Approximation (MCA) for second-order fluctuations.
 """
@@ -15,23 +16,28 @@ from dens_city.solver.dispersion import (
     compute_barker_henderson_diameter,
 )
 
-# Pristine microscopic Lennard-Jones parameters for Argon (NIST / White 1999)
+# Microscopic Lennard-Jones parameters for Argon (NIST / White 1999)
 ARGON_SIGMA = 3.405  # Angstroms
 ARGON_EPSILON_K = 119.8  # Kelvin (eps / kB)
+ARGON_NU_ATM = 8.495e5  # Kelvin * Angstrom^9 (73.2 eV * A^9)
 
-_SOLVER = LennardJonesFMTDispersion1D(ARGON_SIGMA, ARGON_EPSILON_K, use_mca=True)
+_SOLVER = LennardJonesFMTDispersion1D(
+    ARGON_SIGMA, ARGON_EPSILON_K, use_mca=True, use_atm=True, nu_atm=ARGON_NU_ATM
+)
 
 
 def compute_argon_chemical_potential(rho: float, T: float) -> float:
     """
-    Computes chemical potential mu(rho, T) in Kelvin using CS + MCA second-order dispersion.
+    Computes chemical potential mu(rho, T) in Kelvin using CS + MCA second-order dispersion
+    and ATM 3-body non-additive dispersion.
     """
     return _SOLVER.compute_chemical_potential(rho, T)
 
 
 def compute_argon_pressure(rho: float, T: float) -> float:
     """
-    Computes bulk pressure P(rho, T) in bar using CS + MCA second-order dispersion.
+    Computes bulk pressure P(rho, T) in bar using CS + MCA second-order dispersion
+    and ATM 3-body non-additive dispersion.
     """
     return _SOLVER.compute_bulk_pressure(rho, T)
 

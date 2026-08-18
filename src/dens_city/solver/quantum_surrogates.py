@@ -3,7 +3,7 @@ Analytical Quantum Surrogates & Invariant Protections.
 
 Provides closed-form, zero-dependency quantum and many-body kernels:
 1. Feynman-Hibbs (FH) quantum effective potential smearing (NQE for light atoms).
-2. Axilrod-Teller-Muto (ATM) 3-body non-additive dispersion.
+2. Axilrod-Teller-Muto (ATM) 3-body non-additive dispersion and MCA pressure/mu corrections.
 3. Universal ZBL (Ziegler-Biersack-Littmark) core repulsive shield for r <= 0.8 A.
 4. Hann / cosine correlation tail windowing to eliminate Fourier Gibbs ringing.
 """
@@ -18,6 +18,7 @@ AMU = 1.66053906660e-27  # kg
 EPSILON_0 = 8.8541878128e-12  # F / m
 E_CHARGE = 1.602176634e-19  # C
 BOHR_RADIUS = 0.529177210903  # Angstroms
+EV_TO_KELVIN = 11604.5250061598  # K / eV
 
 
 def compute_feynman_hibbs_potential(
@@ -75,14 +76,15 @@ def compute_atm_three_body_energy(
     """
     denom = max(1e-6, (r_ij * r_jk * r_ki) ** 3)
     num = 1.0 + 3.0 * cos_theta_i * cos_theta_j * cos_theta_k
-    return nu_atm * (num / denom)
+    nu_k = nu_atm * EV_TO_KELVIN if nu_atm < 1e4 else nu_atm
+    return nu_k * (num / denom)
 
 
 def compute_atm_mca_second_order(
     rho_bulk: float,
     eta: float,
     T: float,
-    nu_atm: float = 73.2,
+    nu_atm: float = 73.2,  # eV * A^9 or K * A^9
     sigma: float = 3.405,
 ) -> float:
     r"""
@@ -92,11 +94,49 @@ def compute_atm_mca_second_order(
     Returns:
       a_ATM in Kelvin.
     """
+    nu_k = nu_atm * EV_TO_KELVIN if nu_atm < 1e4 else nu_atm
     eta_safe = np.clip(eta, 0.0, 0.95)
     chi_factor = ((1.0 - eta_safe) ** 2) / (1.0 + 2.0 * eta_safe)
-    prefactor = (8.0 * (np.pi**2) / 9.0) * (nu_atm / (sigma**6))
+    prefactor = (8.0 * (np.pi**2) / 9.0) * (nu_k / (sigma**6))
     a_atm = prefactor * (rho_bulk**2) * chi_factor / max(1.0, T)
     return float(a_atm)
+
+
+def compute_atm_pressure_correction(
+    rho_bulk: float,
+    eta: float,
+    T: float,
+    nu_atm: float = 73.2,
+    sigma: float = 3.405,
+) -> float:
+    r"""
+    Computes the ATM 3-body pressure correction in bar:
+      \Delta P_ATM = \frac{8\pi^2 \nu_ATM \rho^3}{9 T \sigma^6} \frac{(1 - \eta)(2 - 5\eta + 2\eta^2)}{(1 + 2\eta)^2} * 138.0649
+    """
+    nu_k = nu_atm * EV_TO_KELVIN if nu_atm < 1e4 else nu_atm
+    eta_safe = np.clip(eta, 0.0, 0.95)
+    num = (1.0 - eta_safe) * (2.0 - 5.0 * eta_safe + 2.0 * (eta_safe**2))
+    den = (1.0 + 2.0 * eta_safe) ** 2
+    prefactor = (8.0 * (np.pi**2) / 9.0) * (nu_k / (sigma**6))
+    p_k_a3 = prefactor * (rho_bulk**3) * (num / max(1e-6, den)) / max(1.0, T)
+    return float(p_k_a3 * 138.0649)
+
+
+def compute_atm_chemical_potential_correction(
+    rho_bulk: float,
+    eta: float,
+    T: float,
+    nu_atm: float = 73.2,
+    sigma: float = 3.405,
+) -> float:
+    r"""
+    Computes the ATM 3-body chemical potential correction in Kelvin:
+      \Delta \mu_ATM = a_ATM + \frac{\Delta P_ATM / 138.0649}{\rho}
+    """
+    a_atm = compute_atm_mca_second_order(rho_bulk, eta, T, nu_atm=nu_atm, sigma=sigma)
+    p_bar = compute_atm_pressure_correction(rho_bulk, eta, T, nu_atm=nu_atm, sigma=sigma)
+    p_k_a3 = p_bar / 138.0649
+    return float(a_atm + p_k_a3 / max(1e-12, rho_bulk))
 
 
 def zbl_repulsive_core(
@@ -108,20 +148,11 @@ def zbl_repulsive_core(
     r"""
     Universal Ziegler-Biersack-Littmark (ZBL) core repulsive shield for r <= r_core.
     Guarantees strict positive divergence (+inf) as r -> 0 to prevent Picard solver crashes.
-
-    ZBL potential:
-      V_ZBL(r) = \frac{1}{4\pi\epsilon_0} \frac{Z_1 Z_2 e^2}{r} \phi_ZBL(r / a_u)
-      a_u = 0.8854 * a_0 / (Z_1^0.23 + Z_2^0.23)
-      \phi_ZBL(x) = 0.1818 e^{-3.2 x} + 0.5099 e^{-0.9423 x} + 0.2802 e^{-0.4029 x} + 0.02817 e^{-0.2016 x}
-
-    Returns:
-      V_core(r) in Kelvin.
     """
     is_scalar = np.isscalar(r)
     r_arr = np.atleast_1d(np.asarray(r, dtype=np.float64))
     r_safe = np.maximum(r_arr, 1e-4)
 
-    # Universal screening length a_u in Angstroms
     a_u = 0.8854 * BOHR_RADIUS / (z1**0.23 + z2**0.23)
     x = r_safe / a_u
 
@@ -132,17 +163,13 @@ def zbl_repulsive_core(
         + 0.02817 * np.exp(-0.2016 * x)
     )
 
-    # Coulomb prefactor in Kelvin * Angstroms
-    # (e^2 / (4 * pi * eps_0 * k_B)) in K * Angstroms = 1.67101e5 K * A
     coulomb_k_ang = 167101.0
     v_zbl = (z1 * z2 * coulomb_k_ang / r_safe) * phi
 
-    # Smooth C^2 switching envelope: active for r < r_core, smoothly decaying to 0 at r_core
     mask = r_arr < r_core
     v_shield = np.zeros_like(r_arr)
     if np.any(mask):
         t = (r_core - r_arr[mask]) / r_core
-        # C^2 cubic switching: (3t^2 - 2t^3)
         switch = (3.0 * t**2 - 2.0 * t**3)
         v_shield[mask] = v_zbl[mask] * switch
 

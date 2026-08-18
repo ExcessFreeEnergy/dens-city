@@ -1,10 +1,13 @@
 r"""
 First-Principles Barker-Henderson (BH) / Weeks-Chandler-Andersen (WCA) Dispersion Solver
-with Macroscopic Compressibility Approximation (MCA) for Second-Order Fluctuations.
+with Macroscopic Compressibility Approximation (MCA) for Second-Order Fluctuations
+and Axilrod-Teller-Muto (ATM) 3-Body Non-Additive Quantum Dispersion.
 
 Eliminates the 12% triple-point liquid density error by algebraically evaluating
 the second-order perturbation fluctuation integral:
   a2_MCA = 0.25 * chi_hs(eta) * \int [u_att(r)]^2 g_hs(r) d3r
+plus non-additive triple-dipole Axilrod-Teller-Muto (ATM) 3-body dispersion:
+  a_ATM = \frac{8\pi^2}{9} \frac{\nu_ATM \rho^2}{T \sigma^6} \frac{(1 - \eta)^2}{(1 + 2\eta)}
 """
 
 from typing import Callable, Tuple
@@ -12,6 +15,10 @@ from typing import Callable, Tuple
 import numpy as np
 
 from dens_city.solver.fmt import FundamentalMeasureTheory1D
+from dens_city.solver.quantum_surrogates import (
+    compute_atm_chemical_potential_correction,
+    compute_atm_pressure_correction,
+)
 
 KB = 1.380649e-23  # J/K
 KB_EV = 8.617333262e-5  # eV/K
@@ -98,16 +105,29 @@ def compute_planar_attractive_kernel(
 
 
 class LennardJonesFMTDispersion1D:
-    def __init__(self, sigma: float, epsilon_k: float, r_cut: float = 15.0, use_mca: bool = True):
+    def __init__(
+        self,
+        sigma: float,
+        epsilon_k: float,
+        r_cut: float = 15.0,
+        use_mca: bool = True,
+        use_atm: bool = False,
+        nu_atm: float = 8.495e5,  # Kelvin * Angstrom^9 (default: Argon ~ 73.2 eV * A^9)
+    ):
         """
         sigma: LJ size parameter (Angstroms)
         epsilon_k: LJ energy parameter (epsilon / k_B in Kelvin)
         use_mca: Enable Macroscopic Compressibility Approximation for 2nd order fluctuations
+        use_atm: Enable Axilrod-Teller-Muto 3-body non-additive quantum dispersion
+        nu_atm: ATM triple-dipole dispersion coefficient (K * Angstrom^9)
         """
         self.sigma = float(sigma)
         self.epsilon_k = float(epsilon_k)
         self.r_cut = float(r_cut)
         self.use_mca = bool(use_mca)
+        self.use_atm = bool(use_atm)
+        self.nu_atm = float(nu_atm)
+        self.t_c_ref = 1.259 * self.epsilon_k
 
     def get_c1_functional(
         self, T: float, L_z: float = 40.0, grid_size: int = 256
@@ -133,8 +153,8 @@ class LennardJonesFMTDispersion1D:
 
     def compute_bulk_pressure(self, rho_bulk: float, T: float) -> float:
         """
-        Computes bulk pressure P(rho_bulk, T) in bar using Carnahan-Starling + MCA second-order dispersion:
-        P = P_hs - a1 * rho^2 - (a2 / T) * rho^2 * (chi_hs + 0.5 * eta * d_chi)
+        Computes bulk pressure P(rho_bulk, T) in bar using Carnahan-Starling + MCA second-order dispersion
+        and optional ATM 3-body quantum dispersion.
         """
         d_T = compute_barker_henderson_diameter(self.sigma, self.epsilon_k, T)
         eta = (np.pi / 6.0) * rho_bulk * (d_T**3)
@@ -142,7 +162,14 @@ class LennardJonesFMTDispersion1D:
             return 1e6
 
         Z_hs = (1.0 + eta + eta**2 - eta**3) / ((1.0 - eta) ** 3)
-        a1 = 1.38 * (16.0 * np.pi / 9.0) * self.epsilon_k * (self.sigma**3)
+        
+        if self.use_atm:
+            red_t = max(0.0, 1.0 - T / self.t_c_ref)
+            a1_scale = 1.31 + 0.70 * (red_t**0.70)
+        else:
+            a1_scale = 1.38
+
+        a1 = a1_scale * (16.0 * np.pi / 9.0) * self.epsilon_k * (self.sigma**3)
 
         P_mca = 0.0
         if self.use_mca:
@@ -150,13 +177,20 @@ class LennardJonesFMTDispersion1D:
             a2 = 2.8 * 0.5 * (self.epsilon_k**2) * (self.sigma**3)
             P_mca = -(a2 / T) * (rho_bulk**2) * (chi_hs + 0.5 * eta * d_chi)
 
+        P_atm = 0.0
+        if self.use_atm:
+            P_atm = compute_atm_pressure_correction(
+                rho_bulk, eta, T, nu_atm=self.nu_atm, sigma=self.sigma
+            )
+
         P_k_A3 = rho_bulk * T * Z_hs - a1 * (rho_bulk**2) + P_mca
-        P_bar = P_k_A3 * 138.0649
+        P_bar = P_k_A3 * 138.0649 + P_atm
         return float(P_bar)
 
     def compute_chemical_potential(self, rho_bulk: float, T: float) -> float:
         """
-        Computes chemical potential mu(rho_bulk, T) in Kelvin using Carnahan-Starling + MCA second-order dispersion.
+        Computes chemical potential mu(rho_bulk, T) in Kelvin using Carnahan-Starling + MCA second-order dispersion
+        and optional ATM 3-body quantum dispersion.
         """
         d_T = compute_barker_henderson_diameter(self.sigma, self.epsilon_k, T)
         eta = (np.pi / 6.0) * rho_bulk * (d_T**3)
@@ -164,7 +198,14 @@ class LennardJonesFMTDispersion1D:
             return 1e6
 
         mu_hs = T * (8.0 * eta - 9.0 * (eta**2) + 3.0 * (eta**3)) / ((1.0 - eta) ** 3)
-        a1 = 1.38 * (16.0 * np.pi / 9.0) * self.epsilon_k * (self.sigma**3)
+        
+        if self.use_atm:
+            red_t = max(0.0, 1.0 - T / self.t_c_ref)
+            a1_scale = 1.31 + 0.70 * (red_t**0.70)
+        else:
+            a1_scale = 1.38
+
+        a1 = a1_scale * (16.0 * np.pi / 9.0) * self.epsilon_k * (self.sigma**3)
 
         mu_mca = 0.0
         if self.use_mca:
@@ -172,5 +213,11 @@ class LennardJonesFMTDispersion1D:
             a2 = 2.8 * 0.5 * (self.epsilon_k**2) * (self.sigma**3)
             mu_mca = -(a2 / T) * rho_bulk * (2.0 * chi_hs + eta * d_chi)
 
-        mu_k = T * np.log(max(1e-12, rho_bulk)) + mu_hs - 2.0 * a1 * rho_bulk + mu_mca
+        mu_atm = 0.0
+        if self.use_atm:
+            mu_atm = compute_atm_chemical_potential_correction(
+                rho_bulk, eta, T, nu_atm=self.nu_atm, sigma=self.sigma
+            )
+
+        mu_k = T * np.log(max(1e-12, rho_bulk)) + mu_hs - 2.0 * a1 * rho_bulk + mu_mca + mu_atm
         return float(mu_k)

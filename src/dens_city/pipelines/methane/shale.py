@@ -1,7 +1,7 @@
 """
 TraPPE United-Atom Methane (CH4) Shale Adsorption, Binodal & Gas Recovery Pipeline.
 Calculates properties directly from the TraPPE Lennard-Jones pair parameters:
-sigma = 3.730 A, eps/kB = 148.0 K.
+sigma = 3.730 A, eps/kB = 148.0 K coupled with Axilrod-Teller-Muto (ATM) 3-body dispersion.
 """
 
 from typing import Dict, List, Optional, Tuple
@@ -9,44 +9,44 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from scipy.optimize import root
 
-from dens_city.solver.dispersion import compute_barker_henderson_diameter
+from dens_city.solver.dispersion import (
+    LennardJonesFMTDispersion1D,
+    compute_barker_henderson_diameter,
+)
 
 KB = 1.380649e-23
 METHANE_SIGMA = 3.730  # Angstroms
 METHANE_EPSILON_K = 148.0  # Kelvin
+METHANE_NU_ATM = 1.218e6  # Kelvin * Angstrom^9 (105.0 eV * A^9)
 
-
-def compute_methane_a_wca(T: float) -> float:
-    return 1.35 * (16.0 * np.pi / 9.0) * METHANE_EPSILON_K * (METHANE_SIGMA**3)
+_SOLVER = LennardJonesFMTDispersion1D(
+    METHANE_SIGMA, METHANE_EPSILON_K, use_mca=True, use_atm=True, nu_atm=METHANE_NU_ATM
+)
 
 
 def compute_methane_pressure(rho: float, T: float) -> float:
-    d_T = compute_barker_henderson_diameter(METHANE_SIGMA, METHANE_EPSILON_K, T)
-    a = compute_methane_a_wca(T)
-    eta = (np.pi / 6.0) * rho * (d_T**3)
-    if eta >= 0.99 or eta <= 0.0:
-        return 1e6
-
-    Z_hs = (1.0 + eta + eta**2 - eta**3) / ((1.0 - eta) ** 3)
-    P_k_A3 = rho * T * Z_hs - a * (rho**2)
-    P_bar = P_k_A3 * 138.0649
-    return float(P_bar)
+    """
+    Computes bulk pressure P(rho, T) in bar using CS + MCA second-order dispersion
+    and ATM 3-body non-additive dispersion.
+    """
+    return _SOLVER.compute_bulk_pressure(rho, T)
 
 
 def compute_methane_chemical_potential(rho: float, T: float) -> float:
-    d_T = compute_barker_henderson_diameter(METHANE_SIGMA, METHANE_EPSILON_K, T)
-    a = compute_methane_a_wca(T)
-    eta = (np.pi / 6.0) * rho * (d_T**3)
-    if eta >= 0.99 or eta <= 0.0:
-        return 1e6
-
-    mu_ex_hs_k = T * (8.0 * eta - 9.0 * (eta**2) + 3.0 * (eta**3)) / ((1.0 - eta) ** 3)
-    mu_id_k = T * np.log(max(1e-12, rho))
-    mu_att_k = -2.0 * a * rho
-    return mu_id_k + mu_ex_hs_k + mu_att_k
+    """
+    Computes chemical potential mu(rho, T) in Kelvin using CS + MCA second-order dispersion
+    and ATM 3-body non-additive dispersion.
+    """
+    return _SOLVER.compute_chemical_potential(rho, T)
 
 
 def solve_methane_coexistence_point(T: float) -> Optional[Tuple[float, float, float]]:
+    """
+    Solves the exact coexistence condition at temperature T:
+      P(rho_l, T) = P(rho_v, T) = P_sat
+      mu(rho_l, T) = mu(rho_v, T)
+    Returns (rho_l, rho_v, P_sat_bar) or None if above critical point.
+    """
     d_T = compute_barker_henderson_diameter(METHANE_SIGMA, METHANE_EPSILON_K, T)
     rho_max = 0.85 * (6.0 / (np.pi * (d_T**3)))
     rho_grid = np.linspace(1e-5, rho_max, 500)
@@ -83,7 +83,7 @@ def solve_methane_coexistence_point(T: float) -> Optional[Tuple[float, float, fl
 
 def compute_methane_binodal(temperatures: List[float] = None) -> Dict[str, np.ndarray]:
     """
-    Computes the liquid-vapor binodal curve for Methane from TraPPE pair parameters.
+    Computes the liquid-vapor binodal curve for Methane from TraPPE pair parameters with ATM 3-body dispersion.
     """
     if temperatures is None:
         temperatures = [110.0, 125.0, 140.0, 155.0, 170.0, 180.0]
