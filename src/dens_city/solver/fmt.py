@@ -29,7 +29,6 @@ class FundamentalMeasureTheory1D:
         Computes 1D planar Rosenfeld weighted densities n0, n1, n2, n3, nv1, nv2 via convolution.
         """
         dz = z_coords[1] - z_coords[0]
-        N = len(z_coords)
         R = self.R
 
         # Kernel grid

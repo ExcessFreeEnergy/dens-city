@@ -28,7 +28,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import numpy as np
 import torch
@@ -48,9 +48,11 @@ from dens_city.envs.train import DensNeuralFunctional, train_unified  # noqa: E4
 from dens_city.models.coln import ConvolutedOperatorNetwork  # noqa: E402
 from dens_city.pipelines.argon.coexistence import (  # noqa: E402
     compute_argon_binodal,
-    compute_argon_isotherms,
 )
-from dens_city.pipelines.clay_pore.mineral import compute_clay_swelling_pressure, make_montmorillonite_slit_potential  # noqa: E402
+from dens_city.pipelines.clay_pore.mineral import (  # noqa: E402
+    compute_clay_swelling_pressure,
+    make_montmorillonite_slit_potential,
+)
 from dens_city.pipelines.co2.supercritical import (  # noqa: E402
     compute_orientational_density_and_order,
     compute_supercritical_crossovers,
@@ -76,14 +78,12 @@ from dens_city.pipelines.liquid_crystals.nematic import (  # noqa: E402
 )
 from dens_city.pipelines.methane.shale import (  # noqa: E402
     compute_ch4_co2_gas_recovery_crossover,
-    compute_methane_binodal,
     compute_methane_shale_isotherm,
 )
 from dens_city.pipelines.nitrogen.flue_gas import (  # noqa: E402
     compute_flue_gas_selectivity,
     compute_n2_orientational_isotherm,
 )
-from dens_city.pipelines.water.coexistence import compute_water_binodal  # noqa: E402
 from dens_city.pipelines.water.confinement import compute_confinement_isotherm  # noqa: E402
 from dens_city.solver.thermo_integration import compute_bulk_pressure  # noqa: E402
 from dens_city.tracking.tracker import ExperimentTracker  # noqa: E402
@@ -178,8 +178,7 @@ def run_water_benchmark(tracker: ExperimentTracker, timesteps: int = 50000) -> D
         return c1_out
 
     # 1. Bulk EOS
-    p_300 = compute_bulk_pressure(neural_c1_fn, 0.033, 300.0, L_z=20.0, grid_size=128)
-    p_atm = (p_300 * 1e10) / 101325.0
+    _ = compute_bulk_pressure(neural_c1_fn, 0.033, 300.0, L_z=20.0, grid_size=128)
 
     # 2. Nanoconfinement in graphene slits
     H_values = [7.0, 10.0, 13.5, 17.0, 21.0, 26.0, 32.0]
@@ -213,7 +212,12 @@ def run_water_benchmark(tracker: ExperimentTracker, timesteps: int = 50000) -> D
     # 4. Hyper-DFT Hydrogen Density
     rho_oxygen = conf_res["profiles"][2]
     obs_hyper = np.concatenate(
-        [rho_oxygen, np.zeros(256), np.zeros(256), np.array([300.0 / 500.0, -3200.0 * KB / 1e-19, 0.5], dtype=np.float32)]
+        [
+            rho_oxygen,
+            np.zeros(256),
+            np.zeros(256),
+            np.array([300.0 / 500.0, -3200.0 * KB / 1e-19, 0.5], dtype=np.float32),
+        ]
     ).astype(np.float32)
     with torch.no_grad():
         _, _, _, rho_hydrogen_pred = model(torch.tensor(obs_hyper, dtype=torch.float32, device=DEVICE).unsqueeze(0))
@@ -314,7 +318,9 @@ def run_co2_benchmark(tracker: ExperimentTracker, timesteps: int = 10000) -> Dic
     )
 
     print(f"  -> Predicted T_c: {T_c_pred:.1f} K (NIST: 304.1 K, Err: {record.T_c_error_pct:+.1f}%)")
-    print(f"  -> Subcritical Liquid Density: {rho_l_pred:.3f} A^-3 (NIST: 0.015 A^-3, Err: {record.rho_l_error_pct:+.1f}%)")
+    print(
+        f"  -> Subcritical Liquid Density: {rho_l_pred:.3f} A^-3 (NIST: 0.015 A^-3, Err: {record.rho_l_error_pct:+.1f}%)"
+    )
     print(f"  -> Interfacial Orientational Alignment S_order min: {s_order.min():.3f} (Planar wall order)")
     print(f"  -> Fisher-Widom Crossover: {np.round(co2_cross['fisher_widom'][:3], 4)} A^-3")
     return {"species": "co2", "record": record, "T_c_pred": T_c_pred, "rho_l_pred": rho_l_pred}
@@ -335,10 +341,7 @@ def run_electrolytes_benchmark(tracker: ExperimentTracker) -> Dict[str, Any]:
         return -0.35 * (rho / 0.005)
 
     # 1. Solve Electric Double Layer at 1.0 V (1:1 Symmetric RPM)
-    edl_res = solve_electric_double_layer(c1_rpm, voltage=1.0, T=300.0, rho_bulk=0.005, grid_size=256)
-    rho_pos = edl_res["rho_pos"]
-    rho_neg = edl_res["rho_neg"]
-    total_charge = edl_res["total_charge"]
+    _ = solve_electric_double_layer(c1_rpm, voltage=1.0, T=300.0, rho_bulk=0.005, grid_size=256)
 
     # 2. Solve 2:1 Multivalent Asymmetric Electrolyte (MgCl2/CaCl2) with Charge Inversion
     multi_res = solve_multivalent_double_layer(surface_charge=-0.20, T=300.0, rho_salt_M=0.1)
@@ -369,8 +372,10 @@ def run_electrolytes_benchmark(tracker: ExperimentTracker) -> Dict[str, Any]:
 
     print(f"  -> Reduced Critical T_c*: {T_c_pred:.3f} (PRL 2025: 0.050, Err: {record.T_c_error_pct:+.1f}%)")
     print(f"  -> Reduced Coexistence Density: {rho_l_pred:.3f} (PRL 2025: 0.020, Err: {record.rho_l_error_pct:+.1f}%)")
-    print(f"  -> Differential Capacitance C(0V): {cap[len(cap)//2]*1e6:.1f} uF/cm^2 (Grahame: 15-30 uF/cm^2)")
-    print(f"  -> 2:1 Multivalent Charge Inversion: Overcharging Ratio = {multi_res['overcharging_ratio']:.2f} (Detected: {multi_res['charge_inversion_detected']})")
+    print(f"  -> Differential Capacitance C(0V): {cap[len(cap) // 2] * 1e6:.1f} uF/cm^2 (Grahame: 15-30 uF/cm^2)")
+    print(
+        f"  -> 2:1 Multivalent Charge Inversion: Overcharging Ratio = {multi_res['overcharging_ratio']:.2f} (Detected: {multi_res['charge_inversion_detected']})"
+    )
     return {"species": "electrolytes", "record": record, "T_c_pred": T_c_pred, "rho_l_pred": rho_l_pred}
 
 
@@ -423,7 +428,9 @@ def run_co2_water_benchmark(tracker: ExperimentTracker) -> Dict[str, Any]:
 
     print(f"  -> Solvation Free Energy of CO2 in Water: {delta_mu_solv:.2f} kJ/mol (Expt Wilhelm 1977: +0.83 kJ/mol)")
     print(f"  -> Mutual Solubility at 310K, 50atm: x_CO2(aq) = {x_co2:.4f} (Expt: ~0.023), y_H2O(gas) = {y_h2o:.4f}")
-    print(f"  -> Competitive Slit Pore (20A): Wall peak rho_water = {peak_water:.3f} A^-3, Center rho_CO2 = {peak_co2:.3f} A^-3")
+    print(
+        f"  -> Competitive Slit Pore (20A): Wall peak rho_water = {peak_water:.3f} A^-3, Center rho_CO2 = {peak_co2:.3f} A^-3"
+    )
     return {"species": "co2_water", "record": record, "T_c_pred": T_ref, "rho_l_pred": rho_l_pred}
 
 
@@ -610,7 +617,9 @@ def run_liquid_crystals_benchmark(tracker: ExperimentTracker) -> Dict[str, Any]:
         notes="Nematic liquid crystals (5CB) Maier-Saupe cDFT, I-N binodal, and homeotropic/planar anchoring",
     )
 
-    print(f"  -> Nematic-Isotropic Clearing Temp T_NI: {T_NI_pred:.1f} K (5CB Expt: 308.5 K, Err: {record.T_c_error_pct:+.1f}%)")
+    print(
+        f"  -> Nematic-Isotropic Clearing Temp T_NI: {T_NI_pred:.1f} K (5CB Expt: 308.5 K, Err: {record.T_c_error_pct:+.1f}%)"
+    )
     print(f"  -> Coexistence Nematic Density: {rho_nem_300k:.4f} A^-3 (Iso: {rho_iso_300k:.4f} A^-3)")
     print(f"  -> Coexistence Order Parameter Jump: S_N = {s_jump:.3f} (Maier-Saupe Exact: 0.429)")
     print(f"  -> Homeotropic Anchoring Max Order: S = {lc_homeo['S_order'].max():.3f} (Perpendicular theta ~ 0 deg)")
@@ -653,7 +662,9 @@ def run_argon_benchmark(tracker: ExperimentTracker) -> Dict[str, Any]:
     )
 
     print(f"  -> Predicted T_c: {T_c_pred:.1f} K (NIST: 150.86 K, Err: {record.T_c_error_pct:+.1f}%)")
-    print(f"  -> Liquid Density (85K): {rho_l_pred:.4f} A^-3 (NIST 84K: 0.0214 A^-3, Err: {record.rho_l_error_pct:+.1f}%)")
+    print(
+        f"  -> Liquid Density (85K): {rho_l_pred:.4f} A^-3 (NIST 84K: 0.0214 A^-3, Err: {record.rho_l_error_pct:+.1f}%)"
+    )
     print(f"  -> Critical Density rho_c: {binodal['rho_c']:.4f} A^-3 (NIST: 0.00808 A^-3)")
     print(f"  -> Critical Pressure P_c: {binodal['P_c_bar']:.1f} bar (NIST: 48.98 bar)")
     return {"species": "argon", "record": record, "T_c_pred": T_c_pred, "rho_l_pred": rho_l_pred}
@@ -700,9 +711,15 @@ def run_interfaces_benchmark(tracker: ExperimentTracker) -> Dict[str, Any]:
         notes="Hydrophobic/hydrophilic wetting, capillary drying gap H_dry, and LCW length-scale crossover",
     )
 
-    print(f"  -> Hydrophilic Contact Angle theta_c: {philic_res['theta_deg']:.1f} deg (Regime: {philic_res['wetting_regime']})")
-    print(f"  -> Hydrophobic Contact Angle theta_c: {phobic_res['theta_deg']:.1f} deg (Regime: {phobic_res['wetting_regime']})")
-    print(f"  -> Critical Capillary Drying Gap H_dry: {drying_res['H_dry_nm']:.2f} nm (Cavitation detected: {drying_res['cavitation_detected']})")
+    print(
+        f"  -> Hydrophilic Contact Angle theta_c: {philic_res['theta_deg']:.1f} deg (Regime: {philic_res['wetting_regime']})"
+    )
+    print(
+        f"  -> Hydrophobic Contact Angle theta_c: {phobic_res['theta_deg']:.1f} deg (Regime: {phobic_res['wetting_regime']})"
+    )
+    print(
+        f"  -> Critical Capillary Drying Gap H_dry: {drying_res['H_dry_nm']:.2f} nm (Cavitation detected: {drying_res['cavitation_detected']})"
+    )
     print(f"  -> Lum-Chandler-Weeks Crossover Length R_c: {lcw_res['R_c_nm']:.1f} nm")
     return {"species": "interfaces", "record": record, "T_c_pred": T_c_pred, "rho_l_pred": rho_l_pred}
 
@@ -726,7 +743,9 @@ RUNNERS = {
 
 def print_master_comparison_table():
     print("\n" + "=" * 145)
-    print("  dens-city: COMPLETE 10-MATERIAL FIRST-PRINCIPLES SIMULATION VS. EXPERIMENTAL REALITY & PUBLISHED BASELINES")
+    print(
+        "  dens-city: COMPLETE 10-MATERIAL FIRST-PRINCIPLES SIMULATION VS. EXPERIMENTAL REALITY & PUBLISHED BASELINES"
+    )
     print("=" * 145)
     header = (
         f"{'#':<2} | {'Material':<15} | {'Property / Observable':<26} | {'Reality (Expt/NIST)':<22} | "
@@ -736,30 +755,228 @@ def print_master_comparison_table():
     print("-" * 145)
 
     rows = [
-        ("1", "Water (H2O)", "Critical Temp (T_c)", "647.1 K (NIST)", "660.0 K", "695K (SCAN), 584K (RPBE)", "+2.0%", "Best Match"),
-        (" ", " ", "Liquid Density (300K)", "33.36 nm^-3", "33.0 nm^-3", "34.5 (SCAN), 32.8 (RPBE)", "-1.1%", "High Fidelity"),
-        (" ", " ", "Hydration Layer (ΔH)", "~0.31 nm (AFM/SFA)", "~0.32 nm", "~0.31 nm (SCAN DFT)", "Discrete Layers", "Matched"),
-        ("2", "CO2", "Critical Temp (T_c)", "304.13 K (NIST)", "304.1 K", "299K (PBE-D3), 300K (TraPPE)", "-0.01%", "Exact Match"),
-        (" ", " ", "Subcritical Liquid (250K)", "0.015 A^-3 (NIST)", "0.015 A^-3", "0.015 A^-3 (TraPPE)", "0.0%", "Exact Match"),
-        (" ", " ", "Interfacial Order S_order", "Negative (Q=-4.3 D*A)", "-0.32 (Planar)", "-0.30 (COLN Operator)", "Quadrupolar", "Matched"),
-        ("3", "Electrolytes", "Reduced Critical T_c*", "0.049-0.051 (RPM)", "0.050", "0.050 (PRL 2025)", "0.0%", "Exact Match"),
-        (" ", " ", "Diff. Capacitance C(0V)", "15-30 uF/cm^2 (Grahame)", "22.4 uF/cm^2", "20.5 uF/cm^2 (LMFT cDFT)", "In Range", "Validated"),
-        (" ", " ", "2:1 Charge Inversion", "Overcharging (AFM)", "1.15x Overcharging", "1.12x (LMFT cDFT)", "Charge Inversion", "Validated"),
-        ("4", "CO2/H2O Mixture", "Solvation Free Energy", "+0.83 kJ/mol (Wilhelm)", "+0.85 kJ/mol", "+0.92 kJ/mol (MDFT)", "+2.4%", "Sub-kJ/mol"),
-        (" ", " ", "Mutual Sol. x_CO2 (50atm)", "0.0230 (Wiebe/Gaddy)", "0.0232", "0.0225 (Raoult-Virial)", "+0.9%", "High Fidelity"),
-        ("5", "Nitrogen (N2)", "Critical Temp (T_c)", "126.19 K (NIST)", "126.2 K", "125.8 K (TraPPE)", "+0.01%", "Exact Match"),
+        (
+            "1",
+            "Water (H2O)",
+            "Critical Temp (T_c)",
+            "647.1 K (NIST)",
+            "660.0 K",
+            "695K (SCAN), 584K (RPBE)",
+            "+2.0%",
+            "Best Match",
+        ),
+        (
+            " ",
+            " ",
+            "Liquid Density (300K)",
+            "33.36 nm^-3",
+            "33.0 nm^-3",
+            "34.5 (SCAN), 32.8 (RPBE)",
+            "-1.1%",
+            "High Fidelity",
+        ),
+        (
+            " ",
+            " ",
+            "Hydration Layer (ΔH)",
+            "~0.31 nm (AFM/SFA)",
+            "~0.32 nm",
+            "~0.31 nm (SCAN DFT)",
+            "Discrete Layers",
+            "Matched",
+        ),
+        (
+            "2",
+            "CO2",
+            "Critical Temp (T_c)",
+            "304.13 K (NIST)",
+            "304.1 K",
+            "299K (PBE-D3), 300K (TraPPE)",
+            "-0.01%",
+            "Exact Match",
+        ),
+        (
+            " ",
+            " ",
+            "Subcritical Liquid (250K)",
+            "0.015 A^-3 (NIST)",
+            "0.015 A^-3",
+            "0.015 A^-3 (TraPPE)",
+            "0.0%",
+            "Exact Match",
+        ),
+        (
+            " ",
+            " ",
+            "Interfacial Order S_order",
+            "Negative (Q=-4.3 D*A)",
+            "-0.32 (Planar)",
+            "-0.30 (COLN Operator)",
+            "Quadrupolar",
+            "Matched",
+        ),
+        (
+            "3",
+            "Electrolytes",
+            "Reduced Critical T_c*",
+            "0.049-0.051 (RPM)",
+            "0.050",
+            "0.050 (PRL 2025)",
+            "0.0%",
+            "Exact Match",
+        ),
+        (
+            " ",
+            " ",
+            "Diff. Capacitance C(0V)",
+            "15-30 uF/cm^2 (Grahame)",
+            "22.4 uF/cm^2",
+            "20.5 uF/cm^2 (LMFT cDFT)",
+            "In Range",
+            "Validated",
+        ),
+        (
+            " ",
+            " ",
+            "2:1 Charge Inversion",
+            "Overcharging (AFM)",
+            "1.15x Overcharging",
+            "1.12x (LMFT cDFT)",
+            "Charge Inversion",
+            "Validated",
+        ),
+        (
+            "4",
+            "CO2/H2O Mixture",
+            "Solvation Free Energy",
+            "+0.83 kJ/mol (Wilhelm)",
+            "+0.85 kJ/mol",
+            "+0.92 kJ/mol (MDFT)",
+            "+2.4%",
+            "Sub-kJ/mol",
+        ),
+        (
+            " ",
+            " ",
+            "Mutual Sol. x_CO2 (50atm)",
+            "0.0230 (Wiebe/Gaddy)",
+            "0.0232",
+            "0.0225 (Raoult-Virial)",
+            "+0.9%",
+            "High Fidelity",
+        ),
+        (
+            "5",
+            "Nitrogen (N2)",
+            "Critical Temp (T_c)",
+            "126.19 K (NIST)",
+            "126.2 K",
+            "125.8 K (TraPPE)",
+            "+0.01%",
+            "Exact Match",
+        ),
         (" ", " ", "Flue Gas Selectivity", "15-40 (Carbon pore)", "28.5", "25.0 (IAST/cDFT)", "In Range", "Validated"),
-        ("6", "Methane (CH4)", "Critical Temp (T_c)", "190.56 K (NIST)", "185.2 K", "190.2 K (TraPPE)", "-2.8%", "Exact Match"),
+        (
+            "6",
+            "Methane (CH4)",
+            "Critical Temp (T_c)",
+            "190.56 K (NIST)",
+            "185.2 K",
+            "190.2 K (TraPPE)",
+            "-2.8%",
+            "Exact Match",
+        ),
         (" ", " ", "CO2 EGR Efficiency", "75-92% (Shale field)", "82.5%", "80.0% (cDFT Slit)", "In Range", "Validated"),
-        ("7", "Montmorillonite", "1W Basal Spacing / P_sw", "12.5 A / 10-150 MPa (XRD)", "12.5 A / 120 MPa", "12.5 A / 115 MPa (cDFT)", "Exact Spacing", "Matched"),
-        (" ", " ", "2W Bilayer Spacing", "15.5 A (Norrish 1954)", "15.5 A", "15.5 A (cDFT/DLVO)", "Exact Spacing", "Matched"),
-        ("8", "Liquid Crystals", "Clearing Temp (T_NI)", "308.5 K (5CB Dunmur)", "308.5 K", "308.5 K (Maier-Saupe)", "0.0%", "Exact Match"),
-        (" ", " ", "Coex. Order Jump S_N", "0.429 (5CB NMR)", "0.429", "0.429 (Maier-Saupe Exact)", "0.0%", "Exact Match"),
-        ("9", "Argon (Ar)", "Critical Temp (T_c)", "150.86 K (NIST)", "149.4 K", "150.8 K (Pure LJ WCA)", "-1.0%", "Unpatched LJ Match"),
-        (" ", " ", "Liquid Density (85K)", "0.0214 A^-3 (NIST)", "0.0189 A^-3", "0.020 A^-3 (FMT MCA)", "-11.5%", "High Fidelity"),
-        ("10", "Planar Interfaces", "Hydrophobic Contact Angle", "105-120 deg (SAM/PTFE)", "112.5 deg", "110 deg (Young-Dupre)", "In Range", "Matched"),
-        (" ", " ", "Capillary Drying Gap H_dry", "1.0-3.0 nm (SFA/AFM)", "1.85 nm", "1.80 nm (LCW Theory)", "Drying Gap", "Validated"),
-        (" ", " ", "LCW Crossover Scale R_c", "~1.0 nm (Lum-Chandler)", "1.0 nm", "1.0 nm (LCW Theory)", "0.0%", "Exact Scale"),
+        (
+            "7",
+            "Montmorillonite",
+            "1W Basal Spacing / P_sw",
+            "12.5 A / 10-150 MPa (XRD)",
+            "12.5 A / 120 MPa",
+            "12.5 A / 115 MPa (cDFT)",
+            "Exact Spacing",
+            "Matched",
+        ),
+        (
+            " ",
+            " ",
+            "2W Bilayer Spacing",
+            "15.5 A (Norrish 1954)",
+            "15.5 A",
+            "15.5 A (cDFT/DLVO)",
+            "Exact Spacing",
+            "Matched",
+        ),
+        (
+            "8",
+            "Liquid Crystals",
+            "Clearing Temp (T_NI)",
+            "308.5 K (5CB Dunmur)",
+            "308.5 K",
+            "308.5 K (Maier-Saupe)",
+            "0.0%",
+            "Exact Match",
+        ),
+        (
+            " ",
+            " ",
+            "Coex. Order Jump S_N",
+            "0.429 (5CB NMR)",
+            "0.429",
+            "0.429 (Maier-Saupe Exact)",
+            "0.0%",
+            "Exact Match",
+        ),
+        (
+            "9",
+            "Argon (Ar)",
+            "Critical Temp (T_c)",
+            "150.86 K (NIST)",
+            "149.4 K",
+            "150.8 K (Pure LJ WCA)",
+            "-1.0%",
+            "Unpatched LJ Match",
+        ),
+        (
+            " ",
+            " ",
+            "Liquid Density (85K)",
+            "0.0214 A^-3 (NIST)",
+            "0.0189 A^-3",
+            "0.020 A^-3 (FMT MCA)",
+            "-11.5%",
+            "High Fidelity",
+        ),
+        (
+            "10",
+            "Planar Interfaces",
+            "Hydrophobic Contact Angle",
+            "105-120 deg (SAM/PTFE)",
+            "112.5 deg",
+            "110 deg (Young-Dupre)",
+            "In Range",
+            "Matched",
+        ),
+        (
+            " ",
+            " ",
+            "Capillary Drying Gap H_dry",
+            "1.0-3.0 nm (SFA/AFM)",
+            "1.85 nm",
+            "1.80 nm (LCW Theory)",
+            "Drying Gap",
+            "Validated",
+        ),
+        (
+            " ",
+            " ",
+            "LCW Crossover Scale R_c",
+            "~1.0 nm (Lum-Chandler)",
+            "1.0 nm",
+            "1.0 nm (LCW Theory)",
+            "0.0%",
+            "Exact Scale",
+        ),
     ]
 
     for r in rows:
@@ -801,7 +1018,7 @@ def main():
     print("=" * 90)
     print("  dens-city: Launching Full First-Principles End-to-End Simulations")
     print(f"  Materials Selected ({len(selected)}/{len(ALL_MATERIALS)}): {', '.join(selected)}")
-    print(f"  Platform: C++/CUDA + 3D Ewald + LMFT Restructuring + COLN Operator + Picard Solver")
+    print("  Platform: C++/CUDA + 3D Ewald + LMFT Restructuring + COLN Operator + Picard Solver")
     print(f"  Persistent Tracking Output: {root_dir / 'runs'}")
     print("=" * 90)
 

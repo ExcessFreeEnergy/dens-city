@@ -4,25 +4,18 @@ First-Principles Pure Lennard-Jones Argon & TraPPE Methane pipelines without emp
 """
 
 import numpy as np
-import pytest
 
 from dens_city.pipelines.argon.coexistence import (
     ARGON_EPSILON_K,
     ARGON_SIGMA,
     compute_argon_binodal,
     compute_argon_isotherms,
-    compute_argon_pressure,
 )
 from dens_city.pipelines.methane.shale import (
-    METHANE_EPSILON_K,
-    METHANE_SIGMA,
     compute_methane_binodal,
-    compute_methane_pressure,
 )
 from dens_city.solver.dispersion import (
-    LennardJonesFMTDispersion1D,
     compute_barker_henderson_diameter,
-    compute_planar_attractive_kernel,
 )
 from dens_city.solver.fmt import FundamentalMeasureTheory1D
 
@@ -33,7 +26,6 @@ def test_fmt_weighted_densities():
     rho = np.full_like(z, 0.02)  # Homogeneous fluid
 
     n0, n1, n2, n3, nv1, nv2 = fmt.compute_weighted_densities(z, rho)
-    R = 3.405 / 2.0
 
     # In bulk homogeneous 3D fluid:
     # n3 = rho * (4/3) * pi * R^3 = eta
@@ -94,6 +86,5 @@ def test_argon_isotherms_monotonicity():
     p_100 = iso_res["isotherms"]["T_100K"]
     p_220 = iso_res["isotherms"]["T_220K"]
 
-    # 220K should be strictly monotonic with density
-    dp_220 = np.diff(p_220)
-    assert np.all(dp_220 > 0)
+    assert np.any(np.diff(p_100) < 0)  # Spinodal instability in subcritical fluid
+    assert np.all(np.diff(p_220) > 0)  # Monotonic supercritical EOS

@@ -3,7 +3,8 @@ Hydrophobic & Hydrophilic Planar Wetting Interfaces Pipeline.
 Solves contact angles, capillary evaporation/drying gap H_dry, and Lum-Chandler-Weeks (LCW) crossover.
 """
 
-from typing import Dict, List, Tuple
+from typing import Dict, List
+
 import numpy as np
 
 # Physical surface tension of water at 298.15K (mN / m = mJ / m^2)

@@ -5,6 +5,7 @@ sigma = 3.730 A, eps/kB = 148.0 K.
 """
 
 from typing import Dict, List, Optional, Tuple
+
 import numpy as np
 from scipy.optimize import root
 

@@ -5,6 +5,7 @@ exhibiting charge inversion and overcharging.
 """
 
 from typing import Callable, Dict, List, Tuple
+
 import numpy as np
 
 KB = 1.380649e-23
@@ -90,7 +91,6 @@ def solve_multivalent_double_layer(
     # Divalent cation strongly over-screens negative surface charge within first hydration layer
     # Overcharging ratio: Q_layer / |sigma_s| > 1.0
     r_stern = 4.5  # Angstroms
-    stern_mask = z_coords <= r_stern
 
     # Density profiles
     # Divalent cation accumulates dramatically near the negative wall

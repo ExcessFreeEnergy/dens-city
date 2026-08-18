@@ -8,6 +8,7 @@ the second-order perturbation fluctuation integral:
 """
 
 from typing import Callable, Tuple
+
 import numpy as np
 
 from dens_city.solver.fmt import FundamentalMeasureTheory1D
@@ -108,7 +109,9 @@ class LennardJonesFMTDispersion1D:
         self.r_cut = float(r_cut)
         self.use_mca = bool(use_mca)
 
-    def get_c1_functional(self, T: float, L_z: float = 40.0, grid_size: int = 256) -> Callable[[np.ndarray], np.ndarray]:
+    def get_c1_functional(
+        self, T: float, L_z: float = 40.0, grid_size: int = 256
+    ) -> Callable[[np.ndarray], np.ndarray]:
         """
         Returns callable c1(rho, z) functional for a fixed temperature T.
         """

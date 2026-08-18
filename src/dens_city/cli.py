@@ -192,6 +192,7 @@ def main():
         import subprocess
         import sys
         from pathlib import Path
+
         script_path = Path(__file__).parent.parent.parent / "scripts" / "run_e2e_benchmarks.py"
         cmd = [sys.executable, str(script_path), "--timesteps", str(args.timesteps), "--materials"] + args.materials
         subprocess.run(cmd, check=True)

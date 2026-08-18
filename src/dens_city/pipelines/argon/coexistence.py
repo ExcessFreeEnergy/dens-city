@@ -6,6 +6,7 @@ and Macroscopic Compressibility Approximation (MCA) for second-order fluctuation
 """
 
 from typing import Dict, List, Optional, Tuple
+
 import numpy as np
 from scipy.optimize import root
 

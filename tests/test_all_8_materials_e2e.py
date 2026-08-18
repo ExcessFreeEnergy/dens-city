@@ -18,11 +18,9 @@ from dens_city.pipelines.clay_pore.mineral import (
     make_montmorillonite_slit_potential,
 )
 from dens_city.pipelines.co2.supercritical import (
-    compute_orientational_density_and_order,
     compute_supercritical_crossovers,
 )
 from dens_city.pipelines.co2_water.mixture import (
-    compute_competitive_pore_adsorption,
     compute_mutual_solubility,
     compute_solvation_free_energy,
 )

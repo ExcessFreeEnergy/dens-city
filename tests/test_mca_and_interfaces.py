@@ -4,11 +4,9 @@ and Hydrophobic/Hydrophilic Planar Wetting Interfaces.
 """
 
 import numpy as np
-import pytest
 
 from dens_city.pipelines.argon.coexistence import (
     compute_argon_binodal,
-    compute_argon_pressure,
 )
 from dens_city.pipelines.electrolytes.double_layer import (
     solve_multivalent_double_layer,
