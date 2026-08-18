@@ -1,0 +1,35 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.dylib
+*.dll
+
+# Virtual environment
+.venv/
+env/
+venv/
+
+# Pytest / Test caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build and distribution
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Model weights and artifacts
+*.pt
+*.pth
+*.log
+output.xyz*
+*.npz
+*.dat
+
+# macOS metadata
+.DS_Store
+._*
