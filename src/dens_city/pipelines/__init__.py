@@ -5,12 +5,14 @@ dens-city Physical Pipelines:
 3. Electrolytes (RPM 1:1, Double Layer, Differential Capacitance)
 4. CO2/H2O Binary Mixture (Solvation Free Energy, Mutual Solubility, Competitive Pore Filling)
 5. Nitrogen (Linear Diatomic N2 Flue Gas Separation, Adsorption Selectivity)
-6. Methane (CH4 Shale Organic Confinement, Enhanced Gas Recovery)
+6. Methane (CH4 TraPPE United-Atom Shale Organic Confinement, Binodal, Enhanced Gas Recovery)
 7. Montmorillonite Clay (Aluminosilicate Slit Pores, Hydration & Osmotic Swelling Pressures)
 8. Liquid Crystals & Patchy Particles (Nematic Director Fields, Isotropic-Nematic Binodal)
+9. Argon (Pure Lennard-Jones Baseline, FMT + Barker-Henderson/WCA Coexistence)
 """
 
 from dens_city.pipelines import (
+    argon,
     clay_pore,
     co2,
     co2_water,
@@ -30,4 +32,5 @@ __all__ = [
     "methane",
     "clay_pore",
     "liquid_crystals",
+    "argon",
 ]

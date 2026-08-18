@@ -43,6 +43,29 @@ def main():
     # 8. Liquid crystals pipeline
     subparsers.add_parser("liquid-crystals", help="Execute nematic liquid crystals and patchy particles pipeline")
 
+    # 9. Argon pure Lennard-Jones baseline pipeline
+    subparsers.add_parser("argon", help="Execute Argon pure Lennard-Jones FMT coexistence pipeline")
+
+    # Benchmark / E2E subcommand
+    bench_p = subparsers.add_parser("benchmark", help="Execute full end-to-end multi-material simulation & benchmark")
+    bench_p.add_argument(
+        "--materials",
+        nargs="*",
+        default=["all"],
+        help="List of materials to simulate (e.g. water co2 liquid_crystals) or 'all'",
+    )
+    bench_p.add_argument("--timesteps", type=int, default=50000, help="Training timesteps")
+
+    # e2e alias
+    e2e_p = subparsers.add_parser("e2e", help="Alias for benchmark")
+    e2e_p.add_argument(
+        "--materials",
+        nargs="*",
+        default=["all"],
+        help="List of materials to simulate or 'all'",
+    )
+    e2e_p.add_argument("--timesteps", type=int, default=50000, help="Training timesteps")
+
     args = parser.parse_args()
 
     if args.command == "train":
@@ -142,6 +165,21 @@ def main():
         print(
             f"[dens-city] Isotropic-Nematic Coexistence rho_iso={res_in['rho_isotropic'][1]:.4f}, rho_nem={res_in['rho_nematic'][1]:.4f}"
         )
+    elif args.command == "argon":
+        print("[dens-city] Executing Argon Pure Lennard-Jones FMT Coexistence Pipeline...")
+        from dens_city.pipelines.argon.coexistence import compute_argon_binodal
+
+        bin_res = compute_argon_binodal([85.0, 95.0, 105.0, 115.0, 125.0, 135.0, 145.0])
+        print(f"[dens-city] Argon Predicted T_c: {bin_res['T_c_K']:.1f} K (NIST: 150.86 K)")
+        print(f"[dens-city] Argon Predicted rho_c: {bin_res['rho_c']:.4f} A^-3 (NIST: 0.00808 A^-3)")
+        print(f"[dens-city] Argon Liquid Density (85K): {bin_res['rho_l'][0]:.4f} A^-3 (NIST 84K: 0.0214 A^-3)")
+    elif args.command in ["benchmark", "e2e"]:
+        import subprocess
+        import sys
+        from pathlib import Path
+        script_path = Path(__file__).parent.parent.parent / "scripts" / "run_e2e_benchmarks.py"
+        cmd = [sys.executable, str(script_path), "--timesteps", str(args.timesteps), "--materials"] + args.materials
+        subprocess.run(cmd, check=True)
     else:
         parser.print_help()
 

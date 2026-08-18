@@ -7,16 +7,16 @@
 
 I built `dens-city` to scale quantum-mechanical atomic accuracy to macroscopic fluid dynamics on a single high performance workstation.
 
-With current methods, simulating dense molecular liquids like water, supercritical carbon dioxide, or concentrated electrolytes under nanoconfinement or strong electric fields, is unfeasible. Electronic structure methods like *ab initio* Density Functional Theory (DFT) and machine-learned interatomic potentials (MLIPs) give you gorgeous sub-Ångström fidelity and quantum-mechanical precision. However, they hit an impenetrable wall when you try to simulate more than a few thousand atoms across nanosecond timescales. On the other side of the scale, continuum hydrodynamics and classical equations of state can simulate gallons of fluid in seconds, but completely throw away molecular structure, hydrogen-bonding networks, dielectric saturation, and discrete interfacial layering.
+With current methods, simulating dense molecular liquids like water, supercritical carbon dioxide, or concentrated electrolytes under nanoconfinement or strong electric fields, is unfeasible. Electronic structure methods give you accurate sub-Ångström fidelity and quantum-mechanical precision but they hit an wall when you try to simulate more than a few thousand atoms across nanosecond timescales. On the other side of the scale, continuum hydrodynamics and classical equations of state can simulate gallons of fluid in seconds, but throw away molecular structure, hydrogen-bonding networks, dielectric saturation, and discrete interfacial layering.
 
 Classical Density Functional Theory (cDFT) is the exact statistical-mechanical bridge between these two worlds. In theory, if you know the intrinsic excess free energy functional $\mathcal{F}^{\rm ex}[\rho]$, you can predict the exact equilibrium structure, phase coexistence, and interfacial surface tension of any fluid system by simply minimizing a grand potential functional $\Omega[\rho]$. This project is the first step in solving the exact functional for real-world polar and anisotropic molecular fluids.
 
-While Grand Canonical Monte Carlo (GCMC) samples fluid densities and extracts the one-body direct correlation function $c^{(1)}(r)$, standard GCMC is notoriously brutal on CPU clusters. Inserting and deleting rigid molecules into dense, subcritical liquid water has acceptance rates well under 0.01%. Furthermore, for non-spherical linear molecules, the joint positional and orientational space $(x, \theta, \phi)$ blows up GPU memory during neural network training. I solve the simulation throughput bottleneck using vectorized zero-copy PufferLib C environments and resolve high-dimensional orientational scaling with Convoluted Operator Learning (COLN).
+While Grand Canonical Monte Carlo (GCMC) samples fluid densities and extracts the one-body direct correlation function $c^{(1)}(r)$, standard GCMC is notoriously brutal on CPU clusters. Inserting and deleting rigid molecules into dense, subcritical liquid water has <0.01% acceptance rates. Non-spherical linear molecules, the joint positional and orientational space $(x, \theta, \phi)$ blow up GPU memory during neural network training. I \*entirely\* solve the simulation with vectorized zero-copy PufferLib C environments and resolve high-dimensional orientational scaling with Convoluted Operator Learning (COLN).
 
 `dens-city` is the result of several modern research paths and engineering breakthroughs fused into a cohesive codebase:
 
 1. **High-Throughput Native C++/CUDA Engine**: An optimized simulation engine that handles short-range pair potentials, Buckingham exp-6 interactions, and Gaussian Drude polarization charges. On an NVIDIA GeForce RTX 4090 GPU, my batched CUDA kernels hit over **112 Million Monte Carlo steps per second**, turning months of offline cluster runs into less than a minute of GPU compute.
-2. **Exact 3D Long-Range Ewald Electrostatics**: Previous data-driven cDFT models truncate Coulomb interactions with a finite cutoff, causing severe dielectric artifacts and spurious polarization gradients near charged interfaces. I implement exact real-space Gaussian screening and reciprocal-space structure factor $\tilde{\rho}(\mathbf{k})$ caching directly in CUDA shared memory, ensuring true long-range screening without truncation error.
+2. **Exact 3D Long-Range Ewald Electrostatics**: Previous data-driven cDFT models truncate Coulomb interactions with a finite cutoff, causing severe dielectric artifacts and invalid polarization gradients near charged interfaces. I implement exact real-space Gaussian screening and reciprocal-space structure factor $\tilde{\rho}(\mathbf{k})$ caching directly in CUDA shared memory, ensuring true long-range screening without truncation error.
 3. **Zero-Copy Vectorized PufferLib C Environments**: Instead of the archaic "generate static data files $\to$ save to disk $\to$ train a separate neural network" workflow, I embed the entire physical simulation core and 1D Fourier restructuring $\phi^{\rm R}(z)$ directly into a zero-copy C environment. My training loop streams continuous density states straight into PyTorch tensor pointers at over **480,000 steps per second**.
 4. **Convoluted Operator Learning (COLN)**: To handle anisotropic molecules like CO₂ without blowing up memory, I implement a dual-branch Convoluted Operator Network inspired by Yang, Pan, Sun, & Wu (2024). I decouple the 3D orientational density $\rho(x, \theta, \phi)$ into a directional DeepONet for the angle-averaged density $\bar{\rho}(x)$ and an angular DeepONet for the position-averaged angular distribution $\hat{\rho}(\theta, \phi)$, projecting the interaction energy onto analytical Spherical Harmonics $Y_{lm}(\theta, \phi)$.
 5. **GPU Picard Solvers & Automatic Differentiation**: Once the neural operator is trained, `dens-city` solves the Euler-Lagrange equations across macroscopic slit pores (0.5 nm to 500 nm) in under 50 milliseconds using Anderson-accelerated Picard iteration. It then uses automatic differentiation to compute the direct correlation function $c^{(2)}(r)$, structure factors $S(k)$, and thermodynamic line integrals for disjoining pressure $\Pi(H)$ and bulk equations of state $P(\rho_b, T)$.
@@ -35,17 +35,20 @@ The result is a platform that delivers sub-Ångström atomistic accuracy, predic
 | **4. 1D Restructuring** | $\phi^{\rm R}(z) = \phi(z) + \frac{1}{L_z} \sum_{k \neq 0} \frac{4\pi}{k^2} \tilde{n}(k) e^{ikz} e^{-k^2/4\kappa^2}$ | `envs/dens_city_env.c` |
 | **5. Stillinger–Lovett** | $\Delta\mu^{\rm SL} = \frac{1}{2\beta\rho_b\kappa^{-3}\sqrt{\pi}^3}\left(\frac{\epsilon-1}{\epsilon}\right) - \frac{2\rho_b^2}{3\kappa^{-3}\sqrt{\pi}}$ | `core/engine.cpp` |
 | **6. 3D Long-Range Ewald** | $U_{\rm recip} = \frac{1}{2V} \sum_{\mathbf{k} \neq 0} \frac{4\pi}{k^2} e^{-k^2/4\alpha^2} \|\tilde{\rho}(\mathbf{k})\|^2 - \frac{\alpha}{\sqrt{\pi}}\sum_i q_i^2$ | `core/cuda_kernels.cu` |
-| **7. COLN Operator** | $c_1(x, \theta, \phi) = \sum_{l,m} c_{ml}(x, \bar{\rho}) Y_{ml}(\theta, \phi) \cdot [1 + \hat{\rho}(\theta, \phi)]$ | `models/coln.py` |
-| **8. Nematic Order $S$** | $S_{\rm order}(z) = \frac{1}{\bar{\rho}(z)} \int d\Omega \, \rho(z, \theta, \phi) \left(\frac{3\cos^2\theta - 1}{2}\right)$ | `pipelines/co2/supercritical.py` |
-| **9. Buckingham Exp-6** | $u(r) = \frac{q_i q_j}{4\pi\epsilon_0 r}{\rm erf}\left(\frac{r}{\sqrt{2}\sigma_{ij}}\right) + A_{ij}e^{-B_{ij}r} - \frac{C_{ij}}{r^6}$ | `core/cuda_kernels.cu` |
-| **10. Hyper-DFT** | $\rho_{\rm H}(z) = \rho_{\rm H}^{(1)}(z; [\rho_{\rm O}], T)$ | `envs/train.py` |
-| **11. Line Integration** | $\mathcal{F}^{\rm ex} = -k_B T \int_0^1 d\lambda \int dz \, c^{(1)}(z; [\lambda\rho], T) \rho(z)$ | `solver/thermo_integration.py` |
-| **12. Bulk Pressure EOS** | $P(\rho_b, T) = k_B T \rho_b(1 - c^{(1)}) - \frac{\mathcal{F}^{\rm ex}}{V}$ | `solver/thermo_integration.py` |
-| **13. Structure Factor $S(k)$** | $S(k) = \frac{1}{1 - \rho_b \hat{c}^{(2)}(k)}$ where $c^{(2)} = -\frac{\delta c^{(1)}}{\delta \rho}$ | `solver/correlation.py` |
-| **14. Effective Pressure** | $\tilde{P}(H) = P + \Pi(H) = -\int dz \, \rho(z) \frac{dV_{\rm wall}}{dz}$ | `pipelines/water/confinement.py` |
-| **15. Fisher–Widom Line** | Crossover of correlation decay: $\alpha_0 = \tilde{\alpha}_0$ | `pipelines/co2/supercritical.py` |
-| **16. Widom Lines** | Maxima of correlation length $\xi$ and compressibility $\chi_T$ | `pipelines/co2/supercritical.py` |
-| **17. Binodal Solver** | Picard iteration with Anderson acceleration | `solver/picard_solver.py` |
+| **7. Fundamental Measure Theory** | $\Phi_{\rm hs} = -n_0 \ln(1-n_3) + \frac{n_1 n_2 - \mathbf{n}_{v1}\cdot\mathbf{n}_{v2}}{1-n_3} + \frac{n_2^3 - 3n_2 \mathbf{n}_{v2}^2}{24\pi(1-n_3)^2}$ | `solver/fmt.py` |
+| **8. Barker-Henderson Diameter** | $d(T) = \int_0^{r_{\rm min}} \left[1 - \exp\left(-\frac{u_0(r)}{k_B T}\right)\right] dr$ | `solver/dispersion.py` |
+| **9. Slab Attractive Dispersion** | $\bar{u}_{\rm att}(|z|) = 2\pi \int_{|z|}^{r_{\rm cut}} r \, u_{\rm att}(r) \, dr$ | `solver/dispersion.py` |
+| **10. COLN Operator** | $c_1(x, \theta, \phi) = \sum_{l,m} c_{ml}(x, \bar{\rho}) Y_{ml}(\theta, \phi) \cdot [1 + \hat{\rho}(\theta, \phi)]$ | `models/coln.py` |
+| **11. Nematic Order $S$** | $S_{\rm order}(z) = \frac{1}{\bar{\rho}(z)} \int d\Omega \, \rho(z, \theta, \phi) \left(\frac{3\cos^2\theta - 1}{2}\right)$ | `pipelines/co2/supercritical.py` |
+| **12. Buckingham Exp-6** | $u(r) = \frac{q_i q_j}{4\pi\epsilon_0 r}{\rm erf}\left(\frac{r}{\sqrt{2}\sigma_{ij}}\right) + A_{ij}e^{-B_{ij}r} - \frac{C_{ij}}{r^6}$ | `core/cuda_kernels.cu` |
+| **13. Hyper-DFT** | $\rho_{\rm H}(z) = \rho_{\rm H}^{(1)}(z; [\rho_{\rm O}], T)$ | `envs/train.py` |
+| **14. Line Integration** | $\mathcal{F}^{\rm ex} = -k_B T \int_0^1 d\lambda \int dz \, c^{(1)}(z; [\lambda\rho], T) \rho(z)$ | `solver/thermo_integration.py` |
+| **15. Bulk Pressure EOS** | $P(\rho_b, T) = k_B T \rho_b(1 - c^{(1)}) - \frac{\mathcal{F}^{\rm ex}}{V}$ | `solver/thermo_integration.py` |
+| **16. Structure Factor $S(k)$** | $S(k) = \frac{1}{1 - \rho_b \hat{c}^{(2)}(k)}$ where $c^{(2)} = -\frac{\delta c^{(1)}}{\delta \rho}$ | `solver/correlation.py` |
+| **17. Effective Pressure** | $\tilde{P}(H) = P + \Pi(H) = -\int dz \, \rho(z) \frac{dV_{\rm wall}}{dz}$ | `pipelines/water/confinement.py` |
+| **18. Fisher–Widom Line** | Crossover of correlation decay: $\alpha_0 = \tilde{\alpha}_0$ | `pipelines/co2/supercritical.py` |
+| **19. Widom Lines** | Maxima of correlation length $\xi$ and compressibility $\chi_T$ | `pipelines/co2/supercritical.py` |
+| **20. Binodal Solver** | Picard iteration with Anderson acceleration | `solver/picard_solver.py` |
 
 ---
 
@@ -112,6 +115,13 @@ dens-city clay
 
 # 8. Execute Nematic Liquid Crystals & Patchy Particles Pipeline
 dens-city liquid-crystals
+
+# 9. Execute Pure Lennard-Jones Argon Coexistence Pipeline
+dens-city argon
+
+# Full End-to-End Multi-Material Simulation & Physical Reality Benchmarking
+dens-city benchmark
+dens-city benchmark --materials argon methane water co2
 
 # Launch Real-Time Raylib Scientific Dashboard
 dens-city ui --functional dens_functional.pt
