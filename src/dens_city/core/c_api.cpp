@@ -88,6 +88,29 @@ void dens_city_set_pair_potential(
     eng->pair_potentials[type_j][type_i] = pot;
 }
 
+void dens_city_set_pair_potential_buckingham(
+    DensCityEngineHandle handle,
+    int type_i, int type_j,
+    double A_ij, double B_ij, double C_ij, double rc,
+    double q1, double q2, double sigma_gauss_sq, double prefactor
+) {
+    assert(handle != nullptr && type_i >= 0 && type_i < 4 && type_j >= 0 && type_j < 4);
+    auto* eng = static_cast<SimulationEngine*>(handle);
+    PairPotential pot = {
+        .kind = PairPotentialKind::BUCKINGHAM_EXP6_GAUSSIAN,
+        .rc = rc,
+        .q1 = q1,
+        .q2 = q2,
+        .prefactor = prefactor > 0.0 ? prefactor : 1.67101e-19,
+        .A_ij = A_ij,
+        .B_ij = B_ij,
+        .C_ij = C_ij,
+        .sigma_gauss_sq = sigma_gauss_sq
+    };
+    eng->pair_potentials[type_i][type_j] = pot;
+    eng->pair_potentials[type_j][type_i] = pot;
+}
+
 void dens_city_set_external_potential(
     DensCityEngineHandle handle,
     int type_i,

@@ -27,6 +27,13 @@ void dens_city_set_pair_potential(
     double diameter, double prefactor, double shift_lj
 );
 
+void dens_city_set_pair_potential_buckingham(
+    DensCityEngineHandle handle,
+    int type_i, int type_j,
+    double A_ij, double B_ij, double C_ij, double rc,
+    double q1, double q2, double sigma_gauss_sq, double prefactor
+);
+
 void dens_city_set_external_potential(
     DensCityEngineHandle handle,
     int type_i,

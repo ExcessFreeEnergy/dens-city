@@ -43,6 +43,17 @@ __device__ static float evaluate_pair_potential_dev(CUDAPairPotential pot, float
         }
         return u_lj + u_c;
     }
+    if (pot.kind == 6) {
+        float inv_r = 1.0f / r;
+        float inv_r6 = inv_r * inv_r * inv_r * inv_r * inv_r * inv_r;
+        float u_buck = pot.A_ij * expf(-pot.B_ij * r) - pot.C_ij * inv_r6;
+        float u_c = 0.0f;
+        if (fabsf(pot.q1) > 1e-5f && fabsf(pot.q2) > 1e-5f) {
+            float sigma_gauss = sqrtf(pot.sigma_gauss_sq > 1e-6f ? pot.sigma_gauss_sq : 1.0f);
+            u_c = (pot.prefactor * pot.q1 * pot.q2 * inv_r) * erff(r / sigma_gauss);
+        }
+        return u_buck + u_c;
+    }
     return 0.0f;
 }
 

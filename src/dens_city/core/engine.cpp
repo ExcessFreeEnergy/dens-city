@@ -48,6 +48,17 @@ double PairPotential::evaluate(double r) const {
             }
             return u_lj + u_c;
         }
+        case PairPotentialKind::BUCKINGHAM_EXP6_GAUSSIAN: {
+            double inv_r = 1.0 / r;
+            double inv_r6 = inv_r * inv_r * inv_r * inv_r * inv_r * inv_r;
+            double u_buck = A_ij * std::exp(-B_ij * r) - C_ij * inv_r6;
+            double u_c = 0.0;
+            if (std::abs(q1) > 1e-6 && std::abs(q2) > 1e-6) {
+                double sigma_gauss = std::sqrt(sigma_gauss_sq > 1e-6 ? sigma_gauss_sq : 1.0);
+                u_c = (prefactor * q1 * q2 * inv_r) * std::erf(r / sigma_gauss);
+            }
+            return u_buck + u_c;
+        }
         default:
             return 0.0;
     }
