@@ -9,40 +9,9 @@
 
 ---
 
-## 1. Computational Flow & Architecture
+## 1. Key Physical Pipelines
 
-```mermaid
-flowchart TD
-    %% UNIFIED LAYER 1
-    subgraph UnifiedLayer1 ["Layer 1: Unified PufferLib C/CUDA Environment & Direct Training Loop"]
-        A1["Physics Core (C++/CUDA)<br/>• Real-Space Potentials (SCAN/RPBE/PBE/RPM)<br/>• 3D Long-Range Ewald Reciprocal k-cache<br/>• Embedded 1D Fourier Restructuring φ_R(z)"] 
-        <-->|Zero-Copy Memory Pointers| 
-        B1["PufferLib Vectorized C Environment (dens_city_env.c)<br/>• Live Density Relaxation & Inhomogeneous States<br/>• Euler-Lagrange Residual Reward Metric<br/>• PPO / Actor-Critic Direct Training Loop (train.py)"]
-        B1 ═════════► C1["Direct Output: Trained Local Neural Functional<br/>dens_functional.pt (c_R^(1)(z; [ρ], T) and Hyperdensity ρ_H)"]
-    end
-
-    %% LAYER 2: MACROSCOPIC SOLVER & THERMODYNAMICS
-    subgraph Layer2 ["Layer 2: GPU Picard Relaxation & Thermodynamic Integration"]
-        C1 --> D1["cDFT Picard Solver with Anderson Acceleration<br/>(Solves Euler-Lagrange on 0.5 nm to 500 nm domains)"]
-        D1 --> E1["Functional Line Integration (Excess Grand Potential Ω & Pressure P)<br/>& Automatic Differentiation (Structure Factor S(k) and OZ Total Correlation h(r))"]
-    end
-
-    %% LAYER 3: MULTI-SPECIES TARGET PREDICTIONS
-    subgraph Layer3 ["Layer 3: Target Physical Pipelines & Benchmarks"]
-        E1 --> F1["Water Pipeline (SCAN / RPBE-D3 / SPC/E)<br/>• Graphene Slit Pore Confinement (H = 0.7 - 10 nm)<br/>• Disjoining Pressure Π(H) Layering Minima<br/>• Hyper-DFT Hydrogen Density ρ_H(z)"]
-        E1 --> F2["Carbon Dioxide Pipeline (PBE-D3 / TraPPE)<br/>• Supercritical Fisher–Widom Line (α_0 = α̃_0)<br/>• Widom Lines (max ξ, max χ_T)<br/>• Equation of State P(ρ_b, T)"]
-        E1 --> F3["Electrolytes Pipeline (RPM 1:1)<br/>• Electric Double Layer Structure<br/>• True Long-Range Ewald Screening (No False Metallization)"]
-    end
-
-    UnifiedLayer1 --> Layer2
-    Layer2 --> Layer3
-```
-
----
-
-## 2. Key Physical Pipelines
-
-### 2.1 Water (`H2O`: SCAN, RPBE-D3, SPC/E, TIP4P/2005)
+### 1.1 Water (`H2O`: SCAN, RPBE-D3, SPC/E, TIP4P/2005)
 - **Nanoconfinement in Graphene Slits ($H \in [0.7\,\text{nm}, 10\,\text{nm}]$)**:
   - 9-3 Lennard-Jones graphene surface potentials fitted to Quantum Monte Carlo (QMC).
   - Effective pressure $\tilde{P}(H) = -\int_0^L dz \, \rho(z) \frac{dV_{\rm wall}}{dz}$.
@@ -50,20 +19,20 @@ flowchart TD
 - **Hyper-DFT Hydrogen Density $\rho_{\rm H}(z)$**:
   - Learns the structural mapping $\{\rho_{\rm O}(z), T\} \to \rho_{\rm H}(z)$ for full atomistic resolution.
 
-### 2.2 Carbon Dioxide ($\text{CO}_2$: PBE-D3, BLYP-D3, TraPPE)
+### 1.2 Carbon Dioxide ($\text{CO}_2$: PBE-D3, BLYP-D3, TraPPE)
 - **Supercritical Fisher–Widom Crossover**:
   - Locates the transition between monotonic exponential decay and oscillatory decay in the total correlation function $h(r)$.
 - **Supercritical Widom Lines**:
   - Maximum correlation length $\max \xi = 1/\alpha_0$ and maximum isothermal compressibility $\max \chi_T(\rho_b, T) = \frac{\beta}{\rho_b} S(k=0)$.
 
-### 2.3 Electrolytes & Ionic Fluids (RPM $1:1$ Salt Solutions)
+### 1.3 Electrolytes & Ionic Fluids (RPM $1:1$ Salt Solutions)
 - **True 3D Ewald Long-Range Screening**:
   - Shared-memory structure factor $\tilde{\rho}(\mathbf{k})$ updates on CUDA GPU.
   - Solves the electric double layer (EDL) and differential capacitance $C(V)$ without spurious polarization gradients or false metallization.
 
 ---
 
-## 3. Physical Comparison with Published Results & Reality
+## 2. Physical Comparison with Published Results & Reality
 
 Validation against published benchmarks in **Bui & Cox (2026)** ([arXiv:2603.20493](https://arxiv.org/abs/2603.20493) / `spec2.md`) and real-world experimental measurements:
 
@@ -80,7 +49,7 @@ Validation against published benchmarks in **Bui & Cox (2026)** ([arXiv:2603.204
 
 ---
 
-## 4. Quickstart & Installation
+## 3. Quickstart & Installation
 
 ```bash
 # 1. Clone repository
@@ -129,3 +98,21 @@ Measured on an NVIDIA GeForce RTX 4090 GPU (24 GB VRAM, 16,384 CUDA cores):
 | **Vectorized PufferLib C Environment** | Zero-Copy Rollouts | **>480,000 steps/s** | Native C pointer views |
 | **Full Direct Neural Functional Training** | 100k Timesteps (PyTorch) | **~18 seconds** | Direct GPU memory streaming |
 | **Macroscopic cDFT Picard Solver** | $500\,\text{nm}$ Inhomogeneous Slit | **< 0.05 seconds** | GPU Anderson acceleration |
+
+---
+
+## 6. Citations
+
+- **Original Source & Context**: [https://github.com/annatbui/gcmc](https://github.com/annatbui/gcmc)
+- **References**:
+  1. **A. T. Bui, S. J. Cox**, *"Dielectrocapillarity for exquisite control of fluids"*, arXiv:2503.09855 (2025).
+  2. **A. T. Bui, S. J. Cox**, *"Learning classical density functionals for ionic fluids"*, *Phys. Rev. Lett.* **134**, 148001 (2025). [doi:10.1103/PhysRevLett.134.148001](https://doi.org/10.1103/PhysRevLett.134.148001)
+  3. **A. T. Bui, S. J. Cox**, *"Ab initio classical density functional theory with neural functionals"*, arXiv:2603.20493 (2026).
+  4. **J. Yang, R. Pan, J. Sun, J. Wu**, *"High-Dimensional Operator Learning for Molecular Density Functional Theory"*, arXiv:2411.03698 (2024). [https://doi.org/10.48550/arxiv.2411.03698](https://doi.org/10.48550/arxiv.2411.03698)
+  5. **R. Roth**, *"Fundamental measure theory for hard-sphere mixtures: a review"*, *Journal of Physics: Condensed Matter* **22**, 063102 (2010). [doi:10.1088/0953-8984/22/6/063102](https://doi.org/10.1088/0953-8984/22/6/063102)
+
+---
+
+## 7. License
+
+This program is free software: you can redistribute it and/or modify it under the terms of the **GNU General Public License as published by the Free Software Foundation**, either version 3 of the License, or (at your option) any later version. See [LICENSE](LICENSE) for details.
