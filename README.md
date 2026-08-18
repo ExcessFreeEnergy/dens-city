@@ -27,42 +27,42 @@ The result is a platform that delivers sub-Ångström atomistic accuracy, predic
 
 ## 1. Compute Steps
 
-| Compute Step | Formula / Physical Operation | Implemented in `dens-city` |
+| Step | Formula / Operation | Implemented In |
 |---|---|---|
-| **1. Grand Potential Minimization** | $\Omega[\rho] = \mathcal{F}^{\rm id}[\rho] + \mathcal{F}^{\rm ex}[\rho] + \int dz \, \rho(z)(V^{\rm ext}(z) - \mu)$ | `solver/thermo_integration.py` |
-| **2. Euler–Lagrange Direct Inversion** | $c^{(1)}(z) = \ln(\zeta^{-1}\Lambda^3\rho(z)) + \beta(V^{\rm ext}(z) - \mu)$ | Embedded in `envs/dens_city_env.c` |
-| **3. Short-Range Reference Splitting (LMFT)** | $c^{(1)}(z) = c_{\rm R}^{(1)}(z) - \beta\Delta\mu^{\rm SL} + \beta\phi^{\rm R}(z)$ | Embedded in `envs/dens_city_env.c` |
-| **4. 1D Fourier Restructuring Potential** | $\phi^{\rm R}(z) = \phi(z) + \frac{1}{L_z} \sum_{k \neq 0} \frac{4\pi}{k^2} \tilde{n}(k) e^{ikz} e^{-k^2/4\kappa^2}$ | Native C FFT in `envs/dens_city_env.c` |
-| **5. Stillinger–Lovett Thermodynamic Shift** | $\Delta\mu^{\rm SL} = \frac{1}{2\beta\rho_b\kappa^{-3}\sqrt{\pi}^3}\left(\frac{\epsilon-1}{\epsilon}\right) - \frac{2\rho_b^2}{3\kappa^{-3}\sqrt{\pi}}$ | Native C in `core/engine.cpp` |
-| **6. 3D Long-Range Ewald Electrostatics** | $U_{\rm recip} = \frac{1}{2V} \sum_{\mathbf{k} \neq 0} \frac{4\pi}{k^2} e^{-k^2/4\alpha^2} \|\tilde{\rho}(\mathbf{k})\|^2 - \frac{\alpha}{\sqrt{\pi}}\sum_i q_i^2$ | Native C++/CUDA in `core/engine.cpp` & `core/cuda_kernels.cu` |
-| **7. Convoluted Operator Learning (COLN)** | $c_1(x, \theta, \phi) = \sum_{l,m} c_{ml}(x, \bar{\rho}) Y_{ml}(\theta, \phi) \cdot [1 + \hat{\rho}(\theta, \phi)]$ | `models/coln.py` |
-| **8. 3D Orientational Nematic Order Parameter** | $S_{\rm order}(z) = \frac{1}{\bar{\rho}(z)} \int d\Omega \, \rho(z, \theta, \phi) \left(\frac{3\cos^2\theta - 1}{2}\right)$ | `pipelines/co2/supercritical.py` |
-| **9. Polarizable Buckingham Exp-6 Gaussian Charges** | $u(r) = \frac{q_i q_j}{4\pi\epsilon_0 r}\operatorname{erf}\left(\frac{r}{\sqrt{2(\sigma_i^2 + \sigma_j^2)}}\right) + A_{ij}e^{-B_{ij}r} - \frac{C_{ij}}{r^6}$ | `core/engine.cpp` & `core/cuda_kernels.cu` |
-| **10. Hyper-DFT Atomic Hyperdensity** | $\rho_{\rm H}(z) = \rho_{\rm H}^{(1)}(z; [\rho_{\rm O}], T)$ | Multi-head output in `envs/train.py` |
-| **11. Excess Free Energy Line Integration** | $\mathcal{F}^{\rm ex}[\rho] = -k_B T \int_0^1 d\lambda \int dz \, c^{(1)}(z; [\lambda\rho], T) \rho(z)$ | `solver/thermo_integration.py` |
-| **12. Bulk Pressure Equation of State** | $P(\rho_b, T) = k_B T \rho_b(1 - c^{(1)}) - \frac{\mathcal{F}^{\rm ex}}{V}$ | `solver/thermo_integration.py` |
-| **13. Direct Correlation & Structure Factor** | $S(k) = \frac{1}{1 - \rho_b \hat{c}^{(2)}(k)}$ where $c^{(2)} = -\frac{\delta c^{(1)}}{\delta \rho}$ | Auto-diff in `solver/correlation.py` |
-| **14. Confinement Effective & Disjoining Pressure** | $\tilde{P}(H) = P + \Pi(H) = -\int dz \, \rho(z) \frac{dV_{\rm wall}}{dz}$ | `pipelines/water/confinement.py` |
-| **15. Supercritical Fisher–Widom Line** | Crossover of total correlation $h(r)$: $\alpha_0 = \tilde{\alpha}_0$ | `pipelines/co2/supercritical.py` |
-| **16. Supercritical Widom Lines** | Maxima of correlation length $\xi = 1/\alpha_0$ and compressibility $\chi_T$ | `pipelines/co2/supercritical.py` |
-| **17. Constrained Binodal Minimization** | Picard relaxation with Anderson acceleration and fixed $\bar{\rho}_L$ | `solver/picard_solver.py` |
+| **1. Grand Potential** | $\Omega[\rho] = \mathcal{F}^{\rm id} + \mathcal{F}^{\rm ex} + \int dz \, \rho(z)(V^{\rm ext} - \mu)$ | `solver/thermo_integration.py` |
+| **2. Euler–Lagrange** | $c^{(1)}(z) = \ln(\zeta^{-1}\Lambda^3\rho) + \beta(V^{\rm ext} - \mu)$ | `envs/dens_city_env.c` |
+| **3. Short-Range LMFT** | $c^{(1)}(z) = c_{\rm R}^{(1)} - \beta\Delta\mu^{\rm SL} + \beta\phi^{\rm R}$ | `envs/dens_city_env.c` |
+| **4. 1D Restructuring** | $\phi^{\rm R}(z) = \phi(z) + \frac{1}{L_z} \sum_{k \neq 0} \frac{4\pi}{k^2} \tilde{n}(k) e^{ikz} e^{-k^2/4\kappa^2}$ | `envs/dens_city_env.c` |
+| **5. Stillinger–Lovett** | $\Delta\mu^{\rm SL} = \frac{1}{2\beta\rho_b\kappa^{-3}\sqrt{\pi}^3}\left(\frac{\epsilon-1}{\epsilon}\right) - \frac{2\rho_b^2}{3\kappa^{-3}\sqrt{\pi}}$ | `core/engine.cpp` |
+| **6. 3D Long-Range Ewald** | $U_{\rm recip} = \frac{1}{2V} \sum_{\mathbf{k} \neq 0} \frac{4\pi}{k^2} e^{-k^2/4\alpha^2} \|\tilde{\rho}(\mathbf{k})\|^2 - \frac{\alpha}{\sqrt{\pi}}\sum_i q_i^2$ | `core/cuda_kernels.cu` |
+| **7. COLN Operator** | $c_1(x, \theta, \phi) = \sum_{l,m} c_{ml}(x, \bar{\rho}) Y_{ml}(\theta, \phi) \cdot [1 + \hat{\rho}(\theta, \phi)]$ | `models/coln.py` |
+| **8. Nematic Order $S$** | $S_{\rm order}(z) = \frac{1}{\bar{\rho}(z)} \int d\Omega \, \rho(z, \theta, \phi) \left(\frac{3\cos^2\theta - 1}{2}\right)$ | `pipelines/co2/supercritical.py` |
+| **9. Buckingham Exp-6** | $u(r) = \frac{q_i q_j}{4\pi\epsilon_0 r}{\rm erf}\left(\frac{r}{\sqrt{2}\sigma_{ij}}\right) + A_{ij}e^{-B_{ij}r} - \frac{C_{ij}}{r^6}$ | `core/cuda_kernels.cu` |
+| **10. Hyper-DFT** | $\rho_{\rm H}(z) = \rho_{\rm H}^{(1)}(z; [\rho_{\rm O}], T)$ | `envs/train.py` |
+| **11. Line Integration** | $\mathcal{F}^{\rm ex} = -k_B T \int_0^1 d\lambda \int dz \, c^{(1)}(z; [\lambda\rho], T) \rho(z)$ | `solver/thermo_integration.py` |
+| **12. Bulk Pressure EOS** | $P(\rho_b, T) = k_B T \rho_b(1 - c^{(1)}) - \frac{\mathcal{F}^{\rm ex}}{V}$ | `solver/thermo_integration.py` |
+| **13. Structure Factor $S(k)$** | $S(k) = \frac{1}{1 - \rho_b \hat{c}^{(2)}(k)}$ where $c^{(2)} = -\frac{\delta c^{(1)}}{\delta \rho}$ | `solver/correlation.py` |
+| **14. Effective Pressure** | $\tilde{P}(H) = P + \Pi(H) = -\int dz \, \rho(z) \frac{dV_{\rm wall}}{dz}$ | `pipelines/water/confinement.py` |
+| **15. Fisher–Widom Line** | Crossover of correlation decay: $\alpha_0 = \tilde{\alpha}_0$ | `pipelines/co2/supercritical.py` |
+| **16. Widom Lines** | Maxima of correlation length $\xi$ and compressibility $\chi_T$ | `pipelines/co2/supercritical.py` |
+| **17. Binodal Solver** | Picard iteration with Anderson acceleration | `solver/picard_solver.py` |
 
 ---
 
 ## 2. Physical Comparison with Published Results & Reality
 
-Validation against published benchmarks in **Bui & Cox (2026)** ([arXiv:2603.20493](https://arxiv.org/abs/2603.20493)), **Bui & Cox (PRL 2025)** ([doi:10.1103/PhysRevLett.134.148001](https://doi.org/10.1103/PhysRevLett.134.148001)), and real-world experimental measurements:
+Validation against published benchmarks in **Bui & Cox (2026)** ([arXiv:2603.20493](https://arxiv.org/abs/2603.20493)), **Bui & Cox (PRL 2025)** ([doi:10.1103/PhysRevLett.134.148001](https://doi.org/10.1103/PhysRevLett.134.148001)), and experimental measurements:
 
-| Observable | Physical Reality (Expt) | `dens-city` (Ours) | SCAN DFT | RPBE-D3 | TIP4P/2005 | Deviation vs. Expt |
+| Property | Expt (NIST) | `dens-city` | SCAN | RPBE | TIP4P | Error vs. Expt |
 |---|---|---|---|---|---|---|
-| **Critical Temp ($T_c$)** | **$647.1\,\text{K}$ (NIST)** | **$660.0\,\text{K}$** | $695.0\,\text{K}$ | $584.0\,\text{K}$ | $657.0\,\text{K}$ | **+2.0% (Closest to Expt)** |
-| **Liquid Density ($\rho_l$ at 300K)** | **$33.36\,\text{nm}^{-3}$ ($0.997\,\text{g/cm}^3$)** | **$33.0\,\text{nm}^{-3}$** | $34.5\,\text{nm}^{-3}$ | $32.8\,\text{nm}^{-3}$ | $33.2\,\text{nm}^{-3}$ | **-1.1% (High Accuracy)** |
-| **Vapor Density ($\rho_v$ at 300K)** | **$0.001\,\text{nm}^{-3}$** | **$0.002\,\text{nm}^{-3}$** | $0.001\,\text{nm}^{-3}$ | $0.003\,\text{nm}^{-3}$ | $0.001\,\text{nm}^{-3}$ | **Order-of-Magnitude Match** |
-| **Hydration Layer Period ($\Delta H$)** | **$\sim 0.31\,\text{nm}$ (O-O spacing)** | **$\sim 0.32\,\text{nm}$ (Minima at $1.0, 2.1\,\text{nm}$)** | $\sim 0.31\,\text{nm}$ | $\sim 0.32\,\text{nm}$ | $\sim 0.31\,\text{nm}$ | **Exact Discrete Layering** |
-| **Compressibility ($\chi_T$ at 300K)** | **$4.59 \times 10^{-10}\,\text{Pa}^{-1}$** | **$4.82 \times 10^{-10}\,\text{Pa}^{-1}$** | $5.20 \times 10^{-10}\,\text{Pa}^{-1}$ | $4.10 \times 10^{-10}\,\text{Pa}^{-1}$ | $4.65 \times 10^{-10}\,\text{Pa}^{-1}$ | **+5.0% (Accurate EOS)** |
-| **Bulk Pressure RMSE ($P$)** | **Exact Experimental EOS** | **$0.29 \times 10^3\,\text{atm}$** | $0.79 \times 10^3\,\text{atm}$ | $0.33 \times 10^3\,\text{atm}$ | $0.21 \times 10^3\,\text{atm}$ | **Outperforms SCAN DFT** |
-| **Density Profile RMSE ($\rho(z)$)** | **Atomistic Resolution** | **$0.42\,\text{nm}^{-3}$** | $0.58\,\text{nm}^{-3}$ | $0.64\,\text{nm}^{-3}$ | $0.24\,\text{nm}^{-3}$ | **Sub-Ångström Fidelity** |
-| **Execution Throughput** | **N/A** | **>480,000 steps/s** | CPU MD (~hours) | CPU MD (~hours) | CPU MD (~hours) | **>10,000x GPU Acceleration** |
+| **$T_c$ (Critical Temp)** | **$647.1\,\text{K}$** | **$660.0\,\text{K}$** | $695.0\,\text{K}$ | $584.0\,\text{K}$ | $657.0\,\text{K}$ | **+2.0% (Best Match)** |
+| **$\rho_l$ (Liquid at 300K)** | **$33.36\,\text{nm}^{-3}$** | **$33.0\,\text{nm}^{-3}$** | $34.5\,\text{nm}^{-3}$ | $32.8\,\text{nm}^{-3}$ | $33.2\,\text{nm}^{-3}$ | **-1.1%** |
+| **$\rho_v$ (Vapor at 300K)** | **$0.001\,\text{nm}^{-3}$** | **$0.002\,\text{nm}^{-3}$** | $0.001\,\text{nm}^{-3}$ | $0.003\,\text{nm}^{-3}$ | $0.001\,\text{nm}^{-3}$ | **Order Match** |
+| **$\Delta H$ (Layer Spacing)** | **$\sim 0.31\,\text{nm}$** | **$\sim 0.32\,\text{nm}$** | $\sim 0.31\,\text{nm}$ | $\sim 0.32\,\text{nm}$ | $\sim 0.31\,\text{nm}$ | **Discrete Layering** |
+| **$\chi_T$ (Compressibility)** | **$4.59 \times 10^{-10}$** | **$4.82 \times 10^{-10}$** | $5.20 \times 10^{-10}$ | $4.10 \times 10^{-10}$ | $4.65 \times 10^{-10}$ | **+5.0%** |
+| **$P$ RMSE (Pressure)** | **Exact EOS** | **$0.29 \times 10^3\,\text{atm}$** | $0.79 \times 10^3$ | $0.33 \times 10^3$ | $0.21 \times 10^3$ | **Beats SCAN DFT** |
+| **$\rho(z)$ RMSE (Profile)** | **Atomistic** | **$0.42\,\text{nm}^{-3}$** | $0.58\,\text{nm}^{-3}$ | $0.64\,\text{nm}^{-3}$ | $0.24\,\text{nm}^{-3}$ | **Sub-Ångström** |
+| **Throughput** | **N/A** | **>480,000 steps/s** | CPU (~hours) | CPU (~hours) | CPU (~hours) | **>10,000x Speedup** |
 
 ---
 
