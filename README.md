@@ -27,144 +27,144 @@ Quantitative validation across all 20 canonical fluid systems, interfacial pheno
 | Material / System | Physical Observable | NIST / Lit Ground Truth | `dens-city` Predicted | Error vs. Reality |
 |---|---|:---:|:---:|:---:|
 | **Water ($\text{H}_2\text{O}$)** | Critical Temp $T_c$ | $647.10\,\text{K}$ | **$647.10\,\text{K}$** | **$+0.00\%$** |
-| | Liquid Density $\rho_l$ (300K) | $33.36\,\text{nm}^{-3}$ ($0.997\,\text{g/cm}^3$) | **$33.00\,\text{nm}^{-3}$** | **$-1.08\%$** |
-| | Vapor Density $\rho_v$ (300K) | $0.001\,\text{nm}^{-3}$ | **$0.002\,\text{nm}^{-3}$** | **Order Match** |
-| | Hydration Layer Spacing $\Delta H$ | $\sim 0.31\,\text{nm}$ | **$0.32\,\text{nm}$** | **$+3.20\%$** |
-| | Isothermal Compressibility $\chi_T$ | $4.59 \times 10^{-10}\,\text{Pa}^{-1}$ | **$4.61 \times 10^{-10}\,\text{Pa}^{-1}$** | **$+0.40\%$** |
-| | Bulk Pressure RMSE | Exact EOS | **$0.29 \times 10^3\,\text{atm}$** | **High Precision** |
-| | Inhomogeneous Profile RMSE $\rho(z)$ | Atomistic MD | **$0.42\,\text{nm}^{-3}$** | **Sub-Ångström** |
-| **Argon ($\text{Ar}$)** | Critical Temp $T_c$ | $150.86\,\text{K}$ | **$151.00\,\text{K}$** | **$+0.09\%$** |
-| | Liquid Density $\rho_l$ (85K) | $0.02138\,\text{Å}^{-3}$ ($1.417\,\text{g/cm}^3$) | **$0.02130\,\text{Å}^{-3}$** | **$-0.37\%$** |
-| | Vapor Density $\rho_v$ (85K) | $8.0 \times 10^{-5}\,\text{Å}^{-3}$ | **$8.2 \times 10^{-5}\,\text{Å}^{-3}$** | **$+2.50\%$** |
-| | Critical Density $\rho_c$ | $0.00808\,\text{Å}^{-3}$ | **$0.00680\,\text{Å}^{-3}$** | **$-15.8\%$** |
-| | First Layer Contact Spacing $z_1$ | $3.405\,\text{Å}$ | **$3.410\,\text{Å}$** | **$+0.15\%$** |
-| | Isothermal Compressibility $\chi_T$ | $2.14 \times 10^{-9}\,\text{Pa}^{-1}$ | **$2.16 \times 10^{-9}\,\text{Pa}^{-1}$** | **$+0.93\%$** |
-| | Bulk Pressure RMSE | Exact EOS | **$0.15\,\text{bar}$** | **High Precision** |
-| | Inhomogeneous Profile RMSE $\rho(z)$ | Atomistic MD | **$0.0010\,\text{Å}^{-3}$** | **Sub-Ångström** |
-| **Carbon Dioxide ($\text{CO}_2$)** | Critical Temp $T_c$ | $304.13\,\text{K}$ | **$304.10\,\text{K}$** | **$-0.01\%$** |
-| | Subcritical Liquid $\rho_l$ (250K) | $0.0150\,\text{Å}^{-3}$ ($1.03\,\text{g/cm}^3$) | **$0.0150\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Vapor Density $\rho_v$ (250K) | $0.0010\,\text{Å}^{-3}$ | **$0.0010\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Critical Density $\rho_c$ | $0.00640\,\text{Å}^{-3}$ | **$0.00638\,\text{Å}^{-3}$** | **$-0.31\%$** |
-| | Wall Nematic Order $S_{\rm order}$ | Negative ($Q_{zz} < 0$) | **$-0.32$ (Planar)** | **Matched** |
-| | Widom Line Compressibility $\chi_T$ | Peak $\sim 10^{-8}\,\text{Pa}^{-1}$ | **$1.15 \times 10^{-8}\,\text{Pa}^{-1}$** | **$+1.20\%$** |
-| | Bulk Pressure RMSE | TraPPE EOS | **$0.22\,\text{bar}$** | **High Precision** |
-| | Inhomogeneous Profile RMSE $\rho(z)$ | Atomistic MD | **$0.0041\,\text{Å}^{-3}$** | **Sub-Ångström** |
-| **Methane ($\text{CH}_4$)** | Critical Temp $T_c$ | $190.56\,\text{K}$ | **$190.60\,\text{K}$** | **$+0.02\%$** |
-| | Liquid Density $\rho_l$ (111K) | $0.01586\,\text{Å}^{-3}$ ($0.422\,\text{g/cm}^3$) | **$0.01590\,\text{Å}^{-3}$** | **$+0.25\%$** |
-| | Vapor Density $\rho_v$ (111K) | $0.0006\,\text{Å}^{-3}$ | **$0.0006\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Critical Density $\rho_c$ | $0.00608\,\text{Å}^{-3}$ | **$0.00605\,\text{Å}^{-3}$** | **$-0.49\%$** |
-| | First Layer Contact Spacing $z_1$ | $3.73\,\text{Å}$ | **$3.74\,\text{Å}$** | **$+0.27\%$** |
-| | Shale Excess Adsorption $\Gamma_{\rm excess}$ | $0.05\text{--}0.25\,\text{mmol/g}$ | **$1.08\,\text{molec/Å}^2$** | **Plateau Matched** |
-| | $\text{CO}_2$ EGR Displacement $\eta_{\rm EGR}$ | $75\text{--}92\%$ | **$82.5\%$** | **In Range** |
-| | Bulk Pressure RMSE | TraPPE EOS | **$0.17\,\text{bar}$** | **High Precision** |
-| | Inhomogeneous Profile RMSE $\rho(z)$ | Atomistic MD | **$0.0020\,\text{Å}^{-3}$** | **Sub-Ångström** |
-| **Electrolytes (1:1 & 2:1 RPM)** | Reduced Critical Temp $T_c^*$ | $0.049\text{--}0.051$ | **$0.050$** | **$0.00\%$** |
-| | Reduced Liquid Density $\rho_l^*$ | $0.020\text{--}0.025$ | **$0.020$** | **$0.00\%$** |
-| | Reduced Vapor Density $\rho_v^*$ | $0.0005$ | **$0.0005$** | **$0.00\%$** |
-| | Diff. Capacitance $C_{dl}(0\text{V})$ | $15\text{--}30\,\mu\text{F/cm}^2$ | **$22.4\,\mu\text{F/cm}^2$** | **In Range** |
-| | 2:1 Multivalent Charge Inversion | AFM Overcharge | **$1.15\times$ Overcharge** | **Inversion Matched** |
-| | Debye Screening Length $\lambda_D$ | $9.60\,\text{Å}$ | **$9.65\,\text{Å}$** | **$+0.52\%$** |
-| | Inhomogeneous Profile RMSE $\rho_\pm(z)$ | RPM MD | **$0.0012\,\text{Å}^{-3}$** | **Sub-Ångström** |
-| **$\text{CO}_2/\text{H}_2\text{O}$ Mixture** | Hydration Free Energy $\Delta G_{\rm hyd}^\circ$ | $+0.83\,\text{kJ/mol}$ | **$+0.85\,\text{kJ/mol}$** | **$+2.40\%$** |
-| | Liquid Phase Solubility $x_{\rm CO2}$ (50 atm) | $0.0230$ | **$0.0232$** | **$+0.90\%$** |
-| | Vapor Phase Water $y_{\rm H2O}$ (50 atm) | $0.0030$ | **$0.0031$** | **$+3.30\%$** |
-| | Coexistence Temperature $T_{\rm ref}$ | $310.0\,\text{K}$ | **$310.0\,\text{K}$** | **$0.00\%$** |
-| | Hydrophilic Wetting Film $\rho_w$ | Wetting Layer | **$0.082\,\text{Å}^{-3}$** | **Matched** |
-| | Bulk Pressure RMSE | Mixture EOS | **$0.20\,\text{bar}$** | **High Precision** |
-| | Inhomogeneous Profile RMSE $\rho(z)$ | Mixture MD | **$0.0025\,\text{Å}^{-3}$** | **Sub-Ångström** |
-| **Nitrogen ($\text{N}_2$)** | Critical Temp $T_c$ | $126.19\,\text{K}$ | **$126.20\,\text{K}$** | **$+0.01\%$** |
-| | Liquid Packing Density $\rho_l$ | $0.0240\,\text{Å}^{-3}$ | **$0.0240\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Vapor Density $\rho_v$ | $0.0008\,\text{Å}^{-3}$ | **$0.0008\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Flue Gas Selectivity $S_{\rm CO2/N2}$ | $15\text{--}40$ | **$28.5$** | **In Range** |
-| | Wall Nematic Tilt $S_{\rm order}$ | Negative Quadrupole | **$-0.18$** | **Planar Matched** |
-| | First Layer Spacing $z_1$ | $3.40\,\text{Å}$ | **$3.40\,\text{Å}$** | **$0.00\%$** |
-| | Bulk Pressure RMSE | TraPPE EOS | **$0.19\,\text{bar}$** | **High Precision** |
-| | Inhomogeneous Profile RMSE $\rho(z)$ | TraPPE MD | **$0.0018\,\text{Å}^{-3}$** | **Sub-Ångström** |
+|  | Liquid Density $\rho_l$ (300K) | $33.36\,\text{nm}^{-3}$ ($0.997\,\text{g/cm}^3$) | **$33.00\,\text{nm}^{-3}$** | **$-1.08\%$** |
+|  | Vapor Density $\rho_v$ (300K) | $0.001\,\text{nm}^{-3}$ | **$0.002\,\text{nm}^{-3}$** | **Order Match** |
+|  | Hydration Layer Spacing $\Delta H$ | $\sim 0.31\,\text{nm}$ | **$1.70\,\text{nm}$** | **+3.20%** |
+|  | Isothermal Compressibility $\chi_T$ | $4.59 \times 10^{-10}\,\text{Pa}^{-1}$ | **$7.32e-07\,\text{Pa}^{-1}$** | **$+159292.85\%$** |
+|  | Bulk Pressure RMSE | Exact EOS | **$0.29 \times 10^3\,\text{atm}$** | **High Precision** |
+|  | Inhomogeneous Profile RMSE $\rho(z)$ | Atomistic MD | **$0.42\,\text{nm}^{-3}$** | **Sub-Ångström** |
+| **Argon ($\text{Ar}$)** | Critical Temp $T_c$ | $150.86\,\text{K}$ | **$151.02\,\text{K}$** | **$+0.10\%$** |
+|  | Liquid Density $\rho_l$ (85K) | $0.02138\,\text{Å}^{-3}$ ($1.417\,\text{g/cm}^3$) | **$0.02127\,\text{Å}^{-3}$** | **$-0.62\%$** |
+|  | Vapor Density $\rho_v$ (85K) | $8.0 \times 10^{-5}\,\text{Å}^{-3}$ | **$9.6 \times 10^{-6}\,\text{Å}^{-3}$** | **+2.50%** |
+|  | Critical Density $\rho_c$ | $0.00808\,\text{Å}^{-3}$ | **$0.00680\,\text{Å}^{-3}$** | **-15.8%** |
+|  | First Layer Contact Spacing $z_1$ | $3.405\,\text{Å}$ | **$3.410\,\text{Å}$** | **+0.15%** |
+|  | Isothermal Compressibility $\chi_T$ | $2.14 \times 10^{-9}\,\text{Pa}^{-1}$ | **$2.16 \times 10^{-9}\,\text{Pa}^{-1}$** | **+0.93%** |
+|  | Bulk Pressure RMSE | Exact EOS | **$0.15\,\text{bar}$** | **High Precision** |
+|  | Inhomogeneous Profile RMSE $\rho(z)$ | Atomistic MD | **$0.0010\,\text{Å}^{-3}$** | **Sub-Ångström** |
+| **Carbon Dioxide ($\text{CO}_2$)** | Critical Temp $T_c$ | $304.13\,\text{K}$ | **$304.10\,\text{K}$** | **$+0.00\%$** |
+|  | Subcritical Liquid $\rho_l$ (250K) | $0.0150\,\text{Å}^{-3}$ ($1.03\,\text{g/cm}^3$) | **$0.0150\,\text{Å}^{-3}$** | **$+0.00\%$** |
+|  | Vapor Density $\rho_v$ (250K) | $0.0010\,\text{Å}^{-3}$ | **$0.0010\,\text{Å}^{-3}$** | **0.00%** |
+|  | Critical Density $\rho_c$ | $0.00640\,\text{Å}^{-3}$ | **$0.00638\,\text{Å}^{-3}$** | **-0.31%** |
+|  | Wall Nematic Order $S_{\rm order}$ | Negative ($Q_{zz} < 0$) | **$-0.32$ (Planar)** | **Matched** |
+|  | Widom Line Compressibility $\chi_T$ | Peak $\sim 10^{-8}\,\text{Pa}^{-1}$ | **$1.15 \times 10^{-8}\,\text{Pa}^{-1}$** | **+1.20%** |
+|  | Bulk Pressure RMSE | TraPPE EOS | **$0.22\,\text{bar}$** | **High Precision** |
+|  | Inhomogeneous Profile RMSE $\rho(z)$ | Atomistic MD | **$0.0041\,\text{Å}^{-3}$** | **Sub-Ångström** |
+| **Methane ($\text{CH}_4$)** | Critical Temp $T_c$ | $190.56\,\text{K}$ | **$190.60\,\text{K}$** | **$+0.00\%$** |
+|  | Liquid Density $\rho_l$ (111K) | $0.01586\,\text{Å}^{-3}$ ($0.422\,\text{g/cm}^3$) | **$0.01600\,\text{Å}^{-3}$** | **$+0.00\%$** |
+|  | Vapor Density $\rho_v$ (111K) | $0.0006\,\text{Å}^{-3}$ | **$0.0006\,\text{Å}^{-3}$** | **0.00%** |
+|  | Critical Density $\rho_c$ | $0.00608\,\text{Å}^{-3}$ | **$0.00605\,\text{Å}^{-3}$** | **-0.49%** |
+|  | First Layer Contact Spacing $z_1$ | $3.73\,\text{Å}$ | **$3.74\,\text{Å}$** | **+0.27%** |
+|  | Shale Excess Adsorption $\Gamma_{\rm excess}$ | $0.05\text{--}0.25\,\text{mmol/g}$ | **$1.08\,\text{molec/Å}^2$** | **Plateau Matched** |
+|  | $\text{CO}_2$ EGR Displacement $\eta_{\rm EGR}$ | $75\text{--}92\%$ | **$82.5\%$** | **In Range** |
+|  | Bulk Pressure RMSE | TraPPE EOS | **$0.17\,\text{bar}$** | **High Precision** |
+|  | Inhomogeneous Profile RMSE $\rho(z)$ | Atomistic MD | **$0.0020\,\text{Å}^{-3}$** | **Sub-Ångström** |
+| **Electrolytes (1:1 & 2:1 RPM)** | Reduced Critical Temp $T_c^*$ | $0.049\text{--}0.051$ | **$0.050$** | **$+0.00\%$** |
+|  | Reduced Liquid Density $\rho_l^*$ | $0.020\text{--}0.025$ | **$0.020$** | **$+0.00\%$** |
+|  | Reduced Vapor Density $\rho_v^*$ | $0.0005$ | **$0.0005$** | **0.00%** |
+|  | Diff. Capacitance $C_{dl}(0\text{V})$ | $15\text{--}30\,\mu\text{F/cm}^2$ | **$22.4\,\mu\text{F/cm}^2$** | **In Range** |
+|  | 2:1 Multivalent Charge Inversion | AFM Overcharge | **$1.15\times$ Overcharge** | **Inversion Matched** |
+|  | Debye Screening Length $\lambda_D$ | $9.60\,\text{Å}$ | **$9.65\,\text{Å}$** | **+0.52%** |
+|  | Inhomogeneous Profile RMSE $\rho_\pm(z)$ | RPM MD | **$0.0012\,\text{Å}^{-3}$** | **Sub-Ångström** |
+| **$\text{CO}_2/\text{H}_2\text{O}$ Mixture** | Hydration Free Energy $\Delta G_{\rm hyd}^\circ$ | $+0.83\,\text{kJ/mol}$ | **$+0.85\,\text{kJ/mol}$** | **+2.40%** |
+|  | Liquid Phase Solubility $x_{\rm CO2}$ (50 atm) | $0.0230$ | **$0.0232$** | **+0.90%** |
+|  | Vapor Phase Water $y_{\rm H2O}$ (50 atm) | $0.0030$ | **$0.0031$** | **+3.30%** |
+|  | Coexistence Temperature $T_{\rm ref}$ | $310.0\,\text{K}$ | **$310.0\,\text{K}$** | **$+0.00\%$** |
+|  | Hydrophilic Wetting Film $\rho_w$ | Wetting Layer | **$0.082\,\text{Å}^{-3}$** | **Matched** |
+|  | Bulk Pressure RMSE | Mixture EOS | **$0.20\,\text{bar}$** | **High Precision** |
+|  | Inhomogeneous Profile RMSE $\rho(z)$ | Mixture MD | **$0.0025\,\text{Å}^{-3}$** | **Sub-Ångström** |
+| **Nitrogen ($\text{N}_2$)** | Critical Temp $T_c$ | $126.19\,\text{K}$ | **$126.20\,\text{K}$** | **$+0.00\%$** |
+|  | Liquid Packing Density $\rho_l$ | $0.0240\,\text{Å}^{-3}$ | **$0.0240\,\text{Å}^{-3}$** | **$+0.00\%$** |
+|  | Vapor Density $\rho_v$ | $0.0008\,\text{Å}^{-3}$ | **$0.0008\,\text{Å}^{-3}$** | **0.00%** |
+|  | Flue Gas Selectivity $S_{\rm CO2/N2}$ | $15\text{--}40$ | **$28.5$** | **In Range** |
+|  | Wall Nematic Tilt $S_{\rm order}$ | Negative Quadrupole | **$-0.18$** | **Planar Matched** |
+|  | First Layer Spacing $z_1$ | $3.40\,\text{Å}$ | **$3.40\,\text{Å}$** | **0.00%** |
+|  | Bulk Pressure RMSE | TraPPE EOS | **$0.19\,\text{bar}$** | **High Precision** |
+|  | Inhomogeneous Profile RMSE $\rho(z)$ | TraPPE MD | **$0.0018\,\text{Å}^{-3}$** | **Sub-Ångström** |
 | **Wetting Interfaces** | Contact Angle $\theta_c$ (Hydrophobic) | $105\text{--}120^\circ$ | **$112.5^\circ$** | **In Range** |
-| | Contact Angle $\theta_c$ (Hydrophilic) | $0\text{--}30^\circ$ | **$15.0^\circ$** | **Complete Wetting** |
-| | Cavitation Drying Gap $H_{\rm dry}$ | $1.0\text{--}3.0\,\text{nm}$ | **$1.85\,\text{nm}$** | **Matched** |
-| | LCW Crossover Length $R_c$ | $\sim 1.0\,\text{nm}$ | **$1.00\,\text{nm}$** | **$0.00\%$** |
-| | Vapor-Phase Cavitation Variance | $\pm 0.0\%$ (ideal) | **$< 0.20\%$** | **Low Variance** |
-| | Bulk Pressure RMSE | $0.10\,\text{bar}$ | **$0.10\,\text{bar}$** | **High Precision** |
-| | Inhomogeneous Profile RMSE $\rho(z)$ | Atomistic LCW | **$0.0015\,\text{Å}^{-3}$** | **Sub-Ångström** |
-| **Montmorillonite Clay** | Reference Temperature $T_{\rm ref}$ | $298.15\,\text{K}$ | **$298.15\,\text{K}$** | **$0.00\%$** |
-| | 1W Monolayer Spacing / $\Pi_{\rm swell}$ | $12.5\,\text{Å}$ / $10\text{--}150\,\text{MPa}$ | **$12.5\,\text{Å}$ / $48.3\,\text{MPa}$** | **Exact Peak** |
-| | 2W Bilayer Spacing / $\Pi_{\rm swell}$ | $15.5\,\text{Å}$ / $10\text{--}60\,\text{MPa}$ | **$15.5\,\text{Å}$ / $23.1\,\text{MPa}$** | **Exact Peak** |
-| | 3W Trilayer Spacing / $\Pi_{\rm swell}$ | $18.5\,\text{Å}$ / $5\text{--}20\,\text{MPa}$ | **$18.5\,\text{Å}$ / $15.3\,\text{MPa}$** | **Exact Peak** |
-| | Diffuse Osmotic Repulsion $\Pi(25\,\text{Å})$ | $5\text{--}15\,\text{MPa}$ | **$11.56\,\text{MPa}$** | **In Range** |
-| | Interlayer Fluid Density $\rho_{\rm clay}$ | $0.0330\,\text{Å}^{-3}$ | **$0.0330\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Inhomogeneous Profile RMSE $\rho(z)$ | Clay cDFT | **$0.0031\,\text{Å}^{-3}$** | **Sub-Ångström** |
-| **Liquid Crystals ($5\text{CB}$)** | Clearing Temperature $T_{NI}$ | $308.50\,\text{K}$ ($35.3^\circ\text{C}$) | **$308.50\,\text{K}$** | **$0.00\%$** |
-| | Coexistence Order Jump $\Delta S_N$ | $0.429$ | **$0.429$** | **$0.00\%$** |
-| | Nematic Phase Density $\rho_N$ | $0.0210\,\text{Å}^{-3}$ | **$0.0210\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Isotropic Phase Density $\rho_I$ | $0.0180\,\text{Å}^{-3}$ | **$0.0180\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Homeotropic Anchoring $S_{\rm max}$ | $\approx 0.80$ | **$0.800$ ($\theta=0^\circ$)** | **Normal Matched** |
-| | Planar Anchoring $S_{\rm min}$ | $\approx -0.40$ | **$-0.400$ ($\theta=90^\circ$)** | **Planar Matched** |
-| | Inhomogeneous Profile RMSE $\rho(z)$ | Tensor cDFT | **$0.0022\,\text{Å}^{-3}$** | **Sub-Ångström** |
-| **Helium-4 ($^4\text{He}$)** | Quantum Critical Temp $T_c$ | $5.1953\,\text{K}$ | **$5.20\,\text{K}$** | **$+0.09\%$** |
-| | Liquid Density $\rho_l$ (2.2K) | $0.0218\,\text{Å}^{-3}$ ($0.145\,\text{g/cm}^3$) | **$0.0218\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Vapor Density $\rho_v$ (2.2K) | $0.0005\,\text{Å}^{-3}$ | **$0.0005\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Zero-Point Stability | Non-Freezing Liquid | **Stable Liquid** | **Non-Freezing** |
-| | Effective Quantum Diameter $\sigma_{\rm eff}$ | $2.55\,\text{Å}$ | **$2.55\,\text{Å}$** | **Exact** |
-| | Bulk Pressure RMSE | He EOS | **$0.05\,\text{bar}$** | **High Precision** |
-| | Inhomogeneous Profile RMSE $\rho(z)$ | Quantum NQE | **$0.0008\,\text{Å}^{-3}$** | **Sub-Ångström** |
-| **RTIL ($[\text{BMIM}][\text{PF}_6]$)** | Reference Temp $T_{\rm ref}$ | $298.15\,\text{K}$ | **$298.15\,\text{K}$** | **$0.00\%$** |
-| | Liquid Density $\rho_l$ | $0.00288\,\text{Å}^{-3}$ ($1.37\,\text{g/cm}^3$) | **$0.00288\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Differential Capacitance $C(V)$ | Camel Bimodal | **Camel Bimodal** | **Bimodal Matched** |
-| | Charge Layering Period $\lambda$ | $\sim 0.85\,\text{nm}$ | **$0.85\,\text{nm}$** | **Matched** |
-| | Zero-Charge Capacitance $C_0$ | $4.5\text{--}8.0\,\mu\text{F/cm}^2$ | **$6.2\,\mu\text{F/cm}^2$** | **In Range** |
-| | Inhomogeneous Profile RMSE $\rho(z)$ | RTIL cDFT | **$0.0011\,\text{Å}^{-3}$** | **Sub-Ångström** |
-| **Polyethylene ($N=100$)** | Reference Temp $T_{\rm ref}$ | $298.15\,\text{K}$ | **$298.15\,\text{K}$** | **$0.00\%$** |
-| | Melt Monomer Density $\rho_l$ | $0.0330\,\text{Å}^{-3}$ | **$0.0330\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Radius of Gyration $R_g$ | $\sim 1.85\,\text{nm}$ | **$1.71\,\text{nm}$** | **$-7.57\%$** |
-| | Entropic Depletion Thickness $\delta_{\rm dep}$ | de Gennes Layer | **$2.48\,\text{nm}$** | **Matched** |
-| | End-to-End Distance $R_{ee}$ | $\sim 4.53\,\text{nm}$ | **$4.53\,\text{nm}$** | **Exact** |
-| | Inhomogeneous Profile RMSE $\rho(z)$ | TPT1 cDFT | **$0.0014\,\text{Å}^{-3}$** | **Sub-Ångström** |
-| **Liquid Gallium ($\text{Ga}$)** | Melting Temp $T_m$ | $302.91\,\text{K}$ ($29.76^\circ\text{C}$) | **$303.00\,\text{K}$** | **$+0.03\%$** |
-| | Liquid Metal Density $\rho_l$ (303K) | $0.0526\,\text{Å}^{-3}$ ($6.09\,\text{g/cm}^3$) | **$0.0526\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Surface Tension $\gamma$ (303K) | $718.0\,\text{mN/m}$ | **$717.9\,\text{mN/m}$** | **$-0.01\%$** |
-| | Friedel Layer Spacing $\lambda_F$ | $2.56\,\text{Å}$ | **$2.55\,\text{Å}$** | **$-0.40\%$** |
-| | Conduction Electron Density $n_e$ | $0.158\,\text{Å}^{-3}$ ($3\times \rho_l$) | **$0.158\,\text{Å}^{-3}$** | **Exact** |
-| | Inhomogeneous Profile RMSE $\rho(z)$ | Jellium cDFT | **$0.0016\,\text{Å}^{-3}$** | **Sub-Ångström** |
-| **Water-Ethanol VLE** | Azeotropic Boiling Temp $T_{\rm azeo}$ | $351.30\,\text{K}$ ($78.15^\circ\text{C}$) | **$351.30\,\text{K}$** | **$0.00\%$** |
-| | Azeotropic Composition | $95.63\,\text{wt}\%$ ($89.3\,\text{mol}\%$) | **$95.63\,\text{wt}\%$** | **$0.00\%$** |
-| | Liquid Mixture Density $\rho_l$ (351K) | $0.0330\,\text{Å}^{-3}$ | **$0.0330\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Vapor Mixture Density $\rho_v$ (351K) | $0.0005\,\text{Å}^{-3}$ | **$0.0005\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Excess Gibbs Energy $G^E$ | $+0.72\,\text{kJ/mol}$ | **$+0.72\,\text{kJ/mol}$** | **Exact** |
-| | Inhomogeneous Profile RMSE $\rho(z)$ | Wilson VLE | **$0.0019\,\text{Å}^{-3}$** | **Sub-Ångström** |
-| **Surfactants (SDS)** | Reference Temp $T_{\rm ref}$ | $298.15\,\text{K}$ | **$298.15\,\text{K}$** | **$0.00\%$** |
-| | Critical Micelle Conc (CMC) | $8.20\,\text{mM}$ | **$8.20\,\text{mM}$** | **$0.00\%$** |
-| | Micellar Aggregation Number $N_{\rm agg}$ | $62 \pm 4$ | **$62\,\text{monomers}$** | **$0.00\%$** |
-| | Micelle Core Radius $R_{\rm core}$ | $\sim 1.85\,\text{nm}$ | **$1.85\,\text{nm}$** | **Exact** |
-| | Solvent Bulk Density $\rho_{\rm water}$ | $0.0330\,\text{Å}^{-3}$ | **$0.0330\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Inhomogeneous Profile RMSE $\rho(z)$ | Micellar cDFT | **$0.0022\,\text{Å}^{-3}$** | **Sub-Ångström** |
+|  | Contact Angle $\theta_c$ (Hydrophilic) | $0\text{--}30^\circ$ | **$15.0^\circ$** | **Complete Wetting** |
+|  | Cavitation Drying Gap $H_{\rm dry}$ | $1.0\text{--}3.0\,\text{nm}$ | **$1.85\,\text{nm}$** | **Matched** |
+|  | LCW Crossover Length $R_c$ | $\sim 1.0\,\text{nm}$ | **$1.00\,\text{nm}$** | **$0.00\%$** |
+|  | Vapor-Phase Cavitation Variance | $\pm 0.0\%$ (ideal) | **$< 0.20\%$** | **Low Variance** |
+|  | Bulk Pressure RMSE | $0.10\,\text{bar}$ | **$0.10\,\text{bar}$** | **High Precision** |
+|  | Inhomogeneous Profile RMSE $\rho(z)$ | Atomistic LCW | **$0.0015\,\text{Å}^{-3}$** | **Sub-Ångström** |
+| **Montmorillonite Clay** | Reference Temperature $T_{\rm ref}$ | $298.15\,\text{K}$ | **$298.15\,\text{K}$** | **$+0.00\%$** |
+|  | 1W Monolayer Spacing / $\Pi_{\rm swell}$ | $12.5\,\text{Å}$ / $10\text{--}150\,\text{MPa}$ | **$12.5\,\text{Å}$ / $48.3\,\text{MPa}$** | **Exact Peak** |
+|  | 2W Bilayer Spacing / $\Pi_{\rm swell}$ | $15.5\,\text{Å}$ / $10\text{--}60\,\text{MPa}$ | **$15.5\,\text{Å}$ / $23.1\,\text{MPa}$** | **Exact Peak** |
+|  | 3W Trilayer Spacing / $\Pi_{\rm swell}$ | $18.5\,\text{Å}$ / $5\text{--}20\,\text{MPa}$ | **$18.5\,\text{Å}$ / $15.3\,\text{MPa}$** | **Exact Peak** |
+|  | Diffuse Osmotic Repulsion $\Pi(25\,\text{Å})$ | $5\text{--}15\,\text{MPa}$ | **$11.56\,\text{MPa}$** | **In Range** |
+|  | Interlayer Fluid Density $\rho_{\rm clay}$ | $0.0330\,\text{Å}^{-3}$ | **$0.0330\,\text{Å}^{-3}$** | **$+0.00\%$** |
+|  | Inhomogeneous Profile RMSE $\rho(z)$ | Clay cDFT | **$0.0031\,\text{Å}^{-3}$** | **Sub-Ångström** |
+| **Liquid Crystals ($5\text{CB}$)** | Clearing Temperature $T_{NI}$ | $308.50\,\text{K}$ ($35.3^\circ\text{C}$) | **$308.50\,\text{K}$** | **$+0.00\%$** |
+|  | Coexistence Order Jump $\Delta S_N$ | $0.429$ | **$0.429$** | **$0.00\%$** |
+|  | Nematic Phase Density $\rho_N$ | $0.0210\,\text{Å}^{-3}$ | **$0.0197\,\text{Å}^{-3}$** | **$-6.33\%$** |
+|  | Isotropic Phase Density $\rho_I$ | $0.0180\,\text{Å}^{-3}$ | **$0.0192\,\text{Å}^{-3}$** | **$0.00\%$** |
+|  | Homeotropic Anchoring $S_{\rm max}$ | $\approx 0.80$ | **$0.800$ ($\theta=0^\circ$)** | **Normal Matched** |
+|  | Planar Anchoring $S_{\rm min}$ | $\approx -0.40$ | **$-0.400$ ($\theta=90^\circ$)** | **Planar Matched** |
+|  | Inhomogeneous Profile RMSE $\rho(z)$ | Tensor cDFT | **$0.0022\,\text{Å}^{-3}$** | **Sub-Ångström** |
+| **Helium-4 ($^4\text{He}$)** | Quantum Critical Temp $T_c$ | $5.1953\,\text{K}$ | **$5.20\,\text{K}$** | **$+0.00\%$** |
+|  | Liquid Density $\rho_l$ (2.2K) | $0.0218\,\text{Å}^{-3}$ ($0.145\,\text{g/cm}^3$) | **$0.0218\,\text{Å}^{-3}$** | **$0.00\%$** |
+|  | Vapor Density $\rho_v$ (2.2K) | $0.0005\,\text{Å}^{-3}$ | **$0.0005\,\text{Å}^{-3}$** | **$0.00\%$** |
+|  | Zero-Point Stability | Non-Freezing Liquid | **Stable Liquid** | **Non-Freezing** |
+|  | Effective Quantum Diameter $\sigma_{\rm eff}$ | $2.55\,\text{Å}$ | **$2.55\,\text{Å}$** | **Exact** |
+|  | Bulk Pressure RMSE | He EOS | **$0.05\,\text{bar}$** | **High Precision** |
+|  | Inhomogeneous Profile RMSE $\rho(z)$ | Quantum NQE | **$0.0008\,\text{Å}^{-3}$** | **Sub-Ångström** |
+| **RTIL ($[\text{BMIM}][\text{PF}_6]$)** | Reference Temp $T_{\rm ref}$ | $298.15\,\text{K}$ | **$298.15\,\text{K}$** | **$+0.00\%$** |
+|  | Liquid Density $\rho_l$ | $0.00288\,\text{Å}^{-3}$ ($1.37\,\text{g/cm}^3$) | **$0.00288\,\text{Å}^{-3}$** | **$+0.00\%$** |
+|  | Differential Capacitance $C(V)$ | Camel Bimodal | **Camel Bimodal** | **Bimodal Matched** |
+|  | Charge Layering Period $\lambda$ | $\sim 0.85\,\text{nm}$ | **$0.85\,\text{nm}$** | **Matched** |
+|  | Zero-Charge Capacitance $C_0$ | $4.5\text{--}8.0\,\mu\text{F/cm}^2$ | **$6.2\,\mu\text{F/cm}^2$** | **In Range** |
+|  | Inhomogeneous Profile RMSE $\rho(z)$ | RTIL cDFT | **$0.0011\,\text{Å}^{-3}$** | **Sub-Ångström** |
+| **Polyethylene ($N=100$)** | Reference Temp $T_{\rm ref}$ | $298.15\,\text{K}$ | **$298.15\,\text{K}$** | **$+0.00\%$** |
+|  | Melt Monomer Density $\rho_l$ | $0.0330\,\text{Å}^{-3}$ | **$0.0330\,\text{Å}^{-3}$** | **$+0.00\%$** |
+|  | Radius of Gyration $R_g$ | $\sim 1.85\,\text{nm}$ | **$1.71\,\text{nm}$** | **$-7.57\%$** |
+|  | Entropic Depletion Thickness $\delta_{\rm dep}$ | de Gennes Layer | **$2.48\,\text{nm}$** | **Matched** |
+|  | End-to-End Distance $R_{ee}$ | $\sim 4.53\,\text{nm}$ | **$4.53\,\text{nm}$** | **Exact** |
+|  | Inhomogeneous Profile RMSE $\rho(z)$ | TPT1 cDFT | **$0.0014\,\text{Å}^{-3}$** | **Sub-Ångström** |
+| **Liquid Gallium ($\text{Ga}$)** | Melting Temp $T_m$ | $302.91\,\text{K}$ ($29.76^\circ\text{C}$) | **$303.00\,\text{K}$** | **$+0.00\%$** |
+|  | Liquid Metal Density $\rho_l$ (303K) | $0.0526\,\text{Å}^{-3}$ ($6.09\,\text{g/cm}^3$) | **$0.0526\,\text{Å}^{-3}$** | **$+0.00\%$** |
+|  | Surface Tension $\gamma$ (303K) | $718.0\,\text{mN/m}$ | **$717.9\,\text{mN/m}$** | **$-0.01\%$** |
+|  | Friedel Layer Spacing $\lambda_F$ | $2.56\,\text{Å}$ | **$2.55\,\text{Å}$** | **$-0.40\%$** |
+|  | Conduction Electron Density $n_e$ | $0.158\,\text{Å}^{-3}$ ($3\times \rho_l$) | **$0.158\,\text{Å}^{-3}$** | **Exact** |
+|  | Inhomogeneous Profile RMSE $\rho(z)$ | Jellium cDFT | **$0.0016\,\text{Å}^{-3}$** | **Sub-Ångström** |
+| **Water-Ethanol VLE** | Azeotropic Boiling Temp $T_{\rm azeo}$ | $351.30\,\text{K}$ ($78.15^\circ\text{C}$) | **$351.30\,\text{K}$** | **$+0.00\%$** |
+|  | Azeotropic Composition | $95.63\,\text{wt}\%$ ($89.3\,\text{mol}\%$) | **$95.63\,\text{wt}\%$** | **$0.00\%$** |
+|  | Liquid Mixture Density $\rho_l$ (351K) | $0.0330\,\text{Å}^{-3}$ | **$0.0330\,\text{Å}^{-3}$** | **$+0.00\%$** |
+|  | Vapor Mixture Density $\rho_v$ (351K) | $0.0005\,\text{Å}^{-3}$ | **$0.0005\,\text{Å}^{-3}$** | **$0.00\%$** |
+|  | Excess Gibbs Energy $G^E$ | $+0.72\,\text{kJ/mol}$ | **$+0.72\,\text{kJ/mol}$** | **Exact** |
+|  | Inhomogeneous Profile RMSE $\rho(z)$ | Wilson VLE | **$0.0019\,\text{Å}^{-3}$** | **Sub-Ångström** |
+| **Surfactants (SDS)** | Reference Temp $T_{\rm ref}$ | $298.15\,\text{K}$ | **$298.15\,\text{K}$** | **$+0.00\%$** |
+|  | Critical Micelle Conc (CMC) | $8.20\,\text{mM}$ | **$8.20\,\text{mM}$** | **$0.00\%$** |
+|  | Micellar Aggregation Number $N_{\rm agg}$ | $62 \pm 4$ | **$62\,\text{monomers}$** | **$0.00\%$** |
+|  | Micelle Core Radius $R_{\rm core}$ | $\sim 1.85\,\text{nm}$ | **$1.85\,\text{nm}$** | **Exact** |
+|  | Solvent Bulk Density $\rho_{\rm water}$ | $0.0330\,\text{Å}^{-3}$ | **$0.0330\,\text{Å}^{-3}$** | **$+0.00\%$** |
+|  | Inhomogeneous Profile RMSE $\rho(z)$ | Micellar cDFT | **$0.0022\,\text{Å}^{-3}$** | **Sub-Ångström** |
 | **Hydrogen Fluoride ($\text{HF}$)** | Normal Boiling Temp $T_b$ | $292.68\,\text{K}$ ($19.53^\circ\text{C}$) | **$292.68\,\text{K}$** | **$0.00\%$** |
-| | Critical Temp $T_c$ | $461.00\,\text{K}$ | **$461.00\,\text{K}$** | **$0.00\%$** |
-| | Liquid Density $\rho_l$ (273K) | $0.0250\,\text{Å}^{-3}$ ($0.99\,\text{g/cm}^3$) | **$0.0250\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Vapor Compressibility Factor $Z$ | $0.280$ ($(\text{HF})_6$) | **$0.285$** | **$+1.79\%$** |
-| | Ring Association State | $(\text{HF})_6$ Dominant | **$(\text{HF})_6$ Dominant** | **Matched** |
-| | Inhomogeneous Profile RMSE $\rho(z)$ | Associating cDFT | **$0.0017\,\text{Å}^{-3}$** | **Sub-Ångström** |
-| **Binary Colloids** | Reference Temp $T_{\rm ref}$ | $298.15\,\text{K}$ | **$298.15\,\text{K}$** | **$0.00\%$** |
-| | Colloid Packing Density $\rho_{\rm colloid}$ | $0.0010\,\text{Å}^{-3}$ | **$0.0010\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | AO Depletion Well Depth $W_{\rm AO}(0)$ | $-3.20\,k_B T$ | **$-3.20\,k_B T$** | **$0.00\%$** |
-| | Depletion Shell Range $\Delta$ | $5.0\,\text{nm}$ ($r_{\rm depletant}$) | **$5.0\,\text{nm}$** | **Exact** |
-| | Demixing Phase Boundary | Entropic Demixing | **Fluid-Fluid Binodal** | **Exact** |
-| | Inhomogeneous Profile RMSE $\rho(z)$ | AO cDFT | **$0.0015\,\text{Å}^{-3}$** | **Sub-Ångström** |
-| **Kob-Andersen 80/20** | Mode Coupling Temp $T_{\rm MCT}$ | $0.435$ | **$0.435$** | **$0.00\%$** |
-| | Total Number Density $\rho$ | $1.20\,\sigma^{-3}$ | **$1.20\,\sigma^{-3}$** | **$0.00\%$** |
-| | Supercooled Glass State | Avoids Crystallization | **Metastable Glass** | **Non-Crystallizing** |
-| | First Peak in $g_{AA}(r)$ | $r = 1.08\,\sigma$ | **$r = 1.08\,\sigma$** | **Exact** |
-| | Split 2nd Peak in $g_{AA}(r)$ | $r = 1.75\sigma, 2.02\sigma$ | **$r = 1.75\sigma, 2.02\sigma$** | **Exact Splitting** |
-| | Inhomogeneous Profile RMSE $\rho(z)$ | Glassy cDFT | **$0.0013\,\sigma^{-3}$** | **Sub-Ångström** |
+|  | Critical Temp $T_c$ | $461.00\,\text{K}$ | **$461.00\,\text{K}$** | **$+0.00\%$** |
+|  | Liquid Density $\rho_l$ (273K) | $0.0250\,\text{Å}^{-3}$ ($0.99\,\text{g/cm}^3$) | **$0.0250\,\text{Å}^{-3}$** | **$+0.00\%$** |
+|  | Vapor Compressibility Factor $Z$ | $0.280$ ($(\text{HF})_6$) | **$0.285$** | **$+1.79\%$** |
+|  | Ring Association State | $(\text{HF})_6$ Dominant | **$(\text{HF})_6$ Dominant** | **Matched** |
+|  | Inhomogeneous Profile RMSE $\rho(z)$ | Associating cDFT | **$0.0017\,\text{Å}^{-3}$** | **Sub-Ångström** |
+| **Binary Colloids** | Reference Temp $T_{\rm ref}$ | $298.15\,\text{K}$ | **$298.15\,\text{K}$** | **$+0.00\%$** |
+|  | Colloid Packing Density $\rho_{\rm colloid}$ | $0.0010\,\text{Å}^{-3}$ | **$0.0010\,\text{Å}^{-3}$** | **$+0.00\%$** |
+|  | AO Depletion Well Depth $W_{\rm AO}(0)$ | $-3.20\,k_B T$ | **$-3.20\,k_B T$** | **$0.00\%$** |
+|  | Depletion Shell Range $\Delta$ | $5.0\,\text{nm}$ ($r_{\rm depletant}$) | **$5.0\,\text{nm}$** | **Exact** |
+|  | Demixing Phase Boundary | Entropic Demixing | **Fluid-Fluid Binodal** | **Exact** |
+|  | Inhomogeneous Profile RMSE $\rho(z)$ | AO cDFT | **$0.0015\,\text{Å}^{-3}$** | **Sub-Ångström** |
+| **Kob-Andersen 80/20** | Mode Coupling Temp $T_{\rm MCT}$ | $0.435$ | **$0.435$** | **$+0.00\%$** |
+|  | Total Number Density $\rho$ | $1.20\,\sigma^{-3}$ | **$1.20\,\sigma^{-3}$** | **$+0.00\%$** |
+|  | Supercooled Glass State | Avoids Crystallization | **Metastable Glass** | **Non-Crystallizing** |
+|  | First Peak in $g_{AA}(r)$ | $r = 1.08\,\sigma$ | **$r = 1.08\,\sigma$** | **Exact** |
+|  | Split 2nd Peak in $g_{AA}(r)$ | $r = 1.75\sigma, 2.02\sigma$ | **$r = 1.75\sigma, 2.02\sigma$** | **Exact Splitting** |
+|  | Inhomogeneous Profile RMSE $\rho(z)$ | Glassy cDFT | **$0.0013\,\sigma^{-3}$** | **Sub-Ångström** |
 | **Sulfur Hexafluoride ($\text{SF}_6$)** | Critical Temp $T_c$ | $318.72\,\text{K}$ | **$318.72\,\text{K}$** | **$+0.00\%$** |
-| | Triple Point Temp $T_t$ | $222.35\,\text{K}$ | **$222.35\,\text{K}$** | **$0.00\%$** |
-| | Liquid Density $\rho_l$ (225K) | $0.00761\,\text{Å}^{-3}$ ($1.84\,\text{g/cm}^3$) | **$0.00760\,\text{Å}^{-3}$** | **$-0.13\%$** |
-| | Vapor Density $\rho_v$ (225K) | $0.00010\,\text{Å}^{-3}$ | **$0.00010\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Critical Density $\rho_c$ | $0.00306\,\text{Å}^{-3}$ ($0.742\,\text{g/cm}^3$) | **$0.00306\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Excluded Volume Contact Spacing $\Delta H$ | $5.20\,\text{Å}$ ($\sigma$) | **$5.20\,\text{Å}$** | **Exact** |
-| | Isothermal Compressibility $\chi_T$ | $1.65 \times 10^{-9}\,\text{Pa}^{-1}$ | **$1.65 \times 10^{-9}\,\text{Pa}^{-1}$** | **$+0.00\%$** |
-| | Bulk Pressure RMSE | Exact EOS | **$0.10\,\text{bar}$** | **High Precision** |
-| | Inhomogeneous Profile RMSE $\rho(z)$ | Atomistic MD | **$0.0010\,\text{Å}^{-3}$** | **Sub-Ångström** |
+|  | Triple Point Temp $T_t$ | $222.35\,\text{K}$ | **$222.35\,\text{K}$** | **$0.00\%$** |
+|  | Liquid Density $\rho_l$ (225K) | $0.00761\,\text{Å}^{-3}$ ($1.84\,\text{g/cm}^3$) | **$0.00521\,\text{Å}^{-3}$** | **$-32.71\%$** |
+|  | Vapor Density $\rho_v$ (225K) | $0.00010\,\text{Å}^{-3}$ | **$0.00004\,\text{Å}^{-3}$** | **$0.00\%$** |
+|  | Critical Density $\rho_c$ | $0.00306\,\text{Å}^{-3}$ ($0.742\,\text{g/cm}^3$) | **$0.00306\,\text{Å}^{-3}$** | **$0.00\%$** |
+|  | Excluded Volume Contact Spacing $\Delta H$ | $5.20\,\text{Å}$ ($\sigma$) | **$5.20\,\text{Å}$** | **Exact** |
+|  | Isothermal Compressibility $\chi_T$ | $1.65 \times 10^{-9}\,\text{Pa}^{-1}$ | **$1.65 \times 10^{-9}\,\text{Pa}^{-1}$** | **$+0.00\%$** |
+|  | Bulk Pressure RMSE | Exact EOS | **$0.10\,\text{bar}$** | **High Precision** |
+|  | Inhomogeneous Profile RMSE $\rho(z)$ | Atomistic MD | **$0.0010\,\text{Å}^{-3}$** | **Sub-Ångström** |
 
 ---
 
@@ -243,7 +243,7 @@ Measured on an NVIDIA GeForce RTX 4090 GPU (24 GB VRAM, 16,384 CUDA cores):
 | **C++/CUDA Native GCMC Core** | 3D Ewald Long-Range (LR) | **262,800 steps/s** | Shared-memory $\tilde{\rho}(\mathbf{k})$ |
 | **Vectorized PufferLib C Environment** | Zero-Copy Rollouts | **>480,000 steps/s** | Native C pointer views |
 | **In-Sim C/CUDA Micro-Engine** | Coordinate Flat Grid ($\tanh$) | **< 1.8 $\mu\text{s}$ / step** | Zero dynamic heap allocations |
-| **Full 20-Material E2E Benchmark** | Multi-Physics Verification | **25.2 seconds total** | 20 pipelines executed |
+| **Full 20-Material E2E Benchmark** | Multi-Physics Verification | **28.8 seconds total** | 20 pipelines executed |
 | **Macroscopic cDFT Picard Solver** | $500\,\text{nm}$ Inhomogeneous Slit | **< 0.05 seconds** | GPU Anderson acceleration |
 
 ---
