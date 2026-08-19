@@ -24,8 +24,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-
+from typing import Any, Dict, Tuple
 
 # =========================================================================
 # CANONICAL MATERIAL DEFINITIONS & EXPERIMENTAL GROUND TRUTHS (NIST / LIT)

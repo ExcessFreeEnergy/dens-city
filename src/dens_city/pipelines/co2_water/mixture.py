@@ -84,7 +84,6 @@ def compute_competitive_pore_adsorption(
     using exact 9-3 Lennard-Jones substrate potentials and multicomponent cDFT excluded volume.
     """
     z = np.linspace(0.0, H, grid_size)
-    dz = z[1] - z[0]
 
     # Bulk densities (A^-3)
     rho_w_bulk = 0.033 * (1.0 - x_co2_feed)

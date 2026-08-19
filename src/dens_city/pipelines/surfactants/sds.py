@@ -19,7 +19,6 @@ def compute_sds_micellization(
     # Standard free energy of micellization: \Delta G_mic^\circ = \Delta g_tail + \Delta g_head
     n_carbon = 12
     v_tail_A3 = 27.4 + 26.9 * n_carbon  # ~ 350.2 A^3
-    l_max_A = 1.5 + 1.265 * n_carbon     # ~ 16.7 A = 1.67 nm
     r_core_nm = 1.7308  # nm (Tanford hydrophobic core radius)
     r_core_A = r_core_nm * 10.0
     v_core_A3 = (4.0 * np.pi / 3.0) * (r_core_A**3)

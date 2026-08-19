@@ -94,7 +94,6 @@ def detect_bulk_plateaus(
     Returns:
       (rho_liquid, rho_vapor, mask_liquid_plateau, mask_vapor_plateau)
     """
-    dz = np.gradient(z_coords)
     drho_dz = np.gradient(rho, z_coords)
     abs_grad = np.abs(drho_dz)
     max_grad = np.max(abs_grad)

@@ -56,14 +56,11 @@ def compute_polymer_wall_depletion(
     b_eff = b_monomer * np.sqrt(c_infinity)  # Statistical segment length
     r_g_calc = np.sqrt(float(m_chain) * (b_eff**2) / 6.0)
 
-    dz = z_coords[1] - z_coords[0] if len(z_coords) > 1 else 0.1
-    n_z = len(z_coords)
-
     # Analytical and numerical boundary-value solution to the continuous Edwards diffusion equation:
     # \partial q(z, s) / \partial s = (R_g^2) * \partial^2 q / \partial z^2
     # Yields exact Fleer-Scheutjens depletion thickness with excluded volume: \delta_dep \approx 1.45 * R_g
     depletion_thickness_A = 1.45 * r_g_calc
-    
+
     # Exact Edwards segment density profile near Dirichlet hard wall:
     # \rho(z) = \rho_bulk * [ erf( z / ( \sqrt{4/\pi} * \delta_dep ) ) ]^2
     z_scaled = z_coords / max(1e-6, np.sqrt(4.0 / 3.0) * r_g_calc)

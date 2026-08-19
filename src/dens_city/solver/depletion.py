@@ -63,8 +63,6 @@ def compute_colloidal_depletion_demixing(
     via the Noro-Frenkel law of corresponding states: B_2^* = -1.50.
     """
     q_ratio = r_depletant / R_colloid  # q = 0.10
-    sigma_C = 2.0 * R_colloid
-    r_max = sigma_C + 2.0 * r_depletant
 
     # Function to calculate reduced second virial coefficient B2* = B2 / B2_HS
     # Noro-Frenkel sticky sphere / generalized van der Waals critical condition (Lekkerkerker 1992):

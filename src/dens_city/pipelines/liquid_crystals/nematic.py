@@ -128,9 +128,6 @@ def compute_isotropic_nematic_binodal(
     for T in t_arr:
         # Solve coexistence densities where chemical potential and pressure match
         s_coex = _solve_maier_saupe_S(gamma_coex, u_grid, du, p2_vals, S_init=0.55)
-        # Free energy excess: \Delta f = f_nem(S) - f_iso(0)
-        f_nem = _maier_saupe_free_energy(s_coex, gamma_coex, u_grid, du, p2_vals)
-        f_iso = _maier_saupe_free_energy(0.0, gamma_coex, u_grid, du, p2_vals)
 
         # Coexistence condition: \Delta P = 0, \Delta \mu = 0
         # In Maier-Saupe mean-field theory: \Delta \rho / \rho \approx s_coex^2 / (2 * gamma_coex)
