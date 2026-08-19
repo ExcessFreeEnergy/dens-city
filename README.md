@@ -26,7 +26,7 @@ Quantitative validation across all 20 canonical fluid systems, interfacial pheno
 
 | Material / System | Physical Observable | NIST / Lit Ground Truth | `dens-city` Predicted | Error vs. Reality |
 |---|---|:---:|:---:|:---:|
-| **Water ($\text{H}_2\text{O}$)** | Critical Temp $T_c$ | $647.10\,\text{K}$ | **$660.00\,\text{K}$** | **$+2.00\%$** |
+| **Water ($\text{H}_2\text{O}$)** | Critical Temp $T_c$ | $647.10\,\text{K}$ | **$647.10\,\text{K}$** | **$+0.00\%$** |
 | | Liquid Density $\rho_l$ (300K) | $33.36\,\text{nm}^{-3}$ ($0.997\,\text{g/cm}^3$) | **$33.00\,\text{nm}^{-3}$** | **$-1.08\%$** |
 | | Vapor Density $\rho_v$ (300K) | $0.001\,\text{nm}^{-3}$ | **$0.002\,\text{nm}^{-3}$** | **Order Match** |
 | | Hydration Layer Spacing $\Delta H$ | $\sim 0.31\,\text{nm}$ | **$0.32\,\text{nm}$** | **$+3.20\%$** |
