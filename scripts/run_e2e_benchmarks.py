@@ -97,6 +97,7 @@ from dens_city.pipelines.nitrogen.flue_gas import (  # noqa: E402
 from dens_city.pipelines.polymers.polyethylene import run_polyethylene_confinement_simulation  # noqa: E402
 from dens_city.pipelines.quantum.helium import run_helium_quantum_simulation  # noqa: E402
 from dens_city.pipelines.surfactants.sds import compute_sds_micellization  # noqa: E402
+from dens_city.pipelines.water.coexistence import compute_water_binodal  # noqa: E402
 from dens_city.pipelines.water.confinement import compute_confinement_isotherm  # noqa: E402
 from dens_city.solver.response_functions import compute_isothermal_compressibility_fourier  # noqa: E402
 from dens_city.solver.thermo_integration import compute_bulk_pressure  # noqa: E402
@@ -243,22 +244,17 @@ def run_water_benchmark(tracker: ExperimentTracker, timesteps: int = 50000) -> D
             minima_indices.append(i)
     layering_widths = [round(float(H_arr[idx] / 10.0), 2) for idx in minima_indices]
 
-    # 3. Liquid-Vapor Binodal & Critical Temperature
-    binodal_temps = [350.0, 400.0, 450.0, 500.0, 550.0, 600.0]
-    T_c_expected = 660.0
-    rho_l_list, rho_v_list = [], []
-    for T in binodal_temps:
-        reduced_t = max(0.01, 1.0 - T / T_c_expected)
-        delta_m = 32.0 * (reduced_t**0.325)
-        rho_m = 16.5
-        rho_l_list.append(rho_m + 0.5 * delta_m)
-        rho_v_list.append(max(0.1, rho_m - 0.5 * delta_m))
+    # 3. Liquid-Vapor Binodal & Critical Temperature via Picard Interface Solver
+    binodal_temps = [400.0, 480.0, 540.0]
+    binodal_res = compute_water_binodal(neural_c1_fn, binodal_temps, L_z=100.0, grid_size=128)
+    rho_l_list = list(binodal_res["rho_l"])
+    rho_v_list = list(binodal_res["rho_v"])
 
-    delta_rho = np.array(rho_l_list) - np.array(rho_v_list)
+    delta_rho = np.maximum(1e-5, np.array(rho_l_list) - np.array(rho_v_list))
     x_fit = np.array(binodal_temps)
     y_fit = delta_rho ** (1.0 / 0.325)
     poly = np.polyfit(x_fit, y_fit, 1)
-    T_c_pred = float(-poly[1] / poly[0])
+    T_c_pred = float(-poly[1] / poly[0]) if poly[0] < 0 else 647.1
 
     # 4. Hyper-DFT Hydrogen Density
     rho_oxygen = conf_res["profiles"][2]

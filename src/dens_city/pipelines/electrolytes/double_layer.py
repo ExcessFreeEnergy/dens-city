@@ -97,20 +97,53 @@ def solve_multivalent_double_layer(
     rho_cation = np.full(grid_size, rho_cation_bulk)
     rho_anion = np.full(grid_size, rho_anion_bulk)
 
-    # Electrostatic potential profile with charge inversion:
-    # Drops from negative at wall, passes zero, and peaks positive before decaying to bulk
-    phi_z = np.zeros(grid_size)
-    for i, z in enumerate(z_coords):
-        if z <= r_stern:
-            # Overcharging inversion peak
-            phi_z[i] = -0.15 * (1.0 - z / r_stern) + 0.08 * (z / r_stern) * (1.0 - z / (2 * r_stern))
-        else:
-            phi_z[i] = 0.08 * np.exp(-(z - r_stern) / lambda_d)
+    # 1D Poisson-cDFT finite difference solver
+    # Permittivity of water: eps_r = 78.5, eps_0 = 8.854e-12 F/m
+    eps_r = 78.5
+    eps_0 = 8.8541878128e-12
+    eps_tot = eps_r * eps_0
+    dz_m = dz * 1e-10
 
-    # Charge density: rho_q(z) = e * (z_+ * rho_+ - z_- * rho_-)
-    for i, z in enumerate(z_coords):
-        rho_cation[i] = rho_cation_bulk * np.exp(-valency_cation * E_CHARGE * phi_z[i] / (KB * T))
-        rho_anion[i] = rho_anion_bulk * np.exp(+valency_anion * E_CHARGE * phi_z[i] / (KB * T))
+    # Solve coupled Poisson-cDFT equations:
+    # d^2 phi / dz^2 = - rho_q(z) / (eps_r * eps_0)
+    # with boundary condition dphi/dz(0) = - sigma_s / eps_tot, phi(L_z) = 0
+    phi_z = np.zeros(grid_size, dtype=np.float64)
+    # Initial estimate of surface potential from Gouy-Chapman / Grahame
+    phi_z[0] = surface_charge / (eps_tot / (lambda_d * 1e-10))
+
+    # Solve coupled Poisson-cDFT self-consistently
+    for it in range(300):
+        # Boltzmann/cDFT ion densities with steric hard-sphere saturation
+        u_cat = -valency_cation * E_CHARGE * phi_z / (KB * T)
+        u_an = +valency_anion * E_CHARGE * phi_z / (KB * T)
+
+        # Steric correlation / cavity saturation
+        eta_local = (rho_cation + rho_anion) * (np.pi / 6.0) * (3.0**3)
+        c_steric = -np.log(np.maximum(1e-4, 1.0 - np.clip(eta_local, 0.0, 0.65)))
+
+        rho_cat_target = rho_cation_bulk * np.exp(np.clip(u_cat + c_steric, -20.0, 15.0))
+        rho_an_target = rho_anion_bulk * np.exp(np.clip(u_an + c_steric, -20.0, 15.0))
+
+        rho_cation = 0.85 * rho_cation + 0.15 * rho_cat_target
+        rho_anion = 0.85 * rho_anion + 0.15 * rho_an_target
+
+        # Charge density in C / m^3 (converting 1/A^3 to 1/m^3 via 1e30)
+        rho_q = (valency_cation * rho_cation - valency_anion * rho_anion) * E_CHARGE * 1e30
+
+        # Poisson update: d^2 phi / dz^2 = - rho_q / eps_tot
+        # Integrate electric field E(z) from z=0: E(z) = E(0) + (1/eps_tot) int_0^z rho_q(z') dz'
+        # with E(0) = sigma_s / eps_tot
+        e_field = np.zeros(grid_size)
+        e_field[0] = -surface_charge / eps_tot  # -dphi/dz(0)
+        for i in range(1, grid_size):
+            e_field[i] = e_field[i - 1] + (rho_q[i - 1] / eps_tot) * dz_m
+
+        # Integrate phi(z) backwards from L_z where phi(L_z) = 0
+        phi_new = np.zeros(grid_size)
+        for i in range(grid_size - 2, -1, -1):
+            phi_new[i] = phi_new[i + 1] + e_field[i] * dz_m
+
+        phi_z = 0.80 * phi_z + 0.20 * phi_new
 
     charge_density_Cm3 = (valency_cation * rho_cation - valency_anion * rho_anion) * E_CHARGE * 1e30  # C / m^3
     integrated_charge_Cm2 = np.sum(charge_density_Cm3[: int(r_stern / dz)]) * (dz * 1e-10)

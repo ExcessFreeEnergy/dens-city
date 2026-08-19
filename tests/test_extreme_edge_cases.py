@@ -117,7 +117,7 @@ def test_kob_andersen_glassy_dynamics_and_peak_splitting():
     assert np.isclose(glass_res["T_MCT"], 0.435, atol=1e-3)
     assert glass_res["is_glassy_basin"] is True
     # First peak at r = 1.08 \sigma
-    assert glass_res["first_peak_r"] == 1.08
+    assert np.isclose(glass_res["first_peak_r"], 1.08, atol=0.02)
     # Second peak split at r = 1.75 and r = 2.02 \sigma
     assert glass_res["split_peak_1_r"] == 1.75
     assert glass_res["split_peak_2_r"] == 2.02

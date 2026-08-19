@@ -56,26 +56,50 @@ def compute_clay_swelling_pressure(
     H_values: List[float],  # Basal interlayer spacings in Angstroms (e.g. 9.5 to 25.0 A)
     T: float = 298.15,
     salt_conc_M: float = 0.1,  # Molar concentration of NaCl in pore fluid
+    grid_size: int = 128,
 ) -> Dict[str, np.ndarray]:
     r"""
-    Calculates the disjoining / swelling pressure Pi_swell(H) in montmorillonite clay interlayers.
-    Captures:
-    1. Crystalline swelling regime (H in [9.5, 19 A]): sharp hydration layer peaks (1W, 2W, 3W hydration states).
-    2. Osmotic swelling regime (H > 20 A): diffuse electric double layer repulsion described by DLVO / Poisson-Boltzmann.
+    Calculates the disjoining / swelling pressure Pi_swell(H) in montmorillonite clay interlayers
+    by solving inhomogeneous cDFT density profiles in clay slit walls and integrating structural virial forces.
     """
     h_arr = np.array(H_values)
     pi_swell_mpa = np.zeros(len(h_arr))
+    rho_bulk_water = 0.0333  # molecules / A^3 (~1.0 g/cm^3)
+    sigma_water = 3.0  # A
 
     for ih, H in enumerate(h_arr):
-        # Hydration layering peaks at ~12.5 A (1-water layer), ~15.5 A (2-water layer), ~18.5 A (3-water layer)
-        hydration_peak = 120.0 * np.exp(-(H - 9.5) / 2.5) * np.cos(2.0 * np.pi * (H - 9.5) / 3.0)
-        # Electrostatic double layer osmotic repulsion (DLVO decay)
-        debye_length_A = 3.04 / np.sqrt(salt_conc_M) * 10.0  # ~9.6 A for 0.1 M
-        edl_repulsion = 15.0 * np.exp(-H / debye_length_A)
-        # Van der Waals attraction
-        vdw_attraction = -2.0 / (H / 10.0) ** 3
+        L_z = max(40.0, H + 10.0)
+        z_coords, v_ext, dv_ext_dz = make_montmorillonite_slit_potential(H, L_z=L_z, grid_size=grid_size)
+        dz = z_coords[1] - z_coords[0]
 
-        pi_swell_mpa[ih] = hydration_peak + edl_repulsion + vdw_attraction
+        # Solve equilibrium water density profile via Picard iteration
+        rho_water = np.full(grid_size, rho_bulk_water)
+        rho_water[v_ext > 1e-19] = 0.0
+
+        for _ in range(50):
+            eta = rho_water * (np.pi / 6.0) * (sigma_water**3)
+            eta_c = np.clip(eta, 0.0, 0.65)
+            c1_hs = -np.log(np.maximum(1e-4, 1.0 - eta_c)) - (3.0 * eta_c / (1.0 - eta_c))
+
+            # External potential in Joules converted to dimensionless beta*V_ext
+            beta_v = v_ext / (KB * T)
+            target = rho_bulk_water * np.exp(np.clip(-beta_v + c1_hs, -25.0, 15.0))
+            target[v_ext > 1e-19] = 0.0
+            rho_water = 0.80 * rho_water + 0.20 * target
+
+        # Virial structural wall force: P_struct = - \int \rho(z) (dV/dz) dz (converted to MPa)
+        # dv_ext_dz is in J / A = 1e10 J/m. rho is in 1/A^3 = 1e30 1/m^3. Force density = 1e40 N/m^3.
+        # Integral * dz (in A = 1e-10 m) gives Pressure in N/m^2 = Pa.
+        # Bulk pressure reference P_bulk ~ 0.1 MPa
+        f_integral = -np.sum(rho_water * dv_ext_dz) * dz * 1e-10 * 1e30 * 1e10  # in Pa
+        p_struct_mpa = float(f_integral * 1e-6)
+
+        # Diffuse double layer DLVO osmotic repulsion (for H > 15 A)
+        debye_length_A = 3.04 / np.sqrt(salt_conc_M) * 10.0
+        p_edl_mpa = float(15.0 * np.exp(-H / debye_length_A))
+
+        # Total disjoining pressure
+        pi_swell_mpa[ih] = p_struct_mpa + p_edl_mpa
 
     return {
         "H_values": h_arr,

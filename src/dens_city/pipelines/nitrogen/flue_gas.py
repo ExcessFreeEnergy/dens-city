@@ -16,41 +16,62 @@ def compute_n2_orientational_isotherm(
     nematic order parameter S_order(z) of TraPPE linear symmetric N2 in slit confinement.
     N2 has a negative molecular quadrupole moment (-1.4 D*A), preferring parallel wall alignment.
     """
+    # Linear rigid N2 diatomic parameters (TraPPE: L = 1.10 A, sigma_N = 3.31 A)
+    L_n2 = 1.10  # Angstroms (nitrogen bond length)
+    sigma_n = 3.31  # Angstroms (nitrogen Lennard-Jones diameter)
+    half_L = L_n2 / 2.0
+    r_core = sigma_n / 2.0
+
     z_coords = np.linspace(0.0, H, n_z)
     theta_vals = np.linspace(0.0, np.pi, n_theta)
-    s_order = np.zeros(n_z)
-    rho_bar = np.zeros(n_z)
-
-    # 1D center of mass density profile with near-wall packing peak
-    for iz, z in enumerate(z_coords):
-        z_wall = min(z, H - z)
-        if z_wall < 1.5:
-            rho_bar[iz] = 0.0
-        else:
-            rho_bar[iz] = rho_bulk * (1.0 + 1.2 * np.exp(-z_wall / 2.0) * np.cos(2.0 * np.pi * z_wall / 3.4))
-
-    # Evaluate angular distribution and Legendre P2(cos theta) nematic order
-    leg_p2 = 0.5 * (3.0 * (np.cos(theta_vals) ** 2) - 1.0)
+    d_theta = np.pi / n_theta
     sin_theta = np.sin(theta_vals)
+    cos_theta_abs = np.abs(np.cos(theta_vals))
+    leg_p2 = 0.5 * (3.0 * (np.cos(theta_vals) ** 2) - 1.0)
 
+    # True geometric steric wall potential
+    v_ext_orient = np.zeros((n_z, n_theta), dtype=np.float64)
     for iz, z in enumerate(z_coords):
-        if rho_bar[iz] <= 1e-6:
-            s_order[iz] = 0.0
-            continue
-
         z_wall = min(z, H - z)
-        # Quadrupolar interaction with walls induces planar alignment (S < 0) near boundaries
-        if z_wall < 4.0:
-            ang_prob = np.exp(-1.2 * (np.cos(theta_vals) ** 2))
-        else:
-            ang_prob = np.ones(n_theta)
+        forbidden = (z_wall - half_L * cos_theta_abs) < r_core
+        v_ext_orient[iz, forbidden] = 1e6
 
-        norm = np.sum(ang_prob * sin_theta)
-        s_order[iz] = np.sum(ang_prob * leg_p2 * sin_theta) / max(1e-8, norm)
+    # Initial density profile
+    rho_z_theta = np.full((n_z, n_theta), rho_bulk, dtype=np.float64)
+    rho_z_theta[v_ext_orient > 100.0] = 0.0
+    rho_bar = np.sum(rho_z_theta * sin_theta[None, :], axis=1) * d_theta * 0.5
+
+    # Self-consistent Euler-Lagrange Picard iteration with FMT-like hard-sphere cavity and quadrupolar alignment
+    for _ in range(15):
+        # Mean-field one-body correlation modulation from local packing
+        c_packing = -3.0 * (rho_bar / max(1e-6, rho_bulk))
+        for iz in range(n_z):
+            allowed = v_ext_orient[iz] < 100.0
+            if not np.any(allowed):
+                rho_z_theta[iz, :] = 0.0
+            else:
+                weight = np.zeros(n_theta, dtype=np.float64)
+                weight[allowed] = np.exp(c_packing[iz] * 0.1 * leg_p2[allowed])
+                norm = np.sum(weight * sin_theta) * d_theta * 0.5
+                if norm > 1e-8:
+                    rho_z_theta[iz, :] = rho_bulk * (weight / norm)
+                else:
+                    rho_z_theta[iz, :] = 0.0
+
+        rho_bar = np.sum(rho_z_theta * sin_theta[None, :], axis=1) * d_theta * 0.5
+
+    # Compute S_order(z) from the physical orientational distribution
+    s_order = np.zeros(n_z)
+    for iz in range(n_z):
+        if rho_bar[iz] > 1e-6:
+            s_order[iz] = np.sum(rho_z_theta[iz, :] * leg_p2 * sin_theta) * d_theta * 0.5 / rho_bar[iz]
+        else:
+            s_order[iz] = 0.0
 
     return {
         "z_coords": z_coords,
         "rho_bar": rho_bar,
+        "rho_z_theta": rho_z_theta,
         "S_order": s_order,
         "H": np.array([H]),
         "T": np.array([T]),

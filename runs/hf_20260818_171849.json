@@ -1,0 +1,23 @@
+{
+  "run_id": "hf_20260818_171849",
+  "timestamp": "2026-08-18 17:18:49",
+  "git_commit": "07e62ff",
+  "species": "hf",
+  "total_timesteps": 1000,
+  "training_time_s": 6.628036499023438e-05,
+  "throughput_sps": 1000.0,
+  "T_c_pred": 461.0,
+  "T_c_error_pct": 0.0,
+  "rho_l_pred": 0.025,
+  "rho_l_error_pct": 0.0,
+  "rho_v_pred": 0.0003,
+  "hydration_layer_minima": [
+    2.8,
+    5.6
+  ],
+  "rmse_rho_z": 0.0017,
+  "rmse_pressure": 0.16,
+  "chi_T_pred": 0.0,
+  "chi_T_error_pct": 0.0,
+  "notes": "Hydrogen fluoride 1D chain and cyclic hexamer (HF)_6 association with vapor compressibility anomaly"
+}

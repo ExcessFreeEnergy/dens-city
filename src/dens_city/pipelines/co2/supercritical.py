@@ -86,46 +86,56 @@ def compute_orientational_density_and_order(
     d_theta = np.pi / n_theta
     sin_theta = np.sin(theta_grid)
 
-    # Slit external wall potential (hard wall at z=0 and z=H)
-    wall_dist = 2.0  # Angstroms
-    v_ext = np.zeros(n_z)
-    v_ext[z_grid < wall_dist] = 1e6
-    v_ext[z_grid > H - wall_dist] = 1e6
+    # Linear rigid CO2 molecule parameters (TraPPE: L = 2.32 A, sigma_O = 3.03 A)
+    L_co2 = 2.32  # Angstroms (end-to-end oxygen distance)
+    sigma_o = 3.03  # Angstroms (site Lennard-Jones hard core)
+    half_L = L_co2 / 2.0
+    r_core = sigma_o / 2.0
 
-    # Initial uniform isotropic density
+    # True geometric steric wall potential: V_ext(z, theta) = infinity if end oxygen penetrates wall
+    v_ext_orient = np.zeros((n_z, n_theta), dtype=np.float32)
+    cos_theta_abs = np.abs(np.cos(theta_grid))
+
+    for iz, z in enumerate(z_grid):
+        z_wall = min(z, H - z)
+        # Oxygen penetration check: z_wall - (L/2)*|cos(theta)| < r_core
+        forbidden = (z_wall - half_L * cos_theta_abs) < r_core
+        v_ext_orient[iz, forbidden] = 1e6
+
+    # Initial density from steric Boltzmann factor
     rho_z_theta = np.full((n_z, n_theta), rho_bulk, dtype=np.float32)
-    rho_z_theta[z_grid < wall_dist, :] = 0.0
-    rho_z_theta[z_grid > H - wall_dist, :] = 0.0
+    rho_z_theta[v_ext_orient > 100.0] = 0.0
 
     rho_bar = np.sum(rho_z_theta * sin_theta[None, :], axis=1) * d_theta * 0.5
 
-    # Evaluate COLN operator if model is provided
-    if coln_model is not None and hasattr(coln_model, "forward"):
-        with torch.no_grad():
-            rho_bar_t = torch.tensor(rho_bar, dtype=torch.float32).unsqueeze(0)
-
-            # Query grid
-            z_q = torch.tensor(z_grid / H, dtype=torch.float32).view(1, n_z, 1)
-
-            # Relax density via Picard iteration with Euler-Lagrange
-            for _ in range(10):
-                # Compute angle-dependent c1 modulation
+    # Self-consistent Euler-Lagrange relaxation via Picard iteration with COLN neural operator
+    p2 = 0.5 * (3.0 * (np.cos(theta_grid) ** 2) - 1.0)
+    for _ in range(15):
+        if coln_model is not None and hasattr(coln_model, "forward"):
+            with torch.no_grad():
+                rho_bar_t = torch.tensor(rho_bar, dtype=torch.float32).unsqueeze(0)
+                z_q = torch.tensor(z_grid / H, dtype=torch.float32).view(1, n_z, 1)
                 c_ml = coln_model.dir_net(rho_bar_t, z_q)  # [1, n_z, 3]
-                p2 = 0.5 * (3.0 * (np.cos(theta_grid) ** 2) - 1.0)
-
                 c20_profile = c_ml[0, :, 2].cpu().numpy()  # [n_z]
-                # Wall torque: near wall z < 4 A, c20 induces parallel ordering (p2 < 0)
-                wall_torque = -1.5 * np.exp(-z_grid / 2.5) - 1.5 * np.exp(-(H - z_grid) / 2.5)
+        else:
+            # Self-consistent mean-field quadrupole alignment
+            c20_profile = -2.5 * (rho_bar / max(1e-6, rho_bulk))
 
-                for iz in range(n_z):
-                    if v_ext[iz] > 100.0:
-                        rho_z_theta[iz, :] = 0.0
-                    else:
-                        weight = np.exp(wall_torque[iz] * p2 + 0.1 * c20_profile[iz])
-                        norm = np.sum(weight * sin_theta) * d_theta * 0.5
-                        rho_z_theta[iz, :] = rho_bulk * (weight / max(1e-6, norm))
+        for iz in range(n_z):
+            allowed = v_ext_orient[iz] < 100.0
+            if not np.any(allowed):
+                rho_z_theta[iz, :] = 0.0
+            else:
+                # Euler-Lagrange: rho(z, theta) ~ exp(-beta V_ext + c1(z, theta))
+                weight = np.zeros(n_theta, dtype=np.float32)
+                weight[allowed] = np.exp(0.15 * c20_profile[iz] * p2[allowed])
+                norm = np.sum(weight * sin_theta) * d_theta * 0.5
+                if norm > 1e-8:
+                    rho_z_theta[iz, :] = rho_bulk * (weight / norm)
+                else:
+                    rho_z_theta[iz, :] = 0.0
 
-                rho_bar = np.sum(rho_z_theta * sin_theta[None, :], axis=1) * d_theta * 0.5
+        rho_bar = np.sum(rho_z_theta * sin_theta[None, :], axis=1) * d_theta * 0.5
 
     # Compute S_order(z)
     s_order = np.zeros(n_z)

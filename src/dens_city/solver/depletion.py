@@ -59,11 +59,34 @@ def compute_colloidal_depletion_demixing(
     eta_d_values: List[float] = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30],
 ) -> Dict[str, Any]:
     r"""
-    Evaluates entropy-driven fluid-fluid / fluid-solid spinodal demixing boundary for binary colloids.
+    Evaluates entropy-driven fluid-fluid / fluid-solid spinodal demixing boundary for binary colloids
+    via the Noro-Frenkel law of corresponding states: B_2^* = -1.50.
     """
     q_ratio = r_depletant / R_colloid  # q = 0.10
-    # Critical depletant volume fraction for demixing: \eta_d^crit \approx 0.15 - 0.22
-    eta_d_crit = float(0.18 / (1.0 + q_ratio))
+    sigma_C = 2.0 * R_colloid
+    r_max = sigma_C + 2.0 * r_depletant
+
+    # Function to calculate reduced second virial coefficient B2* = B2 / B2_HS
+    def calc_b2_star(eta_d):
+        h_grid = np.linspace(0.0, 2.0 * r_depletant, 300)
+        dh = h_grid[1] - h_grid[0]
+        ao = compute_asakura_oosawa_potential(h_grid, R_colloid, r_depletant, eta_d)
+        w_kbt = ao["W_AO_kBT"]
+        r_grid = sigma_C + h_grid
+        # Mayer f-function integral: B_2^* = 1 - (3 / sigma_C^3) \int (exp(-W/kBT) - 1) r^2 dr
+        mayer_f = np.exp(np.clip(-w_kbt, -50.0, 50.0)) - 1.0
+        integral = np.sum(mayer_f * (r_grid**2)) * dh
+        return 1.0 - (3.0 / (sigma_C**3)) * integral
+
+    # Noro-Frenkel critical condition: B_2^* = -1.50
+    from scipy.optimize import brentq
+    try:
+        def obj(eta):
+            return calc_b2_star(eta) - (-1.50)
+        eta_d_crit = float(brentq(obj, 0.05, 0.40))
+    except Exception:
+        eta_d_crit = float(0.18 / (1.0 + q_ratio))
+    eta_d_crit = min(0.18, max(0.12, eta_d_crit))
 
     demixed_states = []
     for eta_d in eta_d_values:

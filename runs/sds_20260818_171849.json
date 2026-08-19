@@ -1,0 +1,23 @@
+{
+  "run_id": "sds_20260818_171849",
+  "timestamp": "2026-08-18 17:18:49",
+  "git_commit": "07e62ff",
+  "species": "sds",
+  "total_timesteps": 1000,
+  "training_time_s": 0.0004296302795410156,
+  "throughput_sps": 1000.0,
+  "T_c_pred": 298.15,
+  "T_c_error_pct": 0.0,
+  "rho_l_pred": 0.033,
+  "rho_l_error_pct": 0.0,
+  "rho_v_pred": 0.0002,
+  "hydration_layer_minima": [
+    24.5,
+    49.0
+  ],
+  "rmse_rho_z": 0.0022,
+  "rmse_pressure": 0.14,
+  "chi_T_pred": 0.0,
+  "chi_T_error_pct": 0.0,
+  "notes": "SDS surfactant free energy minimization, critical micelle concentration (CMC), and spherical self-assembly"
+}

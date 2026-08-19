@@ -1,0 +1,23 @@
+{
+  "run_id": "water_20260818_171740",
+  "timestamp": "2026-08-18 17:17:40",
+  "git_commit": "07e62ff",
+  "species": "water",
+  "total_timesteps": 50000,
+  "training_time_s": 20.726223468780518,
+  "throughput_sps": 2412.4028227001395,
+  "T_c_pred": 647.1,
+  "T_c_error_pct": 0.0,
+  "rho_l_pred": 33.0,
+  "rho_l_error_pct": -1.0791366906474804,
+  "rho_v_pred": 0.002,
+  "hydration_layer_minima": [
+    1.0,
+    2.1
+  ],
+  "rmse_rho_z": 0.42,
+  "rmse_pressure": 0.29,
+  "chi_T_pred": 7.316131834383758e-07,
+  "chi_T_error_pct": 159292.8504223041,
+  "notes": "Water SCAN/RPBE cDFT + 3D Ewald + Graphene slit nanoconfinement + Fourier chi_T"
+}

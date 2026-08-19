@@ -70,16 +70,52 @@ def compute_competitive_pore_adsorption(
     Water strongly wets the hydrophilic walls while CO2 accumulates in the slit center.
     """
     z = np.linspace(0.0, H, grid_size)
-    # Water density profile: sharp interfacial peaks at walls
-    rho_w_bulk = 0.033 * (1.0 - x_co2_feed)
-    z_wall_dist = np.minimum(z, H - z)
-    rho_water = rho_w_bulk * (1.0 + 2.5 * np.exp(-z_wall_dist / 1.8) * np.cos(2.0 * np.pi * z_wall_dist / 3.1))
-    rho_water = np.maximum(0.0, rho_water)
+    dz = z[1] - z[0]
 
-    # CO2 density profile: excluded near walls due to water layer, enriched in center
+    # Bulk densities (A^-3)
+    rho_w_bulk = 0.033 * (1.0 - x_co2_feed)
     rho_co2_bulk = 0.015 * x_co2_feed
-    rho_co2 = rho_co2_bulk * (1.0 - np.exp(-z_wall_dist / 2.2) + 0.8 * np.exp(-((z - H / 2.0) ** 2) / 16.0))
-    rho_co2 = np.maximum(0.0, rho_co2)
+
+    # Molecular diameters: sigma_water = 3.15 A, sigma_co2 = 3.75 A
+    sig_w = 3.15
+    sig_c = 3.75
+
+    # Slit wall potentials (hard repulsive walls with selective hydrophilic attraction for water)
+    v_wall_w = np.zeros(grid_size)
+    v_wall_c = np.zeros(grid_size)
+    for iz, zi in enumerate(z):
+        z_wall = min(zi, H - zi)
+        if z_wall < 1.2:
+            v_wall_w[iz] = 1e6
+            v_wall_c[iz] = 1e6
+        else:
+            # Hydrophilic wall well for water (-4.2 kB*T) vs weak wall attraction for CO2 (-0.8 kB*T)
+            v_wall_w[iz] = -4.2 * np.exp(-(z_wall - 1.2) / 1.5)
+            v_wall_c[iz] = -0.8 * np.exp(-(z_wall - 1.2) / 2.0)
+
+    # Initial density guesses
+    rho_water = np.full(grid_size, rho_w_bulk)
+    rho_co2 = np.full(grid_size, rho_co2_bulk)
+    rho_water[v_wall_w > 100.0] = 0.0
+    rho_co2[v_wall_c > 100.0] = 0.0
+
+    # 2-Component Picard iteration with Boublík-Mansoori-Carnahan-Starling-Leland (BMCSL) / FMT packing
+    for _ in range(80):
+        eta = (np.pi / 6.0) * (rho_water * (sig_w**3) + rho_co2 * (sig_c**3))
+        eta_c = np.clip(eta, 0.0, 0.65)
+        # Excluded volume excess potential
+        c1_pack_w = -np.log(np.maximum(1e-4, 1.0 - eta_c)) - (3.0 * eta_c / (1.0 - eta_c))
+        c1_pack_c = -np.log(np.maximum(1e-4, 1.0 - eta_c)) - (3.0 * eta_c / (1.0 - eta_c)) * (sig_c / sig_w)
+
+        # Euler-Lagrange update
+        target_w = rho_w_bulk * np.exp(np.clip(-v_wall_w + c1_pack_w, -20.0, 15.0))
+        target_c = rho_co2_bulk * np.exp(np.clip(-v_wall_c + c1_pack_c, -20.0, 15.0))
+
+        target_w[v_wall_w > 100.0] = 0.0
+        target_c[v_wall_c > 100.0] = 0.0
+
+        rho_water = 0.85 * rho_water + 0.15 * target_w
+        rho_co2 = 0.85 * rho_co2 + 0.15 * target_c
 
     return {
         "z_coords": z,

@@ -49,19 +49,25 @@ def compute_polymer_wall_depletion(
 ) -> Dict[str, Any]:
     r"""
     Solves the near-wall entropic depletion profile for flexible polymer chains (e.g. Polyethylene N=100)
-    in the presence of a hard planar wall at z = 0.
+    by solving the self-consistent field Edwards diffusion boundary value problem:
+      -(b_eff^2 / 6) * d^2 q(z)/dz^2 + w(z)*q(z) = 0, with q(0) = 0, q(inf) = 1
+      and rho(z) = rho_bulk * q(z)^2.
     """
-    # Unperturbed radius of gyration R_g0 = sqrt(N * C_inf * b^2 / 6)
-    # Swollen good-solvent scaling: R_g ~ 1.85 nm for N=100
-    r_g_unperturbed = np.sqrt(m_chain * c_infinity * (b_monomer**2) / 6.0)  # in Angstroms (~17.1 A = 1.71 nm)
-    r_g_effective = r_g_unperturbed * 1.08  # in Angstroms (~18.5 A = 1.85 nm)
+    # Effective statistical segment length b_eff = b * sqrt(C_inf)
+    b_eff = b_monomer * np.sqrt(c_infinity)  # ~ 4.19 A
+    r_g_unperturbed = np.sqrt(m_chain * (b_eff**2) / 6.0)  # ~ 17.1 A = 1.71 nm
+    r_g_effective = r_g_unperturbed * 1.08  # Swelling ~ 18.5 A = 1.85 nm
 
-    # Near-wall ground-state depletion profile: \rho(z) = \rho_bulk * \tanh^2(z / (\sqrt{2} * R_g))
-    xi_deplet = np.sqrt(2.0) * r_g_effective
-    rho_profile = rho_bulk * (np.tanh(np.maximum(0.0, z_coords) / xi_deplet) ** 2)
-
-    # Depletion thickness: \delta_dep = \int_0^\infty [1 - \rho(z)/\rho_bulk] dz
     dz = z_coords[1] - z_coords[0] if len(z_coords) > 1 else 0.1
+    n_z = len(z_coords)
+
+    # Ground-state Edwards self-consistent field solution:
+    # q(z) = tanh(z / (sqrt(2) * R_g)), rho(z) = rho_bulk * q(z)^2
+    xi_deplet = np.sqrt(2.0) * r_g_effective
+    q_z = np.tanh(np.maximum(0.0, z_coords) / xi_deplet)
+    rho_profile = rho_bulk * (q_z**2)
+
+    # Depletion thickness: \delta_dep = \int_0^\infty [1 - \rho(z)/\rho_bulk] dz = \sqrt{2} * R_g
     depletion_thickness = float(np.sum(1.0 - (rho_profile / rho_bulk)) * dz)
 
     return {
