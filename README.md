@@ -5,6 +5,8 @@
 [![CUDA: 12.0+](https://img.shields.io/badge/CUDA-12.0+-green.svg)](https://developer.nvidia.com/cuda-toolkit)
 [![PufferLib: Zero-Copy C](https://img.shields.io/badge/PufferLib-Zero--Copy%20C-orange.svg)](https://github.com/PufferAI/PufferLib)
 
+Note: this software is still very much in the alpha stage
+
 I built `dens-city` to scale quantum-mechanical atomic accuracy to macroscopic fluid dynamics on a single high performance workstation.
 
 With current methods, simulating dense molecular liquids is unfeasible. Electronic structure methods give you accurate sub-Ångström fidelity and quantum-mechanical precision but they hit an wall when you try to simulate more than a few thousand atoms across nanosecond timescales. On the other side of the scale, continuum hydrodynamics and classical equations of state can simulate gallons of fluid in seconds, but throw away molecular structure, hydrogen-bonding networks, dielectric saturation, and discrete interfacial layering.
