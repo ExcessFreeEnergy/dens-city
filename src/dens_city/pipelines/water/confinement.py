@@ -3,7 +3,7 @@ from typing import Callable, Dict, List, Tuple
 import numpy as np
 
 from dens_city.solver.picard_solver import CdftPicardSolver
-from dens_city.solver.thermo_integration import compute_bulk_pressure
+from dens_city.solver.thermo_integration import compute_bulk_chemical_potential, compute_bulk_pressure
 
 KB = 1.380649e-23
 
@@ -31,7 +31,8 @@ def make_graphene_slit_potential(
 
     for i, z in enumerate(z_coords):
         if z < z_left or z > z_right:
-            v_ext[i] = 1e-18  # Hard repulsive boundary
+            v_ext[i] = 1e18  # True infinite steric repulsive boundary (no leaking into void)
+            dv_ext_dz[i] = 0.0
             continue
 
         d1 = z - z_left + 1.0  # Offset for graphene surface
@@ -63,6 +64,8 @@ def compute_confinement_isotherm(
     """
     solver = CdftPicardSolver(c1_functional, grid_size=grid_size)
     bulk_p = compute_bulk_pressure(c1_functional, rho_bulk, T)
+    # Calculate exact bulk reservoir chemical potential mu(rho_bulk, T)
+    mu_bulk = compute_bulk_chemical_potential(c1_functional, rho_bulk, T, grid_size=grid_size)
 
     p_eff_list = []
     pi_disjoining_list = []
@@ -73,8 +76,8 @@ def compute_confinement_isotherm(
         z_coords, v_ext, dv_ext_dz = make_graphene_slit_potential(H, L_z, grid_size=grid_size)
         dz = z_coords[1] - z_coords[0]
 
-        # Solve equilibrium profile
-        rho, converged, it, res = solver.solve(z_coords, v_ext, T=T, mu=-3200.0 * KB, rho_bulk=rho_bulk)
+        # Solve equilibrium profile in Grand Canonical equilibrium with reservoir mu_bulk
+        rho, converged, it, res = solver.solve(z_coords, v_ext, T=T, mu=mu_bulk, rho_bulk=rho_bulk)
 
         # Structural route to effective pressure: \tilde{P} = - \int \rho(z) (dV_wall / dz) dz
         p_eff = -np.sum(rho * dv_ext_dz) * dz

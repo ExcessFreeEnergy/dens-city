@@ -86,3 +86,20 @@ def compute_bulk_pressure(
 
     pressure = KB * T * rho_bulk * (1.0 - c1_val) - f_ex_density
     return pressure
+
+
+def compute_bulk_chemical_potential(
+    c1_functional: Callable[[np.ndarray, float], np.ndarray],
+    rho_bulk: float,
+    T: float,
+    lambda_db: float = 1.0,
+    grid_size: int = 64,
+) -> float:
+    r"""
+    Computes the bulk chemical potential \mu(rho_b, T) = k_B T [ ln(\Lambda^3 \rho_b) - c^(1)(rho_b, T) ].
+    """
+    rho_arr = np.full(grid_size, rho_bulk, dtype=np.float64)
+    c1_arr = c1_functional(rho_arr, T)
+    c1_val = float(np.mean(c1_arr))
+    rho_safe = max(1e-12, rho_bulk)
+    return float(KB * T * (np.log(rho_safe * (lambda_db**3)) - c1_val))

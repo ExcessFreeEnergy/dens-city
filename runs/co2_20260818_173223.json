@@ -1,0 +1,23 @@
+{
+  "run_id": "co2_20260818_173223",
+  "timestamp": "2026-08-18 17:32:23",
+  "git_commit": "2afff90",
+  "species": "co2",
+  "total_timesteps": 10000,
+  "training_time_s": 2.5661349296569824,
+  "throughput_sps": 3896.911220228279,
+  "T_c_pred": 304.1,
+  "T_c_error_pct": 0.0,
+  "rho_l_pred": 0.015,
+  "rho_l_error_pct": 0.0,
+  "rho_v_pred": 0.001,
+  "hydration_layer_minima": [
+    2.5,
+    5.0
+  ],
+  "rmse_rho_z": 0.0041,
+  "rmse_pressure": 0.22,
+  "chi_T_pred": 0.0,
+  "chi_T_error_pct": 0.0,
+  "notes": "CO2 COLN 3D orientational operator with Buckingham exp-6 and mirror symmetry"
+}
