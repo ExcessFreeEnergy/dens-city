@@ -116,13 +116,13 @@ Quantitative validation across all 20 canonical fluid systems, interfacial pheno
 | | Inhomogeneous Profile RMSE $\rho(z)$ | RTIL cDFT | **$0.0011\,\text{Å}^{-3}$** | **Sub-Ångström** |
 | **Polyethylene ($N=100$)** | Reference Temp $T_{\rm ref}$ | $298.15\,\text{K}$ | **$298.15\,\text{K}$** | **$0.00\%$** |
 | | Melt Monomer Density $\rho_l$ | $0.0330\,\text{Å}^{-3}$ | **$0.0330\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Radius of Gyration $R_g$ | $\sim 1.85\,\text{nm}$ | **$1.85\,\text{nm}$** | **$0.00\%$** |
-| | Entropic Depletion Thickness $\delta_{\rm dep}$ | de Gennes Layer | **$2.62\,\text{nm}$** | **Matched** |
+| | Radius of Gyration $R_g$ | $\sim 1.85\,\text{nm}$ | **$1.71\,\text{nm}$** | **$-7.57\%$** |
+| | Entropic Depletion Thickness $\delta_{\rm dep}$ | de Gennes Layer | **$2.48\,\text{nm}$** | **Matched** |
 | | End-to-End Distance $R_{ee}$ | $\sim 4.53\,\text{nm}$ | **$4.53\,\text{nm}$** | **Exact** |
 | | Inhomogeneous Profile RMSE $\rho(z)$ | TPT1 cDFT | **$0.0014\,\text{Å}^{-3}$** | **Sub-Ångström** |
 | **Liquid Gallium ($\text{Ga}$)** | Melting Temp $T_m$ | $302.91\,\text{K}$ ($29.76^\circ\text{C}$) | **$303.00\,\text{K}$** | **$+0.03\%$** |
 | | Liquid Metal Density $\rho_l$ (303K) | $0.0526\,\text{Å}^{-3}$ ($6.09\,\text{g/cm}^3$) | **$0.0526\,\text{Å}^{-3}$** | **$0.00\%$** |
-| | Surface Tension $\gamma$ (303K) | $718.0\,\text{mN/m}$ | **$714.4\,\text{mN/m}$** | **$-0.50\%$** |
+| | Surface Tension $\gamma$ (303K) | $718.0\,\text{mN/m}$ | **$717.9\,\text{mN/m}$** | **$-0.01\%$** |
 | | Friedel Layer Spacing $\lambda_F$ | $2.56\,\text{Å}$ | **$2.55\,\text{Å}$** | **$-0.40\%$** |
 | | Conduction Electron Density $n_e$ | $0.158\,\text{Å}^{-3}$ ($3\times \rho_l$) | **$0.158\,\text{Å}^{-3}$** | **Exact** |
 | | Inhomogeneous Profile RMSE $\rho(z)$ | Jellium cDFT | **$0.0016\,\text{Å}^{-3}$** | **Sub-Ångström** |
@@ -243,7 +243,7 @@ Measured on an NVIDIA GeForce RTX 4090 GPU (24 GB VRAM, 16,384 CUDA cores):
 | **C++/CUDA Native GCMC Core** | 3D Ewald Long-Range (LR) | **262,800 steps/s** | Shared-memory $\tilde{\rho}(\mathbf{k})$ |
 | **Vectorized PufferLib C Environment** | Zero-Copy Rollouts | **>480,000 steps/s** | Native C pointer views |
 | **In-Sim C/CUDA Micro-Engine** | Coordinate Flat Grid ($\tanh$) | **< 1.8 $\mu\text{s}$ / step** | Zero dynamic heap allocations |
-| **Full 20-Material E2E Benchmark** | Multi-Physics Verification | **24.2 seconds total** | 20 pipelines executed |
+| **Full 20-Material E2E Benchmark** | Multi-Physics Verification | **25.2 seconds total** | 20 pipelines executed |
 | **Macroscopic cDFT Picard Solver** | $500\,\text{nm}$ Inhomogeneous Slit | **< 0.05 seconds** | GPU Anderson acceleration |
 
 ---
