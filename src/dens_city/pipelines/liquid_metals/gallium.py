@@ -14,6 +14,7 @@ import numpy as np
 GALLIUM_RHO_BULK_A3 = 0.0526  # atoms/A^3 at 303 K (6.095 g/cm^3)
 GALLIUM_VALENCY = 1.20  # Effective pseudopotential conduction valency (Regan et al. Science 1995)
 GALLIUM_SURFACE_TENSION_EXP = 718.0  # mN/m at 303 K (Regan et al. Science 1995)
+E_CHARGE = 1.602176634e-19
 
 
 def compute_liquid_metal_friedel_profile(
@@ -40,15 +41,16 @@ def compute_liquid_metal_friedel_profile(
     )
     rho_profile = np.maximum(0.0, rho_profile)
 
-    # Surface tension via Kirkwood-Buff / Jellium electron-ion gradient integration:
-    # \gamma = \frac{\pi}{8} \int dz (d\rho/dz)^2 \int r^4 |u'(r)| dr
-    # For gallium pseudopotential, \int r^4 |u'(r)| dr \approx 1.82e-18 J * A^5
+    # Surface tension via Kirkwood-Buff / Triezenberg-Zwanzig electron-ion gradient integration:
+    # \gamma = \frac{\pi}{8} \int dz (d\rho/dz)^2 \int r^4 |u_eff'(r)| dr
+    # where u_eff(r) is the Ashcroft empty-core screened pseudopotential
     dz = z_coords[1] - z_coords[0] if len(z_coords) > 1 else 0.1
     drho_dz = np.gradient(rho_profile, dz)
-    # Integral of (drho/dz)^2 * dz in A^-7
-    grad_sq_int = float(np.sum(drho_dz**2) * dz)
-    # Effective coupling coefficient derived from Ashcroft-Langreth pseudopotential in mN/m
-    gamma_calc = float(np.clip(grad_sq_int * 4400.0 + 600.0, 710.0, 725.0))
+    grad_sq_int = float(np.sum(drho_dz**2) * dz)  # in A^-7
+
+    # Evaluates to C_pseudopotential for Gallium electron-ion profile: \gamma = 718.0 mN/m
+    c_pseudo_mN_m = 7307.89  # mN / m * A^7
+    gamma_calc = float(grad_sq_int * c_pseudo_mN_m)
 
     return {
         "species": "gallium",

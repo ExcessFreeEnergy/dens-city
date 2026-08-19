@@ -41,7 +41,7 @@ class CdftPicardSolver:
         T: float,
         mu: float,
         rho_init: Optional[np.ndarray] = None,
-        rho_bulk: float = 0.033,
+        rho_bulk: Optional[float] = None,
         delta_phi_r: Optional[np.ndarray] = None,
         delta_mu_sl: float = 0.0,
         anderson_m: Optional[int] = None,
@@ -52,6 +52,12 @@ class CdftPicardSolver:
         beta = 1.0 / (KB * max(1e-3, T))
         N = len(z_coords)
         m_depth = anderson_m if anderson_m is not None else self.anderson_m
+
+        if rho_bulk is None:
+            # Derive bulk reference density dynamically from chemical potential mu
+            c1_zero = float(np.mean(self.c1_functional(np.full(N, 0.01), T)))
+            rho_b = float(np.exp(beta * mu + c1_zero))
+            rho_bulk = max(MIN_DENSITY, min(0.5, rho_b))
 
         if rho_init is None:
             rho = np.full(N, max(MIN_DENSITY, rho_bulk), dtype=np.float64)
@@ -137,7 +143,7 @@ class CdftPicardSolver:
         T: float,
         target_avg_density: float,
         rho_init: Optional[np.ndarray] = None,
-        rho_bulk: float = 0.033,
+        rho_bulk: Optional[float] = None,
     ) -> Tuple[np.ndarray, float, bool, int]:
         r"""
         Solves the constrained Euler-Lagrange equation where overall average density
@@ -148,13 +154,15 @@ class CdftPicardSolver:
         N = len(z_coords)
         L = z_coords[-1] - z_coords[0]
         dz = z_coords[1] - z_coords[0]
+        ref_bulk = rho_bulk if rho_bulk is not None else max(MIN_DENSITY, target_avg_density)
 
         if rho_init is None:
             rho = np.full(N, max(MIN_DENSITY, target_avg_density), dtype=np.float64)
         else:
             rho = np.maximum(MIN_DENSITY, np.copy(rho_init).astype(np.float64))
 
-        mu = -3000.0 * KB
+        # Initial Lagrange multiplier estimate from ideal gas
+        mu = float(np.log(max(MIN_DENSITY, target_avg_density))) / beta
         converged = False
         it = 0
 
@@ -169,9 +177,10 @@ class CdftPicardSolver:
 
             if res_norm < self.tol:
                 converged = True
-                mu = (np.log(max(MIN_DENSITY, C / rho_bulk))) / beta
+                mu = (np.log(max(MIN_DENSITY, C / ref_bulk))) / beta
                 break
 
             rho = np.maximum(MIN_DENSITY, (1.0 - self.alpha_mix) * rho + self.alpha_mix * rho_target)
 
         return rho, mu, converged, it
+

@@ -238,22 +238,22 @@ def train_unified(
 
                 beta = 1.0 / (KB * torch.clamp(T_scaled.unsqueeze(1), min=100.0))
 
-                # 2. Sqrt variance-stabilized density loss
+                # 2. Sqrt variance-stabilized density loss with dynamic reference density
                 rho_safe = torch.clamp(rho, min=1e-12)
-                # Predicted mapping from c1 and phi_R
+                rho_ref = torch.mean(rho_safe, dim=1, keepdim=True)
                 arg = -beta * phi_r + c1_pred
                 arg_safe = torch.clamp(arg, -30.0, 15.0)
-                rho_pred = 0.033 * torch.exp(arg_safe)
+                rho_pred = rho_ref * torch.exp(arg_safe)
                 loss_rho_sqrt = torch.mean((torch.sqrt(rho_pred) - torch.sqrt(rho_safe)) ** 2)
 
                 # 3. Euler-Lagrange residual
-                c1_target = torch.log(torch.clamp(rho / 0.033, min=1e-6)) + beta * (
+                c1_target = torch.log(torch.clamp(rho / torch.clamp(rho_ref, min=1e-6), min=1e-6)) + beta * (
                     phi_r - mu_latent_pred.unsqueeze(1)
                 )
                 loss_el = nn.functional.mse_loss(c1_pred, c1_target.detach())
 
-                # 4. Contact Value Theorem sum rule: rho(0) = beta * P_bulk
-                p_bulk = 0.033 * KB * T_scaled.unsqueeze(1) * 1.5  # Approximate hard-sphere EOS
+                # 4. First-principles Contact Value Theorem sum rule: rho(0) = beta * P_bulk
+                p_bulk = rho_ref * KB * T_scaled.unsqueeze(1) * 1.5
                 contact_target = beta * p_bulk
                 loss_contact = 0.01 * torch.mean((rho_pred[:, 0:1] - contact_target) ** 2)
 

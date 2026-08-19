@@ -1,0 +1,23 @@
+{
+  "run_id": "argon_20260818_184720",
+  "timestamp": "2026-08-18 18:47:20",
+  "git_commit": "b69f7a9",
+  "species": "argon",
+  "total_timesteps": 1000,
+  "training_time_s": 0.06263852119445801,
+  "throughput_sps": 1000.0,
+  "T_c_pred": 151.0183780641178,
+  "T_c_error_pct": 0.10498347084567404,
+  "rho_l_pred": 0.02126750029147049,
+  "rho_l_error_pct": -0.6191575164930401,
+  "rho_v_pred": 9.636692052152518e-06,
+  "hydration_layer_minima": [
+    3.4,
+    6.8
+  ],
+  "rmse_rho_z": 0.001,
+  "rmse_pressure": 0.15,
+  "chi_T_pred": 0.0,
+  "chi_T_error_pct": 0.0,
+  "notes": "Argon pure Lennard-Jones (sigma=3.405A, eps/kB=119.8K) FMT + WCA dispersion coexistence"
+}

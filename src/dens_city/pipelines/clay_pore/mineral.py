@@ -33,18 +33,19 @@ def make_montmorillonite_slit_potential(
 
     for i, z in enumerate(z_coords):
         if z < z_left or z > z_right:
-            v_ext[i] = 1e-18
+            v_ext[i] = 1e18  # Exact hard wall boundary condition
+            dv_ext_dz[i] = 0.0
             continue
 
-        d1 = z - z_left + 1.0
-        d2 = z_right - z + 1.0
+        d1 = z - z_left
+        d2 = z_right - z
 
-        if d1 > 0.1:
+        if d1 > 0.05:
             s1 = sigma_clay / d1
             v_ext[i] += prefactor_lj * ((2.0 / 15.0) * (s1**9) - (s1**3))
             dv_ext_dz[i] += prefactor_lj * (-(18.0 / 15.0) * (s1**9) / d1 + 3.0 * (s1**3) / d1)
 
-        if d2 > 0.1:
+        if d2 > 0.05:
             s2 = sigma_clay / d2
             v_ext[i] += prefactor_lj * ((2.0 / 15.0) * (s2**9) - (s2**3))
             dv_ext_dz[i] -= prefactor_lj * (-(18.0 / 15.0) * (s2**9) / d2 + 3.0 * (s2**3) / d2)
@@ -60,7 +61,8 @@ def compute_clay_swelling_pressure(
 ) -> Dict[str, np.ndarray]:
     r"""
     Calculates the disjoining / swelling pressure Pi_swell(H) in montmorillonite clay interlayers
-    by solving inhomogeneous cDFT density profiles in clay slit walls and integrating structural virial forces.
+    by solving inhomogeneous cDFT density profiles in clay slit walls and integrating structural virial forces
+    and Poisson-Boltzmann diffuse double-layer repulsion.
     """
     h_arr = np.array(H_values)
     pi_swell_mpa = np.zeros(len(h_arr))
@@ -74,7 +76,7 @@ def compute_clay_swelling_pressure(
 
         # Solve equilibrium water density profile via Picard iteration
         rho_water = np.full(grid_size, rho_bulk_water)
-        rho_water[v_ext > 1e-19] = 0.0
+        rho_water[v_ext > 1e10] = 0.0
 
         for _ in range(50):
             eta = rho_water * (np.pi / 6.0) * (sigma_water**3)
@@ -84,19 +86,22 @@ def compute_clay_swelling_pressure(
             # External potential in Joules converted to dimensionless beta*V_ext
             beta_v = v_ext / (KB * T)
             target = rho_bulk_water * np.exp(np.clip(-beta_v + c1_hs, -25.0, 15.0))
-            target[v_ext > 1e-19] = 0.0
+            target[v_ext > 1e10] = 0.0
             rho_water = 0.80 * rho_water + 0.20 * target
 
         # Virial structural wall force: P_struct = - \int \rho(z) (dV/dz) dz (converted to MPa)
-        # dv_ext_dz is in J / A = 1e10 J/m. rho is in 1/A^3 = 1e30 1/m^3. Force density = 1e40 N/m^3.
-        # Integral * dz (in A = 1e-10 m) gives Pressure in N/m^2 = Pa.
-        # Bulk pressure reference P_bulk ~ 0.1 MPa
         f_integral = -np.sum(rho_water * dv_ext_dz) * dz * 1e-10 * 1e30 * 1e10  # in Pa
         p_struct_mpa = float(f_integral * 1e-6)
 
-        # Diffuse double layer DLVO osmotic repulsion (for H > 15 A)
-        debye_length_A = 3.04 / np.sqrt(salt_conc_M) * 10.0
-        p_edl_mpa = float(15.0 * np.exp(-H / debye_length_A))
+        # First-principles non-linear Poisson-Boltzmann midpoint double layer osmotic pressure:
+        # P_edl = 2 * n_bulk * k_B * T * (cosh(e * psi_mid / k_B T) - 1)
+        eps_r = 78.4
+        debye_length_m = np.sqrt(eps_r * EPSILON_0 * KB * T / (2.0 * salt_conc_M * 1000.0 * 6.022e23 * (E_CHARGE**2)))
+        debye_length_A = debye_length_m * 1e10
+        gamma_0 = np.tanh(-0.12 * E_CHARGE / (4.0 * KB * T * eps_r * EPSILON_0 / debye_length_m + 1e-12))
+        psi_mid_dimless = 8.0 * gamma_0 * np.exp(-max(0.0, H) / (2.0 * debye_length_A))
+        p_edl_pa = 2.0 * (salt_conc_M * 1000.0 * 6.022e23) * KB * T * (np.cosh(np.clip(psi_mid_dimless, -10.0, 10.0)) - 1.0)
+        p_edl_mpa = float(p_edl_pa * 1e-6)
 
         # Total disjoining pressure
         pi_swell_mpa[ih] = p_struct_mpa + p_edl_mpa

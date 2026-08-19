@@ -67,26 +67,14 @@ def compute_colloidal_depletion_demixing(
     r_max = sigma_C + 2.0 * r_depletant
 
     # Function to calculate reduced second virial coefficient B2* = B2 / B2_HS
-    def calc_b2_star(eta_d):
-        h_grid = np.linspace(0.0, 2.0 * r_depletant, 300)
-        dh = h_grid[1] - h_grid[0]
-        ao = compute_asakura_oosawa_potential(h_grid, R_colloid, r_depletant, eta_d)
-        w_kbt = ao["W_AO_kBT"]
-        r_grid = sigma_C + h_grid
-        # Mayer f-function integral: B_2^* = 1 - (3 / sigma_C^3) \int (exp(-W/kBT) - 1) r^2 dr
-        mayer_f = np.exp(np.clip(-w_kbt, -50.0, 50.0)) - 1.0
-        integral = np.sum(mayer_f * (r_grid**2)) * dh
-        return 1.0 - (3.0 / (sigma_C**3)) * integral
-
-    # Noro-Frenkel critical condition: B_2^* = -1.50
-    from scipy.optimize import brentq
-    try:
-        def obj(eta):
-            return calc_b2_star(eta) - (-1.50)
-        eta_d_crit = float(brentq(obj, 0.05, 0.40))
-    except Exception:
-        eta_d_crit = float(0.18 / (1.0 + q_ratio))
-    eta_d_crit = min(0.18, max(0.12, eta_d_crit))
+    # Noro-Frenkel sticky sphere / generalized van der Waals critical condition (Lekkerkerker 1992):
+    # \tau_c = 0.1189 maps to critical depletant packing \eta_d^crit(q)
+    # \tau(q, \eta_d) = \frac{1}{4 q (exp(-W_contact / kBT) - 1)} = \tau_c = 0.1189
+    tau_c = 0.1189
+    # W_contact = - 1.5 * \eta_d * (1/q + 2/3)
+    # exp(-W_contact) = 1 + 1 / (4 * q * \tau_c)
+    w_crit_target = -float(np.log(1.0 + 1.0 / (4.0 * max(1e-4, q_ratio) * tau_c)))
+    eta_d_crit = float(abs(w_crit_target) / (1.5 * (1.0 / max(1e-4, q_ratio) + 2.0 / 3.0)))
 
     demixed_states = []
     for eta_d in eta_d_values:

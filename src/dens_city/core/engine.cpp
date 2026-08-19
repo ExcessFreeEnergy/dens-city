@@ -721,8 +721,186 @@ void SimulationEngine::step_abc() {
 }
 
 void SimulationEngine::step_h2o() {
-    // Water step follows the rigid 3-site molecular move
-    step_abc();
+    // Exact rigid bent SPC/E water geometry (r_OH = 1.0 A, theta_HOH = 109.47 deg)
+    double r_move = rng.uniform();
+    double volume = box_x * box_y * box_z;
+    const double sin_half = 0.816496580927726; // sin(109.4712 deg / 2)
+    const double cos_half = 0.577350269189626; // cos(109.4712 deg / 2)
+    const double d_oh = (bond_length > 0.1) ? bond_length : 1.0;
+
+    if (r_move < prob_insert) {
+        if (static_cast<int>(molecules.size()) >= max_molecules) return;
+        Vec3 com(rng.uniform_range(0, box_x), rng.uniform_range(0, box_y), rng.uniform_range(0, box_z));
+        Quaternion q = Quaternion::random(rng.uniform(), rng.uniform(), rng.uniform());
+
+        Vec3 h1_local(0.0, +d_oh * sin_half, d_oh * cos_half);
+        Vec3 h2_local(0.0, -d_oh * sin_half, d_oh * cos_half);
+
+        Molecule new_mol;
+        new_mol.sites.push_back(com + q.rotate(h1_local)); // Site 0: H1 (+q)
+        new_mol.sites.push_back(com);                     // Site 1: O (-2q)
+        new_mol.sites.push_back(com + q.rotate(h2_local)); // Site 2: H2 (+q)
+        new_mol.species = 0;
+
+        double delta_E = external_potentials[0].evaluate(new_mol.sites[0]) +
+                         external_potentials[1].evaluate(new_mol.sites[1]) +
+                         external_potentials[2].evaluate(new_mol.sites[2]);
+        if (delta_E > 1e10) return;
+
+        for (const auto& other : molecules) {
+            for (int s1 = 0; s1 < 3; ++s1) {
+                for (int s2 = 0; s2 < 3; ++s2) {
+                    double dx = new_mol.sites[s1].x - other.sites[s2].x;
+                    double dy = new_mol.sites[s1].y - other.sites[s2].y;
+                    double dz = new_mol.sites[s1].z - other.sites[s2].z;
+                    dx -= box_x * std::round(dx / box_x);
+                    dy -= box_y * std::round(dy / box_y);
+                    dz -= box_z * std::round(dz / box_z);
+                    delta_E += pair_potentials[s1][s2].evaluate(std::sqrt(dx * dx + dy * dy + dz * dz));
+                    if (delta_E > 1e10) return;
+                }
+            }
+        }
+
+        std::vector<ComplexDouble> delta_k;
+        if (electrostatics_mode == ElectrostaticsMode::LONG_RANGE_EWALD) {
+            calc_mol_delta_rho_k(new_mol, +1.0, delta_k);
+            delta_E += calc_ewald_reciprocal_energy_delta(delta_k);
+            delta_E += calc_mol_self_energy(0, 3);
+        }
+
+        double log_p = -beta * (delta_E - mu1) + std::log(volume) - std::log(molecules.size() + 1);
+        double prob = (log_p < 80.0) ? std::exp(log_p) : 0.0;
+        if (rng.uniform() < prob) {
+            molecules.push_back(new_mol);
+            if (electrostatics_mode == ElectrostaticsMode::LONG_RANGE_EWALD) {
+                for (size_t k = 0; k < rho_k.size(); ++k) {
+                    rho_k[k].re += delta_k[k].re;
+                    rho_k[k].im += delta_k[k].im;
+                }
+            }
+        }
+    } else if (r_move < prob_insert + prob_delete && !molecules.empty()) {
+        int idx = rng.randint(0, static_cast<int>(molecules.size()) - 1);
+        const auto& mol = molecules[idx];
+
+        double delta_E = -external_potentials[0].evaluate(mol.sites[0]) -
+                         external_potentials[1].evaluate(mol.sites[1]) -
+                         external_potentials[2].evaluate(mol.sites[2]);
+
+        for (size_t i = 0; i < molecules.size(); ++i) {
+            if (static_cast<int>(i) == idx) continue;
+            for (int s1 = 0; s1 < 3; ++s1) {
+                for (int s2 = 0; s2 < 3; ++s2) {
+                    double dx = mol.sites[s1].x - molecules[i].sites[s2].x;
+                    double dy = mol.sites[s1].y - molecules[i].sites[s2].y;
+                    double dz = mol.sites[s1].z - molecules[i].sites[s2].z;
+                    dx -= box_x * std::round(dx / box_x);
+                    dy -= box_y * std::round(dy / box_y);
+                    dz -= box_z * std::round(dz / box_z);
+                    delta_E -= pair_potentials[s1][s2].evaluate(std::sqrt(dx * dx + dy * dy + dz * dz));
+                }
+            }
+        }
+
+        std::vector<ComplexDouble> delta_k;
+        if (electrostatics_mode == ElectrostaticsMode::LONG_RANGE_EWALD) {
+            calc_mol_delta_rho_k(mol, -1.0, delta_k);
+            delta_E += calc_ewald_reciprocal_energy_delta(delta_k);
+            delta_E -= calc_mol_self_energy(0, 3);
+        }
+
+        double log_p = -beta * (delta_E + mu1) + std::log(molecules.size()) - std::log(volume);
+        double prob = (log_p < 80.0) ? std::exp(log_p) : 0.0;
+        if (rng.uniform() < prob) {
+            molecules[idx] = molecules.back();
+            molecules.pop_back();
+            if (electrostatics_mode == ElectrostaticsMode::LONG_RANGE_EWALD) {
+                for (size_t k = 0; k < rho_k.size(); ++k) {
+                    rho_k[k].re += delta_k[k].re;
+                    rho_k[k].im += delta_k[k].im;
+                }
+            }
+        }
+    } else if (!molecules.empty()) {
+        int idx = rng.randint(0, static_cast<int>(molecules.size()) - 1);
+        Molecule old_mol = molecules[idx];
+        Molecule new_mol = old_mol;
+
+        if (rng.uniform() < 0.5) {
+            Vec3 displ(rng.uniform_range(-maxdispl, maxdispl), rng.uniform_range(-maxdispl, maxdispl), rng.uniform_range(-maxdispl, maxdispl));
+            for (int s = 0; s < 3; ++s) {
+                new_mol.sites[s] += displ;
+                new_mol.sites[s].x -= box_x * std::floor(new_mol.sites[s].x / box_x);
+                new_mol.sites[s].y -= box_y * std::floor(new_mol.sites[s].y / box_y);
+                new_mol.sites[s].z -= box_z * std::floor(new_mol.sites[s].z / box_z);
+            }
+        } else {
+            Vec3 center = old_mol.sites[1]; // Oxygen site
+            Quaternion q = Quaternion::random(rng.uniform(), rng.uniform(), rng.uniform());
+            for (int s = 0; s < 3; ++s) {
+                Vec3 rel = old_mol.sites[s] - center;
+                new_mol.sites[s] = center + q.rotate(rel);
+                new_mol.sites[s].x -= box_x * std::floor(new_mol.sites[s].x / box_x);
+                new_mol.sites[s].y -= box_y * std::floor(new_mol.sites[s].y / box_y);
+                new_mol.sites[s].z -= box_z * std::floor(new_mol.sites[s].z / box_z);
+            }
+        }
+
+        double delta_E = 0.0;
+        for (int s = 0; s < 3; ++s) {
+            delta_E += external_potentials[s].evaluate(new_mol.sites[s]) - external_potentials[s].evaluate(old_mol.sites[s]);
+        }
+        if (delta_E < 1e10) {
+            for (size_t i = 0; i < molecules.size(); ++i) {
+                if (static_cast<int>(i) == idx) continue;
+                for (int s1 = 0; s1 < 3; ++s1) {
+                    for (int s2 = 0; s2 < 3; ++s2) {
+                        double dx_o = old_mol.sites[s1].x - molecules[i].sites[s2].x;
+                        double dy_o = old_mol.sites[s1].y - molecules[i].sites[s2].y;
+                        double dz_o = old_mol.sites[s1].z - molecules[i].sites[s2].z;
+                        dx_o -= box_x * std::round(dx_o / box_x);
+                        dy_o -= box_y * std::round(dy_o / box_y);
+                        dz_o -= box_z * std::round(dz_o / box_z);
+                        double r_o = std::sqrt(dx_o * dx_o + dy_o * dy_o + dz_o * dz_o);
+
+                        double dx_n = new_mol.sites[s1].x - molecules[i].sites[s2].x;
+                        double dy_n = new_mol.sites[s1].y - molecules[i].sites[s2].y;
+                        double dz_n = new_mol.sites[s1].z - molecules[i].sites[s2].z;
+                        dx_n -= box_x * std::round(dx_n / box_x);
+                        dy_n -= box_y * std::round(dy_n / box_y);
+                        dz_n -= box_z * std::round(dz_n / box_z);
+                        double r_n = std::sqrt(dx_n * dx_n + dy_n * dy_n + dz_n * dz_n);
+
+                        delta_E += pair_potentials[s1][s2].evaluate(r_n) - pair_potentials[s1][s2].evaluate(r_o);
+                        if (delta_E > 1e10) break;
+                    }
+                }
+            }
+        }
+
+        std::vector<ComplexDouble> delta_k;
+        if (delta_E < 1e10 && electrostatics_mode == ElectrostaticsMode::LONG_RANGE_EWALD) {
+            std::vector<ComplexDouble> del_old, del_new;
+            calc_mol_delta_rho_k(old_mol, -1.0, del_old);
+            calc_mol_delta_rho_k(new_mol, +1.0, del_new);
+            delta_k.resize(ewald_params.k_vectors.size());
+            for (size_t k = 0; k < delta_k.size(); ++k) {
+                delta_k[k] = {del_old[k].re + del_new[k].re, del_old[k].im + del_new[k].im};
+            }
+            delta_E += calc_ewald_reciprocal_energy_delta(delta_k);
+        }
+
+        if (delta_E < 1e10 && (delta_E <= 0.0 || rng.uniform() < std::exp(-beta * delta_E))) {
+            molecules[idx] = new_mol;
+            if (electrostatics_mode == ElectrostaticsMode::LONG_RANGE_EWALD) {
+                for (size_t k = 0; k < rho_k.size(); ++k) {
+                    rho_k[k].re += delta_k[k].re;
+                    rho_k[k].im += delta_k[k].im;
+                }
+            }
+        }
+    }
 }
 
 void SimulationEngine::step_co2() {

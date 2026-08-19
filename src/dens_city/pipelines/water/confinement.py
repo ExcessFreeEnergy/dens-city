@@ -35,15 +35,15 @@ def make_graphene_slit_potential(
             dv_ext_dz[i] = 0.0
             continue
 
-        d1 = z - z_left + 1.0  # Offset for graphene surface
-        d2 = z_right - z + 1.0
+        d1 = z - z_left
+        d2 = z_right - z
 
-        if d1 > 0.1:
+        if d1 > 0.05:
             s_d1 = sigma_wall / d1
             v_ext[i] += prefactor * ((2.0 / 15.0) * (s_d1**9) - (s_d1**3))
             dv_ext_dz[i] += prefactor * (-(18.0 / 15.0) * (s_d1**9) / d1 + 3.0 * (s_d1**3) / d1)
 
-        if d2 > 0.1:
+        if d2 > 0.05:
             s_d2 = sigma_wall / d2
             v_ext[i] += prefactor * ((2.0 / 15.0) * (s_d2**9) - (s_d2**3))
             dv_ext_dz[i] -= prefactor * (-(18.0 / 15.0) * (s_d2**9) / d2 + 3.0 * (s_d2**3) / d2)

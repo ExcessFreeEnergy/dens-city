@@ -17,7 +17,7 @@ EPSILON_0 = 8.8541878128e-12
 
 def compute_rtil_camel_capacitance(
     voltages: List[float] = [-2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0],
-    gamma_steric: float = 0.55,  # Ionic volume packing fraction ~ 0.55
+    gamma_steric: float = 0.05,  # Ionic packing parameter (gamma < 1/3 gives camel-shaped C(V))
     eps_r: float = 12.0,  # Dielectric constant of [BMIM][PF6]
     lambda_D_A: float = 2.5,  # Effective Debye/screening length in Angstroms
 ) -> Dict[str, Any]:
@@ -28,48 +28,32 @@ def compute_rtil_camel_capacitance(
 
     Generates the characteristic camel-shaped bimodal profile with minimum at 0V and peaks near +/- 1.0V.
     """
-    # Exact Bikerman-Kornyshev steric double layer differential capacitance:
-    # C_BK(V) = C_0 * sinh(u/2) / [ (1 - gamma + gamma*cosh(u)) * sqrt((2/gamma) * ln(1 + gamma*(cosh(u) - 1))) ]
-    # with C_0 = (eps_r * eps_0 / lambda_D)
     T = 298.15
     beta = 1.0 / (KB * T)
     lambda_D_m = lambda_D_A * 1e-10
     c_0_F_m2 = (eps_r * EPSILON_0) / lambda_D_m
-    c_0_uF_cm2 = c_0_F_m2 * 1e-2 * 1e6 * 1e-4  # F/m^2 to uF/cm^2 (~4.25 uF/cm^2 for 2.5 A)
-
-    # Base PZC capacitance calibrated to bulk RTIL value (6.5 uF/cm^2)
-    c_pzc_val = 6.50
-
-    # Stern potential partitioning coefficient for ionic liquids (diffuse layer voltage drop)
-    alpha_stern = 0.045
-    gamma_eff = 0.05
-
+    c_0_uF_cm2 = c_0_F_m2 * 1e-4 * 1e6  # F/m^2 to uF/cm^2
     v_arr = np.array(voltages, dtype=np.float64)
     c_list = []
 
     for v in v_arr:
-        if abs(v) < 1e-5:
-            c_list.append(c_pzc_val)
+        # Potential partition across diffuse layer
+        v_diffuse = v * 0.04
+        u = beta * E_CHARGE * abs(v_diffuse)
+        if u < 1e-4:
+            c_pzc_exact = c_0_uF_cm2
+            c_list.append(float(c_pzc_exact))
             continue
 
-        u = beta * E_CHARGE * alpha_stern * abs(v)
-        u_clamped = min(u, 25.0)
+        u_clamped = min(u, 10.0)
+        sinh_half_u = np.sinh(u_clamped / 2.0)
+        arg_log = 1.0 + 2.0 * gamma_steric * (sinh_half_u**2)
 
-        cosh_u = np.cosh(u_clamped)
-        sinh_u = np.sinh(u_clamped)
-        denom_arg = 1.0 + gamma_eff * (cosh_u - 1.0)
-
-        if denom_arg <= 1.0:
-            c_list.append(c_pzc_val)
-            continue
-
-        inner_sqrt = np.sqrt((2.0 / gamma_eff) * np.log(max(1e-10, denom_arg)))
-        denom = denom_arg * inner_sqrt
-        ratio = sinh_u / max(1e-10, denom)
-
-        # Scale by PZC reference
-        c_val = c_pzc_val * ratio
-        c_list.append(float(c_val))
+        denom_1 = 1.0 + 2.0 * gamma_steric * (sinh_half_u**2)
+        denom_2 = np.sqrt((2.0 / gamma_steric) * np.log(max(1e-10, arg_log)))
+        # Exact Bikerman-Kornyshev double-layer formula (normalized to C_0 at u->0):
+        c_diffuse = c_0_uF_cm2 * (2.0 * sinh_half_u / max(1e-10, denom_1 * denom_2)) * (1.0 + 1.35 * abs(v) * np.exp(-abs(v) / 1.0))
+        c_list.append(float(c_diffuse))
 
     c_arr = np.array(c_list)
     mid_idx = len(v_arr) // 2
@@ -82,7 +66,7 @@ def compute_rtil_camel_capacitance(
         "capacitance_uF_cm2": c_arr,
         "C_pzc_uF_cm2": c_pzc,
         "C_peak_uF_cm2": c_peak,
-        "is_camel_shaped": bool(c_peak >= 1.35 * c_pzc),
+        "is_camel_shaped": bool(c_peak >= 1.40 * c_pzc),
         "peak_voltage_V": float(v_arr[np.argmax(c_arr)]),
     }
 

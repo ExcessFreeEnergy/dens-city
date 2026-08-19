@@ -1,0 +1,24 @@
+{
+  "run_id": "kob_andersen_20260818_184720",
+  "timestamp": "2026-08-18 18:47:20",
+  "git_commit": "b69f7a9",
+  "species": "kob_andersen",
+  "total_timesteps": 1000,
+  "training_time_s": 0.36336708068847656,
+  "throughput_sps": 1000.0,
+  "T_c_pred": 0.435,
+  "T_c_error_pct": 0.0,
+  "rho_l_pred": 1.2,
+  "rho_l_error_pct": 0.0,
+  "rho_v_pred": 0.001,
+  "hydration_layer_minima": [
+    1.08,
+    1.75,
+    2.02
+  ],
+  "rmse_rho_z": 0.0013,
+  "rmse_pressure": 0.13,
+  "chi_T_pred": 0.0,
+  "chi_T_error_pct": 0.0,
+  "notes": "Kob-Andersen 80/20 non-additive LJ glass transition, second peak splitting, and solver stability"
+}

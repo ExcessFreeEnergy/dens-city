@@ -22,8 +22,8 @@ def run_helium_quantum_simulation(
     binodal = compute_helium_quantum_binodal(temperatures)
     d_eff_4k = compute_helium_quantum_diameter(4.0)
 
-    # Low-temperature liquid density at 2.5K: rho_l ~ 0.145 g/cm^3 = 0.0218 A^-3
-    rho_l_2_5k = 0.0218  # A^-3 (NIST)
+    # Low-temperature liquid density at 2.5K extracted dynamically from binodal solution
+    rho_l_2_5k = float(binodal["rho_l"][0]) if len(binodal["rho_l"]) > 0 else 0.0218
 
     return {
         "species": "helium4",

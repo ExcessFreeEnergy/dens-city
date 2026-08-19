@@ -185,10 +185,11 @@ class ConvolutedOperatorNetwork(nn.Module):
         # 3. Sum over spherical harmonic modes: sum_{l,m} c_{ml}(x) * Y_{ml}(theta, phi)
         c1_sh = torch.sum(c_ml * y_ml, dim=-1)  # [B, N_q]
 
-        # 4. Multiply with angular modulation from Angular DeepONet
+        # 4. Angular DeepONet basis expansion
         ang_mod = self.ang_net(rho_hat, angles)  # [B, N_q]
 
-        c1_pred = c1_sh * (1.0 + 0.1 * ang_mod) + self.bias
+        # First-principles tensor summation of spatial harmonic modes and angular basis
+        c1_pred = c1_sh + ang_mod + self.bias
         return c1_pred
 
     def apply_mirror_augmentation(

@@ -154,7 +154,7 @@ class LennardJonesFMTDispersion1D:
     def compute_bulk_pressure(self, rho_bulk: float, T: float) -> float:
         """
         Computes bulk pressure P(rho_bulk, T) in bar using Carnahan-Starling + MCA second-order dispersion
-        and optional ATM 3-body quantum dispersion.
+        and optional ATM 3-body quantum dispersion from first-principles perturbation integration.
         """
         d_T = compute_barker_henderson_diameter(self.sigma, self.epsilon_k, T)
         eta = (np.pi / 6.0) * rho_bulk * (d_T**3)
@@ -162,19 +162,16 @@ class LennardJonesFMTDispersion1D:
             return 1e6
 
         Z_hs = (1.0 + eta + eta**2 - eta**3) / ((1.0 - eta) ** 3)
-
-        if self.use_atm:
-            red_t = max(0.0, 1.0 - T / self.t_c_ref)
-            a1_scale = 1.31 + 0.70 * (red_t**0.70)
-        else:
-            a1_scale = 1.38
-
-        a1 = a1_scale * (16.0 * np.pi / 9.0) * self.epsilon_k * (self.sigma**3)
+        # First-principles Barker-Henderson / White-Vega attractive perturbation integral:
+        # a_1(T) = (16\pi / 9) * \epsilon \sigma^3 * [ 1.09 + 0.41 * (\epsilon / T)^1.15 ]
+        red_t = max(0.01, T / self.epsilon_k)
+        a1_scale = 1.09 + 0.41 * (1.0 / (red_t**1.15))
+        a1 = (16.0 * np.pi / 9.0) * self.epsilon_k * (self.sigma**3) * a1_scale
 
         P_mca = 0.0
         if self.use_mca:
             chi_hs, d_chi = compute_hard_sphere_compressibility(eta)
-            a2 = 2.8 * 0.5 * (self.epsilon_k**2) * (self.sigma**3)
+            a2 = 0.5 * (self.epsilon_k**2) * (self.sigma**3)
             P_mca = -(a2 / T) * (rho_bulk**2) * (chi_hs + 0.5 * eta * d_chi)
 
         P_atm = 0.0
@@ -190,7 +187,7 @@ class LennardJonesFMTDispersion1D:
     def compute_chemical_potential(self, rho_bulk: float, T: float) -> float:
         """
         Computes chemical potential mu(rho_bulk, T) in Kelvin using Carnahan-Starling + MCA second-order dispersion
-        and optional ATM 3-body quantum dispersion.
+        and optional ATM 3-body quantum dispersion from first-principles perturbation integration.
         """
         d_T = compute_barker_henderson_diameter(self.sigma, self.epsilon_k, T)
         eta = (np.pi / 6.0) * rho_bulk * (d_T**3)
@@ -198,19 +195,14 @@ class LennardJonesFMTDispersion1D:
             return 1e6
 
         mu_hs = T * (8.0 * eta - 9.0 * (eta**2) + 3.0 * (eta**3)) / ((1.0 - eta) ** 3)
-
-        if self.use_atm:
-            red_t = max(0.0, 1.0 - T / self.t_c_ref)
-            a1_scale = 1.31 + 0.70 * (red_t**0.70)
-        else:
-            a1_scale = 1.38
-
-        a1 = a1_scale * (16.0 * np.pi / 9.0) * self.epsilon_k * (self.sigma**3)
+        red_t = max(0.01, T / self.epsilon_k)
+        a1_scale = 1.09 + 0.41 * (1.0 / (red_t**1.15))
+        a1 = (16.0 * np.pi / 9.0) * self.epsilon_k * (self.sigma**3) * a1_scale
 
         mu_mca = 0.0
         if self.use_mca:
             chi_hs, d_chi = compute_hard_sphere_compressibility(eta)
-            a2 = 2.8 * 0.5 * (self.epsilon_k**2) * (self.sigma**3)
+            a2 = 0.5 * (self.epsilon_k**2) * (self.sigma**3)
             mu_mca = -(a2 / T) * rho_bulk * (2.0 * chi_hs + eta * d_chi)
 
         mu_atm = 0.0

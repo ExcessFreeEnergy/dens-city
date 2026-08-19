@@ -167,8 +167,16 @@ static void compute_fmt_mca_ground_truth(CCdftEnv* env) {
         float om3 = 1.0f - n3;
         float c1_hs = -logf(om3) + n2 / om3;
 
-        // Attractive dispersion tail
-        float v_att = -1.2f * env->rho_bulk * 50.0f * (1.0f - expf(-env->z_coords[i] / 3.0f));
+        // First-principles 1D slab attractive dispersion convolution
+        float v_att = 0.0f;
+        for (int j = 0; j < N; ++j) {
+            float r_ij = fabsf((float)(i - j) * dz);
+            if (r_ij < 12.0f) {
+                float u_att_1d = (r_ij < 3.15f) ? -60.0f * 1e-21f : -60.0f * 1e-21f * powf(3.15f / r_ij, 4.0f);
+                v_att += env->rho[j] * u_att_1d * dz;
+            }
+        }
+
         float arg = -env->beta * (env->V_ext[i] + v_att) + c1_hs;
         if (arg > 15.0f) arg = 15.0f;
         if (arg < -30.0f) arg = -30.0f;
@@ -329,7 +337,12 @@ void cdft_env_step(CCdftEnv* env, int env_idx) {
 
         if (i > 0 && i < N - 1) {
             float dphi_dz = (env->phi_R[i + 1] - env->phi_R[i - 1]) / (2.0f * dz);
-            env->n_charge[i] = -1e-4f * env->rho[i] * dphi_dz;
+            // Molecular dipole polarization: P_z = rho * mu * L(beta * mu * E)
+            float e_field = -dphi_dz;
+            float mu_dipole = 2.35f * 3.33564e-30f; // SPC/E water dipole ~ 2.35 Debye in C*m
+            float x_langevin = env->beta * mu_dipole * e_field * 1e10f; // in dimensionless units
+            float cos_theta_avg = (fabsf(x_langevin) < 1e-4f) ? (x_langevin / 3.0f) : (1.0f / tanhf(x_langevin) - 1.0f / x_langevin);
+            env->n_charge[i] = -env->rho[i] * cos_theta_avg * 1e-4f;
         }
     }
 

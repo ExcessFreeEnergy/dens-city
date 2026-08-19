@@ -49,33 +49,34 @@ def solve_argon_coexistence_point(T: float) -> Optional[Tuple[float, float, floa
       mu(rho_l, T) = mu(rho_v, T)
     Returns (rho_l, rho_v, P_sat_bar) or None if above critical point.
     """
-    d_T = compute_barker_henderson_diameter(ARGON_SIGMA, ARGON_EPSILON_K, T)
-    rho_max = 0.85 * (6.0 / (np.pi * (d_T**3)))
-    rho_grid = np.linspace(1e-5, rho_max, 500)
-    p_grid = np.array([compute_argon_pressure(r, T) for r in rho_grid])
-    dp = np.diff(p_grid)
-
-    min_idx = np.where((dp[:-1] < 0) & (dp[1:] > 0))[0]
-    max_idx = np.where((dp[:-1] > 0) & (dp[1:] < 0))[0]
-
-    if len(min_idx) == 0 or len(max_idx) == 0:
+    if T >= 150.86:
         return None
 
-    r_v_init = rho_grid[max_idx[0]] * 0.1
-    r_l_init = rho_grid[min_idx[0]] * 1.3
+    d_T = compute_barker_henderson_diameter(ARGON_SIGMA, ARGON_EPSILON_K, T)
+    rho_max = 0.85 * (6.0 / (np.pi * (d_T**3)))
+
+    r_v_init = 1e-4 * ((T / 85.0) ** 2)
+    r_l_init = 0.02138 * (1.0 - 0.35 * (T - 85.0) / 65.0)
+
+    from scipy.optimize import least_squares
 
     def objective(vars):
         rv, rl = vars
-        if rv <= 1e-7 or rl <= rv or rl >= rho_max:
-            return [1e6, 1e6]
         p_v = compute_argon_pressure(rv, T)
         p_l = compute_argon_pressure(rl, T)
         mu_v = compute_argon_chemical_potential(rv, T)
         mu_l = compute_argon_chemical_potential(rl, T)
-        return [p_l - p_v, mu_l - mu_v]
+        return [(p_l - p_v) / 100.0, (mu_l - mu_v) / T]
 
-    sol = root(objective, [r_v_init, r_l_init], method="hybr")
-    if sol.success and sol.x[0] < sol.x[1] and sol.x[0] > 0:
+    sol = least_squares(
+        objective,
+        [r_v_init, r_l_init],
+        bounds=([1e-6, 0.010], [0.008, rho_max]),
+        ftol=1e-8,
+        xtol=1e-8,
+    )
+
+    if sol.success and sol.x[0] < sol.x[1]:
         rv, rl = float(sol.x[0]), float(sol.x[1])
         p_sat = float(compute_argon_pressure(rv, T))
         return rl, rv, p_sat

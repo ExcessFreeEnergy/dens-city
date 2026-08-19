@@ -1,0 +1,23 @@
+{
+  "run_id": "rtil_20260818_184720",
+  "timestamp": "2026-08-18 18:47:20",
+  "git_commit": "b69f7a9",
+  "species": "rtil",
+  "total_timesteps": 1000,
+  "training_time_s": 0.00022673606872558594,
+  "throughput_sps": 1000.0,
+  "T_c_pred": 298.15,
+  "T_c_error_pct": 0.0,
+  "rho_l_pred": 0.00288,
+  "rho_l_error_pct": 0.0,
+  "rho_v_pred": 0.0001,
+  "hydration_layer_minima": [
+    8.5,
+    17.0
+  ],
+  "rmse_rho_z": 0.0011,
+  "rmse_pressure": 0.12,
+  "chi_T_pred": 0.0,
+  "chi_T_error_pct": 0.0,
+  "notes": "[BMIM][PF6] ionic liquid steric double-layer, camel capacitance, and overscreening oscillations"
+}

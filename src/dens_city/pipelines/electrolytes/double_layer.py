@@ -23,40 +23,67 @@ def solve_electric_double_layer(
 ) -> Dict[str, np.ndarray]:
     """
     Solves the Electric Double Layer structure for a 1:1 RPM electrolyte
-    under applied electrode voltage V_0 with exact long-range screening.
+    under applied electrode voltage V_0 using self-consistent Poisson-cDFT coupling.
     """
     z_coords = np.linspace(0, L_z, grid_size)
     dz = z_coords[1] - z_coords[0]
+    dz_m = dz * 1e-10
     beta = 1.0 / (KB * T)
 
-    v_ext_pos = np.zeros(grid_size)
-    v_ext_neg = np.zeros(grid_size)
+    eps_r = 78.5
+    eps_0 = 8.8541878128e-12
+    eps_tot = eps_r * eps_0
 
-    for i, z in enumerate(z_coords):
-        phi_elec = voltage * np.exp(-z / kappa_inv)
-        v_ext_pos[i] = +E_CHARGE * phi_elec
-        v_ext_neg[i] = -E_CHARGE * phi_elec
-
+    # Initialize potential with smooth decay from V_0
+    phi_z = voltage * np.exp(-z_coords / kappa_inv)
     rho_pos = np.full(grid_size, rho_bulk)
     rho_neg = np.full(grid_size, rho_bulk)
 
-    for _ in range(500):
+    for _ in range(300):
         c1_p = c1_functional(rho_pos, T)
         c1_n = c1_functional(rho_neg, T)
 
-        target_p = rho_bulk * np.exp(np.clip(-beta * v_ext_pos + c1_p, -20.0, 20.0))
-        target_n = rho_bulk * np.exp(np.clip(-beta * v_ext_neg + c1_n, -20.0, 20.0))
+        u_p = -E_CHARGE * phi_z
+        u_n = +E_CHARGE * phi_z
 
-        rho_pos = 0.85 * rho_pos + 0.15 * target_p
-        rho_neg = 0.85 * rho_neg + 0.15 * target_n
+        target_p = rho_bulk * np.exp(np.clip(beta * u_p + c1_p, -25.0, 25.0))
+        target_n = rho_bulk * np.exp(np.clip(beta * u_n + c1_n, -25.0, 25.0))
+
+        rho_pos = 0.80 * rho_pos + 0.20 * target_p
+        rho_neg = 0.80 * rho_neg + 0.20 * target_n
+
+        # Charge density in C / m^3
+        rho_q = E_CHARGE * (rho_pos - rho_neg) * 1e30
+
+        # Poisson equation solver: d^2 phi / dz^2 = - rho_q / eps_tot with phi(0) = voltage, phi(L_z) = 0
+        # 1D Tridiagonal Poisson boundary value problem
+        # phi_{i-1} - 2 phi_i + phi_{i+1} = - (dz_m^2 / eps_tot) * rho_q[i]
+        diag = -2.0 * np.ones(grid_size)
+        diag[0] = 1.0
+        diag[-1] = 1.0
+        off_diag = np.ones(grid_size - 1)
+        off_diag[0] = 0.0
+        rhs = - (dz_m**2 / eps_tot) * rho_q
+        rhs[0] = voltage
+        rhs[-1] = 0.0
+
+        from scipy.linalg import solve_banded
+        ab = np.zeros((3, grid_size))
+        ab[0, 1:] = off_diag  # upper
+        ab[1, :] = diag       # main
+        ab[2, :-1] = off_diag # lower
+        phi_new = solve_banded((1, 1), ab, rhs)
+        phi_z = 0.75 * phi_z + 0.25 * phi_new
 
     charge_density = E_CHARGE * (rho_pos - rho_neg)
-    total_charge = np.sum(charge_density[: grid_size // 2]) * dz
+    # Exact dynamic asymptotic charge integration over entire double layer
+    total_charge = float(np.sum(charge_density) * dz)
 
     return {
         "z_coords": z_coords,
         "rho_pos": rho_pos,
         "rho_neg": rho_neg,
+        "phi_z": phi_z,
         "charge_density": charge_density,
         "total_charge": total_charge,
         "voltage": voltage,

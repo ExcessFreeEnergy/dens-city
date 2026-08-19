@@ -117,27 +117,38 @@ def compute_lum_chandler_weeks_crossover(
     gamma_lv: float = WATER_GAMMA_LV,
 ) -> Dict[str, np.ndarray]:
     """
-    Computes hydrophobic hydration free energy Delta G(R) across length scales,
-    demonstrating the Lum-Chandler-Weeks (LCW) crossover from volume scaling (R < 1 nm)
-    to surface area scaling (R > 1 nm).
+    Computes hydrophobic hydration free energy Delta G(R) across length scales
+    via the continuous Lum-Chandler-Weeks (LCW) / Scaled Particle Theory (SPT) functional,
+    demonstrating the smooth crossover from volume exclusion scaling (R < 1 nm)
+    to macroscopic surface area scaling (R > 1 nm).
     """
     if radius_nm_values is None:
         radius_nm_values = [0.2, 0.4, 0.6, 0.8, 1.0, 1.5, 2.0, 3.0, 4.0]
 
-    r_arr = np.array(radius_nm_values)
+    r_arr = np.array(radius_nm_values, dtype=np.float64)
     r_c_nm = 1.0  # LCW crossover length scale ~ 1 nm
 
-    # Volume scaling prefactor (small solutes R < 1 nm): Delta G ~ alpha * R^3
-    alpha_vol = 12.0 * np.pi  # kJ / (mol * nm^3)
-    # Area scaling prefactor (large solutes R > 1 nm): Delta G ~ 4 * pi * gamma * R^2
+    # Physical water solvent parameters:
+    r_w_nm = 0.14  # solvent radius ~ 1.4 A
+    eta = 33.36 * (4.0 * np.pi / 3.0) * (r_w_nm**3)  # packing fraction ~ 0.38
     gamma_kj_mol_nm2 = (gamma_lv * 1e-3 * 6.022e23 * 1e-3) * 1e-18  # kJ / (mol * nm^2)
 
-    delta_g = np.zeros_like(r_arr)
-    for i, R in enumerate(r_arr):
-        if R < r_c_nm:
-            delta_g[i] = alpha_vol * (R**3)
-        else:
-            delta_g[i] = 4.0 * np.pi * gamma_kj_mol_nm2 * (R**2)
+    # Continuous SPT / LCW spherical cavity insertion free energy
+    y = eta / (1.0 - eta)
+    t = r_arr / r_w_nm
+    # Microscopic chemical potential excess in units of k_B T:
+    # \Delta \mu(R) / k_B T = -\ln(1 - \eta) + 3 y t + (3 y + 4.5 y^2) t^2
+    rt_kbt_kj_mol = 2.479  # kJ / mol at 298.15 K
+    delta_g_micro = rt_kbt_kj_mol * (-np.log(1.0 - eta) + 3.0 * y * t + (3.0 * y + 4.5 * (y**2)) * (t**2))
+
+    # Macroscopic curvature-expanded surface free energy: 4 * \pi * R^2 * \gamma * (1 - 2\delta / R)
+    tolman_length_nm = 0.05
+    delta_g_macro = 4.0 * np.pi * (r_arr**2) * gamma_kj_mol_nm2 * (1.0 - 2.0 * tolman_length_nm / r_arr)
+
+    # Smooth LCW interpolation weight: w(R) = (R / R_c)^3 / [ 1 + (R / R_c)^3 ]
+    w_scale = (r_arr / r_c_nm) ** 3
+    weight_macro = w_scale / (1.0 + w_scale)
+    delta_g = (1.0 - weight_macro) * delta_g_micro + weight_macro * delta_g_macro
 
     return {
         "radius_nm": r_arr,

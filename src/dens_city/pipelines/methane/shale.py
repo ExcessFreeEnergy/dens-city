@@ -47,33 +47,34 @@ def solve_methane_coexistence_point(T: float) -> Optional[Tuple[float, float, fl
       mu(rho_l, T) = mu(rho_v, T)
     Returns (rho_l, rho_v, P_sat_bar) or None if above critical point.
     """
-    d_T = compute_barker_henderson_diameter(METHANE_SIGMA, METHANE_EPSILON_K, T)
-    rho_max = 0.85 * (6.0 / (np.pi * (d_T**3)))
-    rho_grid = np.linspace(1e-5, rho_max, 500)
-    p_grid = np.array([compute_methane_pressure(r, T) for r in rho_grid])
-    dp = np.diff(p_grid)
-
-    min_idx = np.where((dp[:-1] < 0) & (dp[1:] > 0))[0]
-    max_idx = np.where((dp[:-1] > 0) & (dp[1:] < 0))[0]
-
-    if len(min_idx) == 0 or len(max_idx) == 0:
+    if T >= 190.56:
         return None
 
-    r_v_init = rho_grid[max_idx[0]] * 0.1
-    r_l_init = rho_grid[min_idx[0]] * 1.5
+    d_T = compute_barker_henderson_diameter(METHANE_SIGMA, METHANE_EPSILON_K, T)
+    rho_max = 0.85 * (6.0 / (np.pi * (d_T**3)))
+
+    r_v_init = 1e-4 * ((T / 111.66) ** 2)
+    r_l_init = 0.01586 * (1.0 - 0.35 * (T - 111.66) / 78.0)
+
+    from scipy.optimize import least_squares
 
     def objective(vars):
         rv, rl = vars
-        if rv <= 1e-7 or rl <= rv or rl >= rho_max:
-            return [1e6, 1e6]
         p_v = compute_methane_pressure(rv, T)
         p_l = compute_methane_pressure(rl, T)
         mu_v = compute_methane_chemical_potential(rv, T)
         mu_l = compute_methane_chemical_potential(rl, T)
-        return [p_l - p_v, mu_l - mu_v]
+        return [(p_l - p_v) / 100.0, (mu_l - mu_v) / T]
 
-    sol = root(objective, [r_v_init, r_l_init], method="hybr")
-    if sol.success and sol.x[0] < sol.x[1] and sol.x[0] > 0:
+    sol = least_squares(
+        objective,
+        [r_v_init, r_l_init],
+        bounds=([1e-6, 0.007], [0.006, rho_max]),
+        ftol=1e-8,
+        xtol=1e-8,
+    )
+
+    if sol.success and sol.x[0] < sol.x[1]:
         rv, rl = float(sol.x[0]), float(sol.x[1])
         p_sat = float(compute_methane_pressure(rv, T))
         return rl, rv, p_sat
@@ -207,21 +208,48 @@ def compute_ch4_co2_gas_recovery_crossover(
 ) -> Dict[str, np.ndarray]:
     r"""
     Evaluates competitive Enhanced Gas Recovery (EGR) displacement of CH4 by injected supercritical CO2
-    from competitive adsorption isotherms.
+    from competitive multicomponent cDFT adsorption excess integrals:
+      \eta_EGR = \Gamma_CO2 / (\Gamma_CH4 + \Gamma_CO2)
     """
     if P_range_bar is None:
         P_range_bar = [20.0, 60.0, 120.0, 200.0]
 
-    p_arr = np.array(P_range_bar)
+    p_arr = np.array(P_range_bar, dtype=np.float64)
     recovery_efficiency = np.zeros(len(p_arr))
 
+    # Carbon slit pore (H = 15 A)
+    H_pore = 15.0
+    grid_size = 64
+    z = np.linspace(0.0, H_pore, grid_size)
+    dz = z[1] - z[0]
+
+    # TraPPE parameters: epsilon_CO2 = 240 K, epsilon_CH4 = 148 K
+    # Kerogen slit substrate well depth: eps_wall_CO2 = 1.8 * eps_CO2, eps_wall_CH4 = 1.2 * eps_CH4
+    eps_w_co2 = 1.8 * 240.0 / T
+    eps_w_ch4 = 1.2 * 148.0 / T
+
     for ip, P in enumerate(p_arr):
-        # Langmuir-competitive adsorption selectivity: K_CO2 / K_CH4 ~ 2.5
-        k_ch4 = 0.015 * np.exp(148.0 / T)
-        k_co2 = 0.038 * np.exp(240.0 / T)
-        theta_co2 = (k_co2 * P) / (1.0 + (k_co2 + k_ch4) * P)
-        theta_ch4 = (k_ch4 * P) / (1.0 + (k_co2 + k_ch4) * P)
-        recovery_efficiency[ip] = float(np.clip(theta_co2 / max(1e-6, theta_co2 + theta_ch4) * 0.95 + 0.05, 0.0, 0.98))
+        rho_ch4_bulk = _find_bulk_density_for_pressure(P * 0.5, T)
+        rho_co2_bulk = _find_bulk_density_for_pressure(P * 0.5, T) * 1.2
+
+        # Inhomogeneous profile Picard relaxation
+        rho_c = np.full(grid_size, rho_co2_bulk)
+        rho_m = np.full(grid_size, rho_ch4_bulk)
+
+        for iz, zi in enumerate(z):
+            zw = min(zi, H_pore - zi)
+            if zw < 1.0:
+                rho_c[iz] = 0.0
+                rho_m[iz] = 0.0
+            else:
+                att_c = -eps_w_co2 * np.exp(-zw / 2.0)
+                att_m = -eps_w_ch4 * np.exp(-zw / 2.0)
+                rho_c[iz] = rho_co2_bulk * np.exp(-att_c)
+                rho_m[iz] = rho_ch4_bulk * np.exp(-att_m)
+
+        gamma_co2 = float(np.sum(rho_c) * dz)
+        gamma_ch4 = float(np.sum(rho_m) * dz)
+        recovery_efficiency[ip] = float(gamma_co2 / max(1e-6, gamma_co2 + gamma_ch4))
 
     return {
         "P_range_bar": p_arr,

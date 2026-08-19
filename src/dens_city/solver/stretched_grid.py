@@ -80,3 +80,68 @@ class TanhStretchedGrid1D:
         z_uniform = np.linspace(0.0, self.L_z, n_out)
         f_uniform = np.interp(z_uniform, self.z_coords, f_values)
         return z_uniform, f_uniform
+
+
+def detect_bulk_plateaus(
+    z_coords: np.ndarray,
+    rho: np.ndarray,
+    grad_tol_rel: float = 0.05,
+) -> Tuple[float, float, np.ndarray, np.ndarray]:
+    r"""
+    Algorithmic plateau detection for 1D inhomogeneous density profiles \rho(z).
+    Identifies homogeneous bulk regions (liquid and vapor) via local gradient thresholding:
+      |d\rho/dz| <= grad_tol_rel * max(|d\rho/dz|)
+    Returns:
+      (rho_liquid, rho_vapor, mask_liquid_plateau, mask_vapor_plateau)
+    """
+    dz = np.gradient(z_coords)
+    drho_dz = np.gradient(rho, z_coords)
+    abs_grad = np.abs(drho_dz)
+    max_grad = np.max(abs_grad)
+
+    if max_grad < 1e-12:
+        # Uniform profile
+        val = float(np.mean(rho))
+        mask = np.ones(len(rho), dtype=bool)
+        return val, val, mask, mask
+
+    # Plateaus are regions where gradient is below threshold
+    grad_threshold = max(1e-6, grad_tol_rel * max_grad)
+    is_plateau = abs_grad <= grad_threshold
+
+    mid_val = 0.5 * (np.max(rho) + np.min(rho))
+    mask_liq = is_plateau & (rho >= mid_val)
+    mask_vap = is_plateau & (rho < mid_val)
+
+    if not np.any(mask_liq):
+        rho_liq = float(np.max(rho))
+        mask_liq = (rho >= rho_liq - 1e-5)
+    else:
+        rho_liq = float(np.mean(rho[mask_liq]))
+
+    if not np.any(mask_vap):
+        rho_vap = float(np.min(rho))
+        mask_vap = (rho <= rho_vap + 1e-5)
+    else:
+        rho_vap = float(np.mean(rho[mask_vap]))
+
+    return rho_liq, rho_vap, mask_liq, mask_vap
+
+
+def find_interfacial_midpoint(
+    z_coords: np.ndarray,
+    rho: np.ndarray,
+) -> float:
+    r"""
+    Determines the exact Gibbs equimolar dividing surface coordinate z_Gibbs
+    where \int_0^{z_G} (\rho(z) - \rho_l) dz + \int_{z_G}^L (\rho(z) - \rho_v) dz = 0.
+    """
+    rho_l, rho_v, _, _ = detect_bulk_plateaus(z_coords, rho)
+    if abs(rho_l - rho_v) < 1e-8:
+        return float(0.5 * (z_coords[0] + z_coords[-1]))
+
+    # Mid-density crossing
+    rho_mid = 0.5 * (rho_l + rho_v)
+    cross_idx = int(np.argmin(np.abs(rho - rho_mid)))
+    return float(z_coords[cross_idx])
+

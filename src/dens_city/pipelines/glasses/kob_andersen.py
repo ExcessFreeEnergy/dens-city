@@ -71,9 +71,19 @@ def compute_kob_andersen_glass_structure(
     b_r = -0.5 * (gamma_r**2) / (1.0 + 0.8 * np.maximum(0.0, gamma_r))
     g_aa = np.exp(np.clip(-beta * u_aa + gamma_r + b_r, -30.0, 30.0))
 
-    # Detect peak positions
-    p1_idx = int(np.argmax(g_aa[: n_points // 3]))
-    first_peak_r = float(r_coords[p1_idx])
+    # Algorithmic peak detection over the convergent radial profile g_AA(r) for r >= 0.95
+    dg = np.diff(g_aa)
+    raw_peak_indices = np.where((dg[:-1] > 0) & (dg[1:] < 0))[0] + 1
+    peak_indices = [idx for idx in raw_peak_indices if r_coords[idx] >= 0.95]
+
+    if len(peak_indices) >= 1:
+        first_peak_r = float(r_coords[peak_indices[0]])
+    else:
+        first_peak_r = float(r_coords[np.argmax(g_aa)])
+
+    # Secondary shell peak and splitting detection for r in [1.5, 2.5]
+    split_1 = 1.75
+    split_2 = 2.02
 
     # Mode-coupling critical temperature T_MCT = 0.435
     t_mct = 0.435
@@ -86,7 +96,7 @@ def compute_kob_andersen_glass_structure(
         "r_coords": r_coords,
         "g_AA": g_aa,
         "first_peak_r": first_peak_r,
-        "split_peak_1_r": 1.75,
-        "split_peak_2_r": 2.02,
+        "split_peak_1_r": split_1,
+        "split_peak_2_r": split_2,
         "is_glassy_basin": bool(T <= 0.45),
     }

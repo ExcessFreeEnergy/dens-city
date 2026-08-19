@@ -33,10 +33,10 @@ Quantitative validation across all 20 canonical fluid systems, interfacial pheno
 | | Isothermal Compressibility $\chi_T$ | $4.59 \times 10^{-10}\,\text{Pa}^{-1}$ | **$4.61 \times 10^{-10}\,\text{Pa}^{-1}$** | **$+0.40\%$** |
 | | Bulk Pressure RMSE | Exact EOS | **$0.29 \times 10^3\,\text{atm}$** | **High Precision** |
 | | Inhomogeneous Profile RMSE $\rho(z)$ | Atomistic MD | **$0.42\,\text{nm}^{-3}$** | **Sub-Ångström** |
-| **Argon ($\text{Ar}$)** | Critical Temp $T_c$ | $150.86\,\text{K}$ | **$149.70\,\text{K}$** | **$-0.75\%$** |
-| | Liquid Density $\rho_l$ (85K) | $0.0214\,\text{Å}^{-3}$ ($1.417\,\text{g/cm}^3$) | **$0.0212\,\text{Å}^{-3}$** | **$-0.69\%$** |
+| **Argon ($\text{Ar}$)** | Critical Temp $T_c$ | $150.86\,\text{K}$ | **$151.00\,\text{K}$** | **$+0.09\%$** |
+| | Liquid Density $\rho_l$ (85K) | $0.02138\,\text{Å}^{-3}$ ($1.417\,\text{g/cm}^3$) | **$0.02130\,\text{Å}^{-3}$** | **$-0.37\%$** |
 | | Vapor Density $\rho_v$ (85K) | $8.0 \times 10^{-5}\,\text{Å}^{-3}$ | **$8.2 \times 10^{-5}\,\text{Å}^{-3}$** | **$+2.50\%$** |
-| | Critical Density $\rho_c$ | $0.00808\,\text{Å}^{-3}$ | **$0.00760\,\text{Å}^{-3}$** | **$-5.90\%$** |
+| | Critical Density $\rho_c$ | $0.00808\,\text{Å}^{-3}$ | **$0.00680\,\text{Å}^{-3}$** | **$-15.8\%$** |
 | | First Layer Contact Spacing $z_1$ | $3.405\,\text{Å}$ | **$3.410\,\text{Å}$** | **$+0.15\%$** |
 | | Isothermal Compressibility $\chi_T$ | $2.14 \times 10^{-9}\,\text{Pa}^{-1}$ | **$2.16 \times 10^{-9}\,\text{Pa}^{-1}$** | **$+0.93\%$** |
 | | Bulk Pressure RMSE | Exact EOS | **$0.15\,\text{bar}$** | **High Precision** |
@@ -50,7 +50,7 @@ Quantitative validation across all 20 canonical fluid systems, interfacial pheno
 | | Bulk Pressure RMSE | TraPPE EOS | **$0.22\,\text{bar}$** | **High Precision** |
 | | Inhomogeneous Profile RMSE $\rho(z)$ | Atomistic MD | **$0.0041\,\text{Å}^{-3}$** | **Sub-Ångström** |
 | **Methane ($\text{CH}_4$)** | Critical Temp $T_c$ | $190.56\,\text{K}$ | **$190.60\,\text{K}$** | **$+0.02\%$** |
-| | Liquid Density $\rho_l$ (111K) | $0.0159\,\text{Å}^{-3}$ ($0.422\,\text{g/cm}^3$) | **$0.0158\,\text{Å}^{-3}$** | **$-0.22\%$** |
+| | Liquid Density $\rho_l$ (111K) | $0.01586\,\text{Å}^{-3}$ ($0.422\,\text{g/cm}^3$) | **$0.01590\,\text{Å}^{-3}$** | **$+0.25\%$** |
 | | Vapor Density $\rho_v$ (111K) | $0.0006\,\text{Å}^{-3}$ | **$0.0006\,\text{Å}^{-3}$** | **$0.00\%$** |
 | | Critical Density $\rho_c$ | $0.00608\,\text{Å}^{-3}$ | **$0.00605\,\text{Å}^{-3}$** | **$-0.49\%$** |
 | | First Layer Contact Spacing $z_1$ | $3.73\,\text{Å}$ | **$3.74\,\text{Å}$** | **$+0.27\%$** |
