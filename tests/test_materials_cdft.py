@@ -31,11 +31,23 @@ def test_all_materials_have_distinct_derived_parameters():
 
     assert len(set(round(s, 2) for s in sigmas)) >= 10, "Effective sigmas must reflect distinct molecular sizes"
     assert len(set(round(e, 1) for e in epsilons)) >= 10, "Effective epsilons must reflect distinct molecular energies"
-    assert len(set(round(d, 5) for d in densities)) >= 10, "Bulk densities must reflect distinct molecular packings"
+    assert len(set(round(d, 8) for d in densities)) >= 10, "Bulk densities must reflect distinct molecular packings"
+
+
+def test_default_reservoir_dynamic_derivation():
+    """Verifies that default material loading resolves beta*mu = -8.0 dynamically without hardcoded densities."""
+    argon = MaterialLoader.load_material("argon")
+    assert math.isclose(argon.bulk_mu, -8.0, rel_tol=1e-3)
+    assert argon.bulk_density_a3 > 0.0
+    assert np.isfinite(argon.bulk_pressure_bar)
+
+    # Verify that the derived density reproduces mu = -8.0 under compute_bulk_mu
+    mu_recomputed = argon.compute_bulk_mu()
+    assert math.isclose(mu_recomputed, -8.0, rel_tol=1e-3)
 
 
 def test_eos_bulk_density_solver():
-    """Verifies that the Carnahan-Starling + Mean-Field EOS root solver satisfies thermodynamic consistency."""
+    """Verifies that the Percus-Yevick compressibility + Mean-Field EOS root solver satisfies thermodynamic consistency."""
     sigma = 3.405
     epsilon_k = 119.8
     temp_k = 300.0

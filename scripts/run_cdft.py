@@ -145,7 +145,7 @@ def main() -> None:
             print(f"  Dimension Mode   : {mat.dimension_mode}")
             print(f"  Molecular Span   : {mat.molecular_span_a:.2f} Å (R_g = {mat.radius_of_gyration_a:.2f} Å, {mat.num_sites} sites)")
             print(f"  Effective LJ Core: σ = {mat.effective_sigma:.3f} Å, ε = {mat.effective_epsilon_k:.1f} K")
-            print(f"  Bulk Reservoir   : ρ = {mat.bulk_density_a3:.5f} Å⁻³ ({mat.molarity_mol_l:.2f} M), μ_ex = {mat.bulk_mu:.3f} kBT")
+            print(f"  Bulk Reservoir   : ρ = {mat.bulk_density_a3:.5f} Å⁻³ ({mat.molarity_mol_l:.2f} M), P = {mat.bulk_pressure_bar:.2f} bar, μ = {mat.bulk_mu:.3f} kBT")
 
             solver = TinyCDFT(
                 material=mat,

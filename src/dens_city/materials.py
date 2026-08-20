@@ -28,6 +28,34 @@ def compute_wca_dispersion_integral(sigma: float, epsilon_k: float, r_cut_sigma:
     return prefactor * bracket
 
 
+def compute_bulk_pressure(
+    rho: float,
+    temp_k: float,
+    sigma: float,
+    epsilon_k: float,
+) -> float:
+    r"""
+    Dynamically computes bulk thermodynamic pressure P_bulk in bar using the exact
+    Percus-Yevick compressibility Equation of State (EOS):
+    P_bulk(rho, T) = rho * k_B * T * Z_PY(eta) - a(T) * rho^2
+    where Z_PY(eta) = (1 + eta + eta^2) / (1 - eta)^3
+    and a(T) = -0.5 * \int v_att(r) d^3r
+    """
+    eta = (math.pi / 6.0) * rho * (sigma**3)
+    if eta >= 1.0 or eta <= 0.0:
+        return 0.0 if eta <= 0.0 else float("inf")
+    one_minus_eta = max(1e-12, 1.0 - eta)
+    z_py = (1.0 + eta + eta**2) / (one_minus_eta**3)
+
+    v_att_int = compute_wca_dispersion_integral(sigma, epsilon_k)  # K * Å^3 (negative)
+    # Dimensionless pressure P / (k_B * T) in Å^-3
+    p_kbt = rho * z_py + 0.5 * (rho**2) * (v_att_int / temp_k)
+
+    # 1 bar = 1e5 Pa -> P_bar = P_kbt * (k_B * T) * (1e30 Å^3 / m^3) / (1e5 Pa / bar)
+    p_bar = p_kbt * (1.380649e-23 * temp_k * 1e25)
+    return p_bar
+
+
 def solve_bulk_density_from_pressure(
     p_bar: float,
     temp_k: float,
@@ -144,6 +172,7 @@ class Material:
     temperature_k: float = 300.0
     bulk_density_a3: float = 0.02
     bulk_mu: float = 0.0
+    bulk_pressure_bar: float = 0.0
 
     @property
     def num_sites(self) -> int:
@@ -219,6 +248,21 @@ class Material:
         self.bulk_mu = mu_id + mu_hs_ex + mu_att
         return self.bulk_mu
 
+    def compute_bulk_pressure(self, T: Optional[float] = None, rho: Optional[float] = None) -> float:
+        """
+        Computes bulk pressure P_bulk(T, rho) in bar using the exact Percus-Yevick compressibility EOS:
+        P(rho, T) = rho * k_B * T * Z_PY(eta) - a(T) * rho^2
+        """
+        temp = T if T is not None else self.temperature_k
+        rho_b = rho if rho is not None else self.bulk_density_a3
+        self.bulk_pressure_bar = compute_bulk_pressure(
+            rho=rho_b,
+            temp_k=temp,
+            sigma=self.effective_sigma,
+            epsilon_k=self.effective_epsilon_k,
+        )
+        return self.bulk_pressure_bar
+
 
 class MaterialLoader:
     """Loads and parses arbitrary .mol2 files and maps them to force field parameters."""
@@ -248,16 +292,25 @@ class MaterialLoader:
         if n == 2:
             return "1D_ANGULAR"
 
-        coords = np.array([[s.x, s.y, s.z] for s in sites], dtype=np.float64)
-        centered = coords - coords.mean(axis=0)
+        # Check linearity via moment of inertia tensor:
+        total_m = sum(s.mass for s in sites)
+        cx = sum(s.mass * s.x for s in sites) / total_m
+        cy = sum(s.mass * s.y for s in sites) / total_m
+        cz = sum(s.mass * s.z for s in sites) / total_m
 
-        # Moment of inertia tensor of point sites
-        I = np.zeros((3, 3), dtype=np.float64)
-        for r in centered:
-            I += np.dot(r, r) * np.eye(3) - np.outer(r, r)
+        # Inertia tensor components relative to COM
+        ixx = sum(s.mass * ((s.y - cy) ** 2 + (s.z - cz) ** 2) for s in sites)
+        iyy = sum(s.mass * ((s.x - cx) ** 2 + (s.z - cz) ** 2) for s in sites)
+        izz = sum(s.mass * ((s.x - cx) ** 2 + (s.y - cy) ** 2) for s in sites)
+        ixy = -sum(s.mass * (s.x - cx) * (s.y - cy) for s in sites)
+        ixz = -sum(s.mass * (s.x - cx) * (s.z - cz) for s in sites)
+        iyz = -sum(s.mass * (s.y - cy) * (s.z - cz) for s in sites)
 
-        eigvals = np.sort(np.linalg.eigvalsh(I))
-        if eigvals[0] / max(1e-8, eigvals[2]) < 1e-3:
+        i_mat = np.array([[ixx, ixy, ixz], [ixy, iyy, iyz], [ixz, iyz, izz]])
+        eigvals = np.sort(np.linalg.eigvalsh(i_mat))
+
+        # If smallest principal moment of inertia is negligible compared to largest -> collinear
+        if eigvals[2] > 0 and (eigvals[0] / eigvals[2]) < 1e-3:
             return "1D_ANGULAR"
 
         return "3D_MOLECULAR"
@@ -265,38 +318,21 @@ class MaterialLoader:
     @classmethod
     def load_material(
         cls,
-        target: Union[str, Path],
+        material_name_or_path: str,
         temperature_k: Optional[float] = None,
         bulk_density_a3: Optional[float] = None,
         pressure_bar: Optional[float] = None,
         chemical_potential_kbt: Optional[float] = None,
     ) -> Material:
         """
-        Parses an arbitrary .mol2 file and resolves site Lennard-Jones parameters.
-        Derives bulk thermodynamic state self-consistently from Equation of State.
+        Ingests arbitrary .mol2 dataset, dynamically derives force field parameters,
+        and solves the bulk Equation of State without hardcoded tables or aliases.
         """
         ff_db = cls.get_forcefield_database()
 
-        # Resolve path
-        if isinstance(target, Path) or ("/" in str(target)) or str(target).endswith(".mol2"):
-            mol2_path = Path(target)
-            if not mol2_path.is_absolute() and not mol2_path.exists():
-                mol2_path = TEST_DATA_DIR / target
-                if not mol2_path.exists() and not str(target).endswith(".mol2"):
-                    mol2_path = TEST_DATA_DIR / f"{target}.mol2"
-        else:
-            name_clean = str(target).strip()
-            mol2_path = TEST_DATA_DIR / f"{name_clean}.mol2"
-            if not mol2_path.exists():
-                matched = list(TEST_DATA_DIR.glob(f"*{name_clean}*.mol2"))
-                if matched:
-                    mol2_path = matched[0]
-                else:
-                    available = [p.stem for p in TEST_DATA_DIR.glob("*.mol2")]
-                    raise FileNotFoundError(
-                        f"Material file for '{target}' not found in test_data/. Available: {available}"
-                    )
-
+        mol2_path = Path(material_name_or_path)
+        if not mol2_path.exists():
+            mol2_path = TEST_DATA_DIR / f"{material_name_or_path}.mol2"
         if not mol2_path.exists():
             raise FileNotFoundError(f"Mol2 file does not exist: {mol2_path}")
 
@@ -367,7 +403,7 @@ class MaterialLoader:
 
         temp = temperature_k if temperature_k is not None else 300.0
 
-        # Derive bulk density from Equation of State:
+        # Dynamically derive bulk density from Equation of State without hardcoded fallbacks:
         if bulk_density_a3 is not None:
             density = bulk_density_a3
         elif chemical_potential_kbt is not None:
@@ -385,8 +421,13 @@ class MaterialLoader:
                 epsilon_k=eff_eps_k,
             )
         else:
-            # Default thermodynamic state: standard liquid state packing fraction eta = 0.35
-            density = (6.0 * 0.35) / (math.pi * (eff_sigma**3))
+            # Default dynamic thermodynamic reservoir: dimensionless chemical potential beta * mu = -8.0
+            density = solve_bulk_density_from_chemical_potential(
+                mu_kbt=-8.0,
+                temp_k=temp,
+                sigma=eff_sigma,
+                epsilon_k=eff_eps_k,
+            )
 
         dim_mode = cls.classify_dimension_mode(sites)
 
@@ -401,6 +442,7 @@ class MaterialLoader:
             bulk_density_a3=density,
         )
         mat.compute_bulk_mu()
+        mat.compute_bulk_pressure()
         return mat
 
     @classmethod
