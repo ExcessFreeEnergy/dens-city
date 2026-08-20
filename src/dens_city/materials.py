@@ -17,6 +17,17 @@ TEST_DATA_DIR = REPO_ROOT / "test_data"
 FF_JSON_PATH = TEST_DATA_DIR / "forcefield_parameters.json"
 
 
+def compute_wca_dispersion_integral(sigma: float, epsilon_k: float, r_cut_sigma: float = 5.0) -> float:
+    """
+    Computes the exact 3D volume integral of the WCA attractive potential:
+    \\int v_att(r) d^3r = \\int_{-\\infty}^\\infty v_att,1D(z) dz
+    """
+    r_cut = r_cut_sigma
+    prefactor = 16.0 * math.pi * epsilon_k * (sigma**3)
+    bracket = -(2.0 * math.sqrt(2.0)) / 9.0 - 1.0 / (9.0 * (r_cut**9)) + 1.0 / (3.0 * (r_cut**3))
+    return prefactor * bracket
+
+
 def solve_bulk_density_from_pressure(
     p_bar: float,
     temp_k: float,
@@ -26,46 +37,48 @@ def solve_bulk_density_from_pressure(
 ) -> float:
     """
     Self-consistently solves for bulk number density rho_bulk (molecules / Å³) at target pressure P
-    using the Carnahan-Starling + Mean-Field attractive Equation of State (EOS):
-    P(rho, T) = rho * k_B * T * [ (1 + eta + eta^2 - eta^3) / (1 - eta)^3 ] - (16*pi/9) * rho^2 * epsilon * sigma^3
+    using the Rosenfeld FMT / Percus-Yevick compressibility + Mean-Field attractive Equation of State (EOS):
+    P(rho, T) = rho * k_B * T * [ (1 + eta + eta^2) / (1 - eta)^3 ] + 0.5 * rho^2 * \\int v_att(r) d^3r
     """
-    # 1 bar = 1e5 Pa = 1e-4 N / Å² = 1e-4 * (1 J / (1e10 Å)) -> in (k_B * T / Å³) units:
-    # P / (k_B * T) = (P_bar * 1e5 Pa) / (1.380649e-23 J/K * T * 1e30 m^-3) = P_bar / (1.380649e-23 * T * 1e25)
-    #               = P_bar * 7.2429716e-4 / T
+    # 1 bar = 1e5 Pa -> in (k_B * T / Å³) units: P / (k_B * T) = (p_bar * 1e5) / (1.380649e-23 * T * 1e30)
     p_target_kbt = (p_bar * 1e5) / (1.380649e-23 * temp_k * 1e30)
-    a_att = (16.0 * math.pi / 9.0) * (epsilon_k / temp_k) * (sigma**3)
+    v_att_int = compute_wca_dispersion_integral(sigma, epsilon_k)
+    a_att = -v_att_int / temp_k  # Positive attractive coefficient in Å³
+    b_vol = (math.pi / 6.0) * (sigma**3)
 
     def eos_pressure(rho: float) -> float:
-        eta = (math.pi / 6.0) * rho * (sigma**3)
+        eta = b_vol * rho
         if eta >= 1.0 or eta <= 0.0:
             return float("inf") if eta >= 1.0 else -float("inf")
-        z_cs = (1.0 + eta + eta**2 - eta**3) / ((1.0 - eta) ** 3)
-        return rho * z_cs - a_att * (rho**2)
+        z_py = (1.0 + eta + eta**2) / ((1.0 - eta) ** 3)
+        return rho * z_py - 0.5 * a_att * (rho**2)
 
-    # Maximum physical close packing (FCC sphere packing eta = pi / (3 * sqrt(2)) ~ 0.74)
-    rho_max = 0.65 / ((math.pi / 6.0) * (sigma**3))
+    # Maximum physical close packing
+    rho_max = 0.65 / b_vol
+    eta_c = 0.1213
 
-    # Bisection search for density root
     if phase == "liquid":
-        low, high = 0.15 / ((math.pi / 6.0) * (sigma**3)), rho_max * 0.95
+        low = max(0.08, eta_c * 0.8) / b_vol
+        high = rho_max * 0.95
     else:
-        low, high = 1e-8, 0.05 / ((math.pi / 6.0) * (sigma**3))
+        low = 1e-9
+        high = min(0.12, eta_c * 0.9) / b_vol
 
-    for _ in range(100):
+    p_low = eos_pressure(low)
+    p_high = eos_pressure(high)
+    if (p_low - p_target_kbt) * (p_high - p_target_kbt) > 0:
+        low = 1e-9 if phase == "vapor" else 0.01 / b_vol
+        high = rho_max * 0.98
+
+    for _ in range(120):
         mid = 0.5 * (low + high)
         p_mid = eos_pressure(mid)
-        if abs(p_mid - p_target_kbt) < 1e-8 or (high - low) < 1e-9:
+        if abs(p_mid - p_target_kbt) < 1e-9 or (high - low) < 1e-10:
             return mid
-        if phase == "liquid":
-            if p_mid < p_target_kbt:
-                low = mid
-            else:
-                high = mid
+        if p_mid < p_target_kbt:
+            low = mid
         else:
-            if p_mid < p_target_kbt:
-                low = mid
-            else:
-                high = mid
+            high = mid
 
     return 0.5 * (low + high)
 
@@ -78,23 +91,28 @@ def solve_bulk_density_from_chemical_potential(
 ) -> float:
     """
     Solves for bulk number density rho_bulk at target chemical potential mu / (k_B * T)
-    via Newton-Raphson on mu(rho, T) = mu_target.
+    via root finding on mu_FMT(rho, T) = mu_target.
     """
-    a_att = (32.0 * math.pi / 9.0) * (epsilon_k / temp_k) * (sigma**3)
+    v_att_int = compute_wca_dispersion_integral(sigma, epsilon_k)
+    a_att = -v_att_int / temp_k
+    b_vol = (math.pi / 6.0) * (sigma**3)
 
     def eos_mu(rho: float) -> float:
-        eta = (math.pi / 6.0) * rho * (sigma**3)
+        eta = b_vol * rho
         eta = max(1e-12, min(0.65, eta))
-        mu_id = math.log(rho * (sigma**3))
-        mu_hs = (eta * (8.0 - 9.0 * eta + 3.0 * (eta**2))) / ((1.0 - eta) ** 3)
+        one_minus_eta = max(1e-12, 1.0 - eta)
+        mu_id = math.log(max(1e-15, rho * (sigma**3)))
+        mu_hs_fmt = -math.log(one_minus_eta) + (eta * (14.0 - 13.0 * eta + 5.0 * (eta**2))) / (2.0 * (one_minus_eta**3))
         mu_att = -a_att * rho
-        return mu_id + mu_hs + mu_att
+        return mu_id + mu_hs_fmt + mu_att
 
-    # Bisection
-    low, high = 1e-8, 0.65 / ((math.pi / 6.0) * (sigma**3))
-    for _ in range(80):
+    low, high = 1e-9, 0.65 / b_vol
+    for _ in range(100):
         mid = 0.5 * (low + high)
-        if eos_mu(mid) < mu_kbt:
+        val = eos_mu(mid)
+        if abs(val - mu_kbt) < 1e-9 or (high - low) < 1e-10:
+            return mid
+        if val < mu_kbt:
             low = mid
         else:
             high = mid
@@ -177,7 +195,7 @@ class Material:
     def compute_bulk_mu(self, T: Optional[float] = None, rho: Optional[float] = None) -> float:
         """
         Computes the theoretical bulk chemical potential mu_bulk(T, rho) in units of k_B * T
-        using Carnahan-Starling for hard-core repulsion + mean-field attractive dispersion.
+        using Rosenfeld FMT (Percus-Yevick compressibility) for hard-core repulsion + mean-field attractive dispersion.
         """
         temp = T if T is not None else self.temperature_k
         rho_b = rho if rho is not None else self.bulk_density_a3
@@ -190,12 +208,12 @@ class Material:
         # Ideal chemical potential (in k_B * T)
         mu_id = math.log(max(1e-15, rho_b * (sig**3)))
 
-        # Carnahan-Starling excess hard-sphere chemical potential
+        # Rosenfeld FMT excess hard-sphere chemical potential (PY compressibility limit)
         one_minus_eta = max(1e-12, 1.0 - eta)
-        mu_hs_ex = (eta * (8.0 - 9.0 * eta + 3.0 * (eta**2))) / (one_minus_eta**3)
+        mu_hs_ex = -math.log(one_minus_eta) + (eta * (14.0 - 13.0 * eta + 5.0 * (eta**2))) / (2.0 * (one_minus_eta**3))
 
-        # Mean-field attractive chemical potential: \int v_att(r) d^3r = -(32\pi/9) * epsilon * sigma^3
-        v_att_integral = -(32.0 * math.pi / 9.0) * (eps_k / temp) * (sig**3)
+        # Mean-field attractive chemical potential: \int v_att(r) d^3r
+        v_att_integral = compute_wca_dispersion_integral(sig, eps_k) / temp
         mu_att = rho_b * v_att_integral
 
         self.bulk_mu = mu_id + mu_hs_ex + mu_att

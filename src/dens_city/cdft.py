@@ -42,7 +42,7 @@ class TinyCDFT:
         eps_k = material.effective_epsilon_k
 
         # Slit pore dimension scales with molecular diameter if not explicitly provided
-        self.slit_width_a = slit_width_a if slit_width_a is not None else max(40.0, 10.0 * sigma)
+        self.slit_width_a = slit_width_a if slit_width_a is not None else 12.0 * sigma
         self.dz = self.slit_width_a / n_grid
         self.temperature_k = temperature_k if temperature_k is not None else material.temperature_k
         self.bulk_density = bulk_density_a3 if bulk_density_a3 is not None else material.bulk_density_a3
@@ -65,11 +65,6 @@ class TinyCDFT:
             wall_epsilon_k=wall_epsilon_k,
         ) / self.temperature_k  # in units of k_B * T
 
-        # Steric mask: True where potential is fluid-accessible (V < 50 kBT), False in hard wall core
-        # At V >= 50 kBT, Boltzmann factor exp(-50) = 1.9e-22 ~ 0.0
-        self.steric_mask = (self.v_ext < 50.0).contiguous()
-        self.v_ext_masked = self.steric_mask.where(self.v_ext, 0.0).contiguous()
-
         # 2. Compute exact discrete excess chemical potential so grad(Omega) == 0 at rho = rho_bulk
         eta = (math.pi / 6.0) * self.bulk_density * (sigma**3)
         one_minus_eta = max(1e-12, 1.0 - eta)
@@ -79,8 +74,10 @@ class TinyCDFT:
         self.mu_ex = mu_fmt + mu_att
 
         # 3. Dynamic Boltzmann Initialization: psi_0(z) = -beta * V_ext(z)
-        # Guarantees strictly zero initial density penetration into steric walls
-        psi_init_vals = -self.v_ext.maximum(0.0).minimum(50.0).numpy()
+        # Allows psi_0 > 0 for attractive wells (V_ext < 0) bounded by physical close packing eta_max = 0.60
+        psi_max = math.log(0.60 / max(1e-4, eta))
+        v_ext_np = self.v_ext.numpy().reshape(self.n_grid)
+        psi_init_vals = np.clip(-v_ext_np, -50.0, psi_max)
         self.psi = Tensor(psi_init_vals).reshape(1, 1, self.n_grid, 1).contiguous()
         self.psi.requires_grad = True
 
@@ -94,26 +91,23 @@ class TinyCDFT:
     def compute_density(self) -> Tensor:
         """
         Forward transformation mapping latent field psi to positive density profile rho.
-        Guarantees rho > 0 strictly and applies steric masking inside hard walls.
+        Guarantees rho > 0 strictly throughout the domain with full autograd differentiability.
         """
-        rho_raw = (self.psi).exp() * self.bulk_density
-        # Zero density strictly in steric hard wall region
-        return self.steric_mask.where(rho_raw, 0.0)
+        return (self.psi).exp() * self.bulk_density
 
     def grand_potential(self) -> Tensor:
         r"""
         Evaluates the grand potential functional Omega[rho] / (k_B * T):
         Omega = F_ideal + F_ext + F_FMT + F_att - mu \int rho dz
-        Uses physical steric masking to eliminate IEEE 754 0 * inf and 0 * ln(0) NaN traps.
+        Executes continuous autograd without gradient-killing boolean masks.
         """
         rho = self.compute_density()
 
         # 1. Ideal gas free energy (log-free formulation: rho * psi - (rho - rho_b))
-        f_id_density = rho * self.psi - (rho - self.bulk_density)
-        f_ideal = self.steric_mask.where(f_id_density, 0.0).sum() * self.dz
+        f_ideal = (rho * self.psi - (rho - self.bulk_density)).sum() * self.dz
 
-        # 2. External potential energy: rho * V_ext (masked where rho == 0 to prevent 0 * inf NaN)
-        f_ext = (rho * self.v_ext_masked).sum() * self.dz
+        # 2. External potential energy: rho * V_ext
+        f_ext = (rho * self.v_ext).sum() * self.dz
 
         # 3. Rosenfeld FMT Hard-Sphere Excess Free Energy
         n3 = rho.conv2d(self.fmt_kernels["w3"], padding=(self.fmt_pad, 0))
@@ -130,9 +124,9 @@ class TinyCDFT:
             + (n1 * n2 - nv1 * nv2) / one_minus_n3
             + (n2 * n2 * n2 - 3.0 * n2 * (nv2 * nv2)) / (24.0 * math.pi * (one_minus_n3 * one_minus_n3))
         )
-        f_fmt = self.steric_mask.where(phi_fmt, 0.0).sum() * self.dz
+        f_fmt = phi_fmt.sum() * self.dz
 
-        # 4. Attractive dispersion excess free energy via neural convolution
+        # 4. Attractive dispersion excess free energy via convolution
         att_conv = rho.conv2d(self.att_kernel, padding=(self.att_pad, 0))
         f_att = 0.5 * (rho * att_conv).sum() * (self.dz * self.dz) / self.temperature_k
 
@@ -190,49 +184,37 @@ class TinyCDFT:
         r"""
         Calculates the exact statistical mechanical wall pressure via the
         Irving-Kirkwood mechanical virial force balance integral:
-        P_wall = - \int_0^{L_z/2} \rho(z) \frac{d V_ext(z)}{dz} dz
+        P_wall = - \int_0^{z_bulk} \rho(z) \frac{d V_ext(z)}{dz} dz
+        where z_bulk is dynamically detected where |\nabla V_ext(z)| < \epsilon_tol.
         Converted to bar (1 bar = 1e5 Pa).
         """
         rho_arr = self.get_density_profile()
-        v_ext_arr = self.v_ext_masked.numpy().reshape(self.n_grid) * self.temperature_k
+        v_ext_arr = self.v_ext.numpy().reshape(self.n_grid) * self.temperature_k
 
         # Numerical derivative of external wall potential: dV_ext / dz (in K / Å)
         dv_dz = np.gradient(v_ext_arr, self.dz)
 
-        # Integrate force over the left half of the slit pore
-        half_idx = self.n_grid // 2
-        # Virial force density: rho(z) * (-dV_ext/dz) in (molecules/Å³) * (K / Å)
-        # Convert to Pa: (1/Å⁴) * (J/K) * K = (1e40 m⁻⁴) * (1.380649e-23 J) * (1 m) = 1.380649e-3 N/m² = 1.380649e-3 Pa?
-        # Let's check unit conversion:
-        # [rho] = Å⁻³ = 1e30 m⁻³
-        # [dV/dz] = K / Å = 1e10 K / m
-        # [k_B] = 1.380649e-23 J / K
-        # Integral \int rho (dV/dz) dz: [rho] * [dV/dz] * [dz] = (1e30 m⁻³) * (K) = 1e30 K / m³
-        # Multiplying by k_B: 1e30 K/m³ * 1.380649e-23 J/K = 1.380649e7 J/m³ = 1.380649e7 N/m² (Pa)
-        # 1 bar = 1e5 Pa -> * (1.380649e7 / 1e5) = * 138.0649
-        f_integral = -float(np.sum(rho_arr[:half_idx] * dv_dz[:half_idx]) * self.dz)
-        p_virial_bar = f_integral * (1e30 * 1.380649e-23 * 1e-5)
+        # Dynamically identify the wall interaction domain up to the bulk plateau
+        mid = self.n_grid // 2
+        min_grad_idx = int(np.argmin(dv_dz[:mid]))
+        tol = 1.0  # K / Å
+        plateau_candidates = np.where(np.abs(dv_dz[min_grad_idx:mid]) < tol)[0]
+        bulk_cutoff_idx = (min_grad_idx + int(plateau_candidates[0])) if len(plateau_candidates) > 0 else mid
 
-        # In case of sharp hard wall where dV/dz is a delta function, fallback to Contact Value Theorem P = rho_contact * kBT
-        if p_virial_bar <= 0.0 or np.isnan(p_virial_bar):
-            # Dynamic contact locus: find first physical peak near boundary
-            non_zero_idx = np.where(rho_arr > 1e-6)[0]
-            contact_rho = float(rho_arr[non_zero_idx[0]]) if len(non_zero_idx) > 0 else self.bulk_density
-            p_virial_bar = (contact_rho * 1e30) * 1.380649e-23 * self.temperature_k * 1e-5
+        # Integrate virial force density over the dynamically detected wall interaction domain
+        f_integral = -float(np.sum(rho_arr[min_grad_idx:bulk_cutoff_idx] * dv_dz[min_grad_idx:bulk_cutoff_idx]) * self.dz)
+        p_virial_bar = f_integral * (1e30 * 1.380649e-23 * 1e-5)
 
         return p_virial_bar
 
     def get_excess_adsorption(self) -> float:
         r"""
-        Computes excess pore adsorption Gamma = \int_0^L (\rho(z) - \rho_mid) dz
-        where \rho_mid is the dynamically detected plateau density at the pore center.
+        Computes exact statistical mechanical Gibbs excess pore adsorption:
+        \Gamma_excess = \int_0^L (\rho(z) - \rho_bulk) dz
+        relative to the theoretical reservoir bulk density.
         """
         rho_arr = self.get_density_profile()
-        # Midpoint central plateau density
-        mid = self.n_grid // 2
-        plateau_window = max(2, self.n_grid // 16)
-        rho_plateau = float(np.mean(rho_arr[mid - plateau_window : mid + plateau_window]))
-        return float(np.sum(rho_arr - rho_plateau) * self.dz)
+        return float(np.sum(rho_arr - self.bulk_density) * self.dz)
 
     def ascii_plot(self, width: int = 60, height: int = 15) -> str:
         """Renders an ASCII visualization of the density profile across the slit."""

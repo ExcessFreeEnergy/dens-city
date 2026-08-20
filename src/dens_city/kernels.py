@@ -77,47 +77,67 @@ class KernelBuilder:
         sigma: float, epsilon_k: float, dz: float, r_cut: Optional[float] = None
     ) -> Tuple[Tensor, int]:
         r"""
-        Analytically integrates 1D planar WCA attractive dispersion potential:
-        v_att(z) = \int_{|z|}^{r_cut} 2\pi r v_att(r) dr
-        where v_att(r) = -epsilon for r <= r_min, and 4\epsilon [(\sigma/r)^12 - (\sigma/r)^6] for r > r_min.
-        Cutoff radius scales with molecular diameter: r_cut = 5.0 * sigma.
+        Analytically cell-integrates 1D planar WCA attractive dispersion potential across each grid bin [z - dz/2, z + dz/2]:
+        \bar{v}_att(i) = \frac{1}{dz} \int_{z - dz/2}^{z + dz/2} v_att,1D(z') dz'
+        where v_att,1D(z) = \int_{|z|}^{r_cut} 2\pi r v_att(r) dr.
         """
         cutoff = r_cut if r_cut is not None else 5.0 * sigma
         r_min = (2.0 ** (1.0 / 6.0)) * sigma
         k_half = int(math.ceil(cutoff / dz)) + 1
         k_size = 2 * k_half + 1
 
-        def int_r_vatt(r: float) -> float:
-            r"""Indefinite integral \int 2\pi r v_att(r) dr."""
+        # Indefinite integral V(r) = \int_0^r 2\pi r' v_att(r') dr'
+        # and secondary anti-derivative W(r) = \int_0^r V(u) du
+        def eval_v_and_w(r: float) -> Tuple[float, float]:
             if r <= 0.0:
-                return 0.0
+                return 0.0, 0.0
             if r <= r_min:
-                # \int -2\pi \epsilon r dr = -\pi \epsilon r^2
-                return -math.pi * epsilon_k * r * r
+                v_val = -math.pi * epsilon_k * (r**2)
+                w_val = -(math.pi * epsilon_k / 3.0) * (r**3)
+                return v_val, w_val
             else:
-                # Base value at r_min
-                val_rmin = -math.pi * epsilon_k * (r_min**2)
-                # \int_{r_min}^r 8\pi \epsilon [ \sigma^12 / r^11 - \sigma^6 / r^5 ] dr
-                # = 8\pi \epsilon [ -\sigma^12 / (10 r^10) + \sigma^6 / (4 r^4) ]
-                def anti_deriv(x: float) -> float:
-                    return 8.0 * math.pi * epsilon_k * (-(sigma**12) / (10.0 * (x**10)) + (sigma**6) / (4.0 * (x**4)))
+                # Core value at r_min
+                v_rmin = -math.pi * epsilon_k * (r_min**2)
+                w_rmin = -(math.pi * epsilon_k / 3.0) * (r_min**3)
 
-                return val_rmin + (anti_deriv(r) - anti_deriv(r_min))
+                # Antiderivative of 8\pi \epsilon [ \sigma^12 / u^11 - \sigma^6 / u^5 ]
+                # \int [ \sigma^12 / u^11 - \sigma^6 / u^5 ] du = -\sigma^12 / (10 u^10) + \sigma^6 / (4 u^4)
+                anti_v_rmin = 8.0 * math.pi * epsilon_k * (-(sigma**12) / (10.0 * (r_min**10)) + (sigma**6) / (4.0 * (r_min**4)))
+                c1 = anti_v_rmin - v_rmin
 
-        val_rcut = int_r_vatt(cutoff)
+                v_val = 8.0 * math.pi * epsilon_k * (-(sigma**12) / (10.0 * (r**10)) + (sigma**6) / (4.0 * (r**4))) - c1
+
+                # Second antiderivative \int [ -\sigma^12 / (10 u^10) + \sigma^6 / (4 u^4) ] du
+                # = \sigma^12 / (90 u^9) - \sigma^6 / (12 u^3)
+                anti_w_rmin = 8.0 * math.pi * epsilon_k * ((sigma**12) / (90.0 * (r_min**9)) - (sigma**6) / (12.0 * (r_min**3)))
+                anti_w_r = 8.0 * math.pi * epsilon_k * ((sigma**12) / (90.0 * (r**9)) - (sigma**6) / (12.0 * (r**3)))
+
+                w_val = w_rmin - c1 * (r - r_min) + (anti_w_r - anti_w_rmin)
+                return v_val, w_val
+
+        v_rcut, _ = eval_v_and_w(cutoff)
 
         kernel_vals = []
         for i in range(-k_half, k_half + 1):
-            z_center = abs(i * dz)
-            z1 = max(0.0, z_center - dz / 2.0)
-            z2 = min(cutoff, z_center + dz / 2.0)
-
-            if z1 < cutoff:
-                z_mid = (z1 + z2) / 2.0
-                v_1d_mid = val_rcut - int_r_vatt(z_mid)
-                kernel_vals.append(v_1d_mid)
+            if i == 0:
+                # Symmetric cell [-dz/2, dz/2]
+                z_right = min(cutoff, 0.5 * dz)
+                _, w_right = eval_v_and_w(z_right)
+                # \int_{-dz/2}^{dz/2} v_1D(z) dz = 2 * [ z_right * V(r_cut) - W(z_right) ]
+                int_cell = 2.0 * (z_right * v_rcut - w_right)
+                kernel_vals.append(int_cell / dz)
             else:
-                kernel_vals.append(0.0)
+                z_center = abs(i * dz)
+                z1 = max(0.0, z_center - 0.5 * dz)
+                z2 = min(cutoff, z_center + 0.5 * dz)
+
+                if z1 < cutoff:
+                    _, w1 = eval_v_and_w(z1)
+                    _, w2 = eval_v_and_w(z2)
+                    int_cell = (z2 - z1) * v_rcut - (w2 - w1)
+                    kernel_vals.append(int_cell / dz)
+                else:
+                    kernel_vals.append(0.0)
 
         kernel_tensor = Tensor(kernel_vals).reshape(1, 1, k_size, 1).contiguous()
         return kernel_tensor, k_half
@@ -163,13 +183,20 @@ class KernelBuilder:
         return Tensor(v_vals).reshape(1, 1, n_grid, 1).contiguous()
 
     @staticmethod
-    def build_coulomb_1d_kernel(n_grid: int, dz: float) -> Tuple[Tensor, int]:
+    def build_coulomb_1d_kernel(n_grid: int, dz: float, dielectric_constant: float = 1.0) -> Tuple[Tensor, int]:
         r"""
-        1D Poisson / Coulomb Green's function for electrostatics:
-        v_C(z) = -2\pi |z|
+        1D Poisson / Coulomb Green's function for electrostatics in a confined slit pore [0, L_z]
+        with grounded Dirichlet boundary conditions \phi(0) = \phi(L_z) = 0:
+        G(z, z') = -(4\pi / \epsilon) * [ (L_z - max(z, z')) * min(z, z') / L_z ]
         """
+        l_z = n_grid * dz
+        pref = -4.0 * math.pi / dielectric_constant
         k_half = n_grid
         k_size = 2 * k_half + 1
-        kernel_vals = [-2.0 * math.pi * abs(i * dz) for i in range(-k_half, k_half + 1)]
+        kernel_vals = []
+        for i in range(-k_half, k_half + 1):
+            z = abs(i * dz)
+            val = pref * ((l_z - min(l_z, z)) * min(l_z, z)) / l_z if l_z > 0 else 0.0
+            kernel_vals.append(val)
         kernel_tensor = Tensor(kernel_vals).reshape(1, 1, k_size, 1).contiguous()
         return kernel_tensor, k_half

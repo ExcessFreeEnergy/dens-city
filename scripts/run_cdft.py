@@ -85,7 +85,7 @@ def main() -> None:
         "-w",
         type=float,
         default=None,
-        help="Confining slit width in Angstroms (default: dynamic max(40.0, 10*sigma))",
+        help="Confining slit width in Angstroms (default: dynamic 12.0*sigma)",
     )
     parser.add_argument(
         "--lr",

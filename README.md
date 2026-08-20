@@ -4,7 +4,7 @@
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10+-brightgreen.svg)](https://python.org)
 [![tinygrad: >=0.13.0](https://img.shields.io/badge/tinygrad-0.13.0+-orange.svg)](https://github.com/tinygrad/tinygrad)
 
-`dens-city` is a pure statistical mechanics Classical Density Functional Theory (cDFT) simulation platform built from scratch in `tinygrad`.
+`dens-city` is a pure statistical mechanics Classical Density Functional Theory (cDFT) engine built from scratch in `tinygrad`.
 
 ---
 
@@ -13,68 +13,75 @@
 All physical properties emerge strictly from variational minimization of the Grand Potential functional $\Omega[\rho]$:
 $$\Omega[\rho] = \mathcal{F}_{\rm ideal}[\rho] + \mathcal{F}_{\rm FMT}^{\rm ex}[\rho] + \mathcal{F}_{\rm att}^{\rm ex}[\rho] + \int dz \, \rho(z) [V_{\rm ext}(z) - \mu]$$
 
-- **Zero Hardcoded Parameters**: Every molecular fluid's steric diameter $\sigma_{\rm eff} = (\sum \sigma_i^3)^{1/3}$ and cohesive well depth $\epsilon_{\rm eff} = \sum \epsilon_i$ are derived directly from arbitrary input `.mol2` files and force field definitions.
-- **Thermodynamic Consistency**: Bulk state variables $(\rho_{\rm bulk}, \mu, P)$ are derived dynamically from the Carnahan-Starling + Mean-Field Equation of State (EOS) root solver.
-- **Irving-Kirkwood Virial Observables**: Wall contact pressures and surface forces are evaluated via exact statistical mechanical momentum balance integrals:
-  $$P_{\rm wall} = -\int_0^{L_z/2} \rho(z) \frac{d V_{\rm ext}(z)}{dz} \, dz$$
+- **Zero Hardcoded Parameters**: Steric diameter $\sigma_{\rm eff} = (\sum \sigma_i^3)^{1/3}$ and cohesive well depth $\epsilon_{\rm eff} = \sum \epsilon_i$ derive directly from arbitrary input `.mol2` files and force field definitions.
+- **Thermodynamic Consistency**: Bulk state variables $(\rho_{\rm bulk}, \mu, P)$ derive dynamically from the Rosenfeld FMT / Percus-Yevick compressibility Equation of State (EOS) root solver.
+- **Irving-Kirkwood Virial Observables**: Wall contact pressures and surface forces evaluate via exact momentum balance integrals over the interaction domain:
+  $$P_{\rm wall} = -\int_0^{z_{\rm bulk}} \rho(z) \frac{d V_{\rm ext}(z)}{dz} \, dz$$
 - **Anti-Aliased Weight Functions**: Analytical continuous cell integrals over Rosenfeld Fundamental Measure Theory (FMT) 1D planar weight kernels ($w_3, w_2, w_1, w_0, \mathbf{w}_{v2}, \mathbf{w}_{v1}$) and WCA attractive dispersion kernels.
 
 ---
 
-## 2. Numerical Implementation & Steric Masking (The $0 \times \infty$ NaN Trap)
+## 2. Why GCMC Chokes on Long-Range Forces
 
-### The Problem:
-At impenetrable steric boundaries ($z \le \sigma_{\rm wall}/2$), the physical external potential diverges to infinity ($V_{\rm ext} \to \infty$). In the Boltzmann distribution $\rho = \rho_{\rm bulk} \exp(-\beta V_{\rm ext})$, the fluid density is strictly zero ($\rho = 0.0$).
-
-In IEEE 754 floating-point arithmetic on GPUs:
-- $0.0 \times \infty = \text{NaN}$ (in the external potential loss term $f_{\rm ext} = \int \rho(z) V_{\rm ext}(z) dz$)
-- $0.0 \times \ln(0.0) = \text{NaN}$ (in the ideal gas entropy loss term $f_{\rm ideal} = \int \rho \ln(\rho/\rho_b) dz$)
-
-The moment `NaN` enters the loss function, autograd backpropagation destroys all optimizer tensors.
-
-### The First-Principles Solution:
-1. **Massive Finite Brick-Wall Barrier**: Hard boundaries are set to $V_{\max} = 10^6\,k_B T$, which evaluates $\exp(-10^6) \equiv 0.0$ in float32 without floating-point overflow.
-2. **Physical Steric Masking**: Using tinygrad's `.where()` operator, energy evaluations are masked out inside the hard core where density is analytically zero:
-   ```python
-   # Fluid-accessible domain mask
-   self.steric_mask = (self.v_ext < 50.0).contiguous()
-   self.v_ext_masked = self.steric_mask.where(self.v_ext, 0.0).contiguous()
-
-   # Masked external potential energy
-   f_ext = (rho * self.v_ext_masked).sum() * self.dz
-
-   # Masked ideal gas free energy
-   rho_safe = rho.maximum(1e-15)
-   f_id_density = rho * (rho_safe / self.bulk_density).log() - (rho - self.bulk_density)
-   f_ideal = self.steric_mask.where(f_id_density, 0.0).sum() * self.dz
-   ```
-3. **Boltzmann Asymptotic Initialization**:
-   $\psi_0(z) = -\beta V_{\rm ext}(z)$, guaranteeing zero fluid density penetration inside steric walls from step 0.
+Grand Canonical Monte Carlo (GCMC) simulates discrete particles through stochastic atom insertions, deletions, and displacements:
+- **Reciprocal-Space Recalculation**: In Ewald summation (or Particle-Mesh Ewald), every particle insertion or deletion alters the global structure factor $\sum_j q_j e^{i \mathbf{k} \cdot \mathbf{r}_j}$. Updates across thousands of trial moves per second create a massive computational bottleneck.
+- **Neutrality Violations**: Insertion of an isolated charged ion breaks electroneutrality in the box, which requires artificial background neutralizing plasma or fractional insertion schemes.
+- **The Overlap Wall**: Insertion of a full molecule with Lennard-Jones cores and partial charges into a dense polar fluid (such as liquid water) suffers a $>99.9\%$ rejection rate, which demands millions of failed trial steps for a handful of accepted configurations.
 
 ---
 
-## 3. Quickstart & CLI Usage
+## 3. Why cDFT Solves This for Free
 
-Always activate the local virtual environment with `uv`:
+In cDFT, there are no particles, no trial moves, and no discrete insertions. The system contains only a continuous, smooth charge density field:
+$$\rho_q(\mathbf{r}) = \sum_i q_i \rho_i(\mathbf{r})$$
+
+The long-range electrostatic energy is the double integral:
+$$\mathcal{F}_{\text{coul}}[\rho] = \frac{1}{2} \iint \frac{\rho_q(\mathbf{r}) \rho_q(\mathbf{r}')}{4\pi \varepsilon_0 \varepsilon_r |\mathbf{r} - \mathbf{r}'|} \, d\mathbf{r} \, d\mathbf{r}'$$
+
+Instead of pairwise sums over periodic images, this integral is mathematically identical to the classical Poisson equation:
+$$\nabla^2 \phi(\mathbf{r}) = -\frac{\rho_q(\mathbf{r})}{\varepsilon_0 \varepsilon_r}$$
+
+### Map to tinygrad
+- **1D Slit Pores**: A planar sheet of charge has a constant electric field. The 1D Green's function is $v_C(z) = -2\pi |z|$, which reduces to a 1D convolution or direct cumulative integral across the grid tensor.
+- **3D Grids**: Poisson solves in a single step in Fourier space. In $k$-space, the Laplacian $\nabla^2$ becomes $-k^2$:
+  $$\tilde{\phi}(\mathbf{k}) = \frac{4\pi}{\varepsilon_0 \varepsilon_r k^2} \tilde{\rho}_q(\mathbf{k})$$
+  A forward 3D FFT, element-wise vector division by $k^2$, and an inverse 3D FFT solve the exact, infinite long-range field across the full periodic box in milliseconds on GPU.
+
+---
+
+## 4. Electrostatic Correlation vs. Mean-Field
+
+While long-range field evaluation is direct in cDFT, theoretical care applies to electrostatic correlations:
+- **Mean-Field Limit (Poisson-Boltzmann)**: A continuous electrostatic potential $\phi(\mathbf{r})$ models monovalent electrolytes (such as $\text{Na}^+ / \text{Cl}^-$) and dilute polar systems with high accuracy.
+- **Multivalent / High-Density Fluids**: For high-valency ions ($\text{Ca}^{2+}, \text{Al}^{3+}$), local ion-ion correlations create short-range screening and charge inversion that standard mean-field Poisson solvers omit. In cDFT, a local correlation functional (such as the Mean Spherical Approximation, MSA) enters $\mathcal{F}_{\text{ex}}$ directly.
+
+> [!NOTE]
+> **Molecular Flexibility**: The current engine solves rigid molecules (water, benzene, methane) efficiently. For large, flexible drug molecules (such as ibuprofen or long-chain polymers), conformational degrees of freedom demand rotational averages over bond-angle conformations, which remains an active research frontier.
+
+---
+
+## 5. Quickstart & CLI Usage
+
+Activate the virtual environment:
 ```bash
 source .venv/bin/activate
 
-# Run single material
+# Single material simulation
 python scripts/run_cdft.py --materials argon
 
-# Run multi-material sweep
+# Multi-material sweep
 python scripts/run_cdft.py --materials argon water methane 5cb
 
 # Run all 20 benchmark fluids with JIT acceleration
 python scripts/run_cdft.py --materials all --steps 50
 
-# Specify thermodynamic pressure for Equation of State (EOS) root solving
+# Specify thermodynamic pressure for Equation of State (EOS) root solve
 python scripts/run_cdft.py --materials benzene --pressure 1.01325
 ```
 
 ---
 
-## 4. Automated Tests
+## 6. Automated Tests
 
 ```bash
 source .venv/bin/activate
@@ -83,5 +90,16 @@ python -m pytest tests/ -v
 
 ---
 
-## 5. License
+## 7. Citations
+
+- A. T. Bui, S. J. Cox, "Dielectrocapillarity for exquisite control of fluids", *arXiv:2503.09855* (2025).
+- A. T. Bui, S. J. Cox, "Learning classical density functionals for ionic fluids", *Phys. Rev. Lett.* **134**, 148001 (2025). [doi:10.1103/PhysRevLett.134.148001](https://doi.org/10.1103/PhysRevLett.134.148001)
+- A. T. Bui, S. J. Cox, "Ab initio classical density functional theory with neural functionals", *arXiv:2603.20493* (2026).
+- J. Yang, R. Pan, J. Sun, J. Wu, "High-Dimensional Operator Learning for Molecular Density Functional Theory", *arXiv:2411.03698* (2024). [doi:10.48550/arxiv.2411.03698](https://doi.org/10.48550/arxiv.2411.03698)
+- R. Roth, "Fundamental measure theory for hard-sphere mixtures: a review", *Journal of Physics: Condensed Matter* **22**, 063102 (2010). [doi:10.1088/0953-8984/22/6/063102](https://doi.org/10.1088/0953-8984/22/6/063102)
+
+---
+
+## 8. License
+
 GNU General Public License v3.0. See [LICENSE](LICENSE) for details.

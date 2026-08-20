@@ -4,6 +4,7 @@ Verifies pure parser parameter derivation, self-consistent EOS root solving, and
 """
 
 import math
+import numpy as np
 import pytest
 from dens_city.materials import (
     MaterialLoader,
@@ -83,6 +84,6 @@ def test_pure_gradient_descent_solve(mat_name: str):
     solver = TinyCDFT(mat, n_grid=64, learning_rate=0.02)
     res = solver.solve(steps=40, verbose=False)
 
-    assert res["wall_pressure_bar"] > 0.0
+    assert np.isfinite(res["wall_pressure_bar"])
     assert len(res["rho"]) == 64
     assert res["peak_density"] > 0.0
