@@ -47,20 +47,12 @@ $$\nabla^2 \phi(\mathbf{r}) = -\frac{\rho_q(\mathbf{r})}{\varepsilon_0 \varepsil
   $$\tilde{\phi}(\mathbf{k}) = \frac{4\pi}{\varepsilon_0 \varepsilon_r k^2} \tilde{\rho}_q(\mathbf{k})$$
   A forward 3D FFT, element-wise vector division by $k^2$, and an inverse 3D FFT solve the exact, infinite long-range field across the full periodic box in milliseconds on GPU.
 
----
-
-## 4. Electrostatic Correlation vs. Mean-Field
-
-While long-range field evaluation is direct in cDFT, theoretical care applies to electrostatic correlations:
-- **Mean-Field Limit (Poisson-Boltzmann)**: A continuous electrostatic potential $\phi(\mathbf{r})$ models monovalent electrolytes (such as $\text{Na}^+ / \text{Cl}^-$) and dilute polar systems with high accuracy.
-- **Multivalent / High-Density Fluids**: For high-valency ions ($\text{Ca}^{2+}, \text{Al}^{3+}$), local ion-ion correlations create short-range screening and charge inversion that standard mean-field Poisson solvers omit. In cDFT, a local correlation functional (such as the Mean Spherical Approximation, MSA) enters $\mathcal{F}_{\text{ex}}$ directly.
-
 > [!NOTE]
 > **Molecular Flexibility**: The current engine solves rigid molecules (water, benzene, methane) efficiently. For large, flexible drug molecules (such as ibuprofen or long-chain polymers), conformational degrees of freedom demand rotational averages over bond-angle conformations, which remains an active research frontier.
 
 ---
 
-## 5. Quickstart & CLI Usage
+## 4. Quickstart & CLI Usage
 
 Activate the virtual environment:
 ```bash
@@ -81,7 +73,7 @@ python scripts/run_cdft.py --materials benzene --pressure 1.01325
 
 ---
 
-## 6. Automated Tests
+## 5. Automated Tests
 
 ```bash
 source .venv/bin/activate
@@ -90,7 +82,7 @@ python -m pytest tests/ -v
 
 ---
 
-## 7. Citations
+## 6. Citations
 
 - A. T. Bui, S. J. Cox, "Dielectrocapillarity for exquisite control of fluids", *arXiv:2503.09855* (2025).
 - A. T. Bui, S. J. Cox, "Learning classical density functionals for ionic fluids", *Phys. Rev. Lett.* **134**, 148001 (2025). [doi:10.1103/PhysRevLett.134.148001](https://doi.org/10.1103/PhysRevLett.134.148001)
@@ -100,6 +92,6 @@ python -m pytest tests/ -v
 
 ---
 
-## 8. License
+## 7. License
 
 GNU General Public License v3.0. See [LICENSE](LICENSE) for details.
