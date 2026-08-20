@@ -12,6 +12,14 @@ This document provides a comprehensive technical reference for the `gcmc` reposi
 > - **Commands**: `uv venv`, `uv pip install`, `uv run pytest`, `uv run ...` (or `.venv/bin/python ...`).
 > - **Frameworks**: Standard dependencies include `tinygrad`, `numpy`, `scipy`, `torch`, `pytest`, `ruff`. Do not use Conda or plain system `pip`.
 
+> [!CAUTION]
+> **Mandatory First-Principles Physics & Anti-Pattern Audit Rules**:
+> 1. **Zero Hardcoded Parameters or Fudge Factors**: Never hardcode fluid properties, lookup dictionaries, aliases, or empirical constants in `src/`. All physical parameters ($\sigma_i, \epsilon_i, q_i$) must be derived strictly from arbitrary input `.mol2` files and force field parameter definitions.
+> 2. **Thermodynamic Consistency**: State variables ($\rho_{\rm bulk}, \mu, P$) must be derived dynamically from the bulk Equation of State (EOS) or exact coexistence solvers rather than assumed constant.
+> 3. **Exact Mechanical Observables**: Never use brittle spatial slices (e.g. `rho[0:15]` or `[mid-10:mid+10]`). Wall contact pressures, surface tensions, and forces must be evaluated via exact statistical mechanical integrals (e.g., Irving-Kirkwood virial tensor integral $P_{\rm wall} = -\int_0^{L/2} \rho(z) \nabla V_{\rm ext}(z) dz$).
+> 4. **Exact Asymptotic Boundaries**: Enforce true physical divergence ($V \to \infty$) at steric hard boundaries. Never introduce artificial spatial shifts (e.g., `max(0.2, z)`) or soft boundary clamping (`[-500, 1000]`).
+> 5. **Scale-Invariant Initialization & Cutoffs**: All physical cutoffs and bounding geometry must scale with the fluid's intrinsic parameters ($r_{\rm cut} \ge 5.0 \sigma_{\rm eff}$, $L_z \ge 10 \sigma_{\rm eff}$). Initial profiles must follow exact Boltzmann asymptotics $\psi_0(z) = -\beta V_{\rm ext}(z)$.
+
 ### 1.1 The Physical Problem: Dielectrocapillarity & Electrostriction
 The `gcmc` code simulates polar, dielectric, and ionic fluids subjected to inhomogeneous electric fields and electric field gradients (EFGs), as described in the paper:
 > **"Dielectrocapillarity for exquisite control of fluids"** (Anna T. Bui & Stephen J. Cox, 2025; arXiv:2503.09855).
