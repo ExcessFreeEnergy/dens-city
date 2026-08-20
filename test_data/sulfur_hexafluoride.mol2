@@ -1,0 +1,24 @@
+@<TRIPOS>MOLECULE
+sulfur_hexafluoride
+     7     6     1     0     0
+SMALL
+GAFF_CHARGES
+
+Sulfur Hexafluoride (SF6) octahedral fluid
+@<TRIPOS>ATOM
+      1 S1           0.0000     0.0000     0.0000 s6       1 MOL     1.500000
+      2 F1           1.5600     0.0000     0.0000 f        1 MOL    -0.250000
+      3 F2          -1.5600     0.0000     0.0000 f        1 MOL    -0.250000
+      4 F3           0.0000     1.5600     0.0000 f        1 MOL    -0.250000
+      5 F4           0.0000    -1.5600     0.0000 f        1 MOL    -0.250000
+      6 F5           0.0000     0.0000     1.5600 f        1 MOL    -0.250000
+      7 F6           0.0000     0.0000    -1.5600 f        1 MOL    -0.250000
+@<TRIPOS>BOND
+     1      1      2 1   
+     2      1      3 1   
+     3      1      4 1   
+     4      1      5 1   
+     5      1      6 1   
+     6      1      7 1   
+@<TRIPOS>SUBSTRUCTURE
+     1 MOL         1 TEMP              0 ****  ****    0 ROOT

@@ -1,0 +1,16 @@
+@<TRIPOS>MOLECULE
+calcium_chloride
+     3     2     1     0     0
+SMALL
+GAFF_CHARGES
+
+Calcium Chloride (CaCl2) 2:1 electrolyte
+@<TRIPOS>ATOM
+      1 Ca1          0.0000     0.0000     0.0000 Ca       1 MOL     2.000000
+      2 Cl1          0.0000     0.0000    -2.7000 Cl       1 MOL    -1.000000
+      3 Cl2          0.0000     0.0000     2.7000 Cl       1 MOL    -1.000000
+@<TRIPOS>BOND
+     1      1      2 1   
+     2      1      3 1   
+@<TRIPOS>SUBSTRUCTURE
+     1 MOL         1 TEMP              0 ****  ****    0 ROOT

@@ -1,0 +1,14 @@
+@<TRIPOS>MOLECULE
+hydrogen
+     2     1     1     0     0
+SMALL
+GAFF_CHARGES
+
+Molecular Hydrogen (H2)
+@<TRIPOS>ATOM
+      1 H1           0.0000     0.0000    -0.3707 ha       1 MOL     0.000000
+      2 H2           0.0000     0.0000     0.3707 ha       1 MOL     0.000000
+@<TRIPOS>BOND
+     1      1      2 1   
+@<TRIPOS>SUBSTRUCTURE
+     1 MOL         1 TEMP              0 ****  ****    0 ROOT

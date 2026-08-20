@@ -31,6 +31,11 @@ dist/
 output.xyz*
 *.npz
 *.dat
+!test_data/*.dat
+
+# Data directories
+data/
+/data/
 
 # macOS metadata
 .DS_Store
