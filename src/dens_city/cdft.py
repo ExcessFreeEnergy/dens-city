@@ -108,9 +108,8 @@ class TinyCDFT:
         """
         rho = self.compute_density()
 
-        # 1. Ideal gas free energy: rho * ln(rho / rho_b) - (rho - rho_b)
-        rho_safe = rho.maximum(1e-15)
-        f_id_density = rho * (rho_safe / self.bulk_density).log() - (rho - self.bulk_density)
+        # 1. Ideal gas free energy (log-free formulation: rho * psi - (rho - rho_b))
+        f_id_density = rho * self.psi - (rho - self.bulk_density)
         f_ideal = self.steric_mask.where(f_id_density, 0.0).sum() * self.dz
 
         # 2. External potential energy: rho * V_ext (masked where rho == 0 to prevent 0 * inf NaN)
@@ -124,7 +123,8 @@ class TinyCDFT:
         nv2 = rho.conv2d(self.fmt_kernels["wv2"], padding=(self.fmt_pad, 0))
         nv1 = rho.conv2d(self.fmt_kernels["wv1"], padding=(self.fmt_pad, 0))
 
-        one_minus_n3 = (1.0 - n3).maximum(1e-6)
+        n3_star = n3.minimum(1.0 - 1e-5)
+        one_minus_n3 = 1.0 - n3_star
         phi_fmt = (
             -n0 * one_minus_n3.log()
             + (n1 * n2 - nv1 * nv2) / one_minus_n3
