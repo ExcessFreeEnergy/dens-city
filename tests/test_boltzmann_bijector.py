@@ -7,8 +7,8 @@ rigid-bond volume invariance, batched execution, and autograd differentiability.
 import math
 import numpy as np
 import pytest
-from tinygrad import Tensor
-from dens_city.boltzmann.bijectors import ZMatrixBijector
+from tinygrad import Tensor, nn
+from dens_city.boltzmann.bijectors import ZMatrixBijector, AffineCouplingLayer, RealNVPFlow
 from dens_city.materials import MaterialLoader
 
 
@@ -174,3 +174,77 @@ def test_real_material_water_round_trip():
     assert diff_b < 1e-5, f"Water bond reconstruction error {diff_b} >= 1e-5"
     assert diff_th < 1e-5, f"Water angle reconstruction error {diff_th} >= 1e-5"
     assert math.isclose(log_det_fwd.item() + log_det_inv.item(), 0.0, abs_tol=1e-5)
+
+
+@pytest.mark.parametrize("swap", [False, True])
+def test_affine_coupling_layer_invertibility(swap: bool):
+    """
+    Validates exact invertibility and Jacobian log-determinant sum = 0 for a single AffineCouplingLayer.
+    """
+    dim = 8
+    layer = AffineCouplingLayer(dim=dim, hidden_dim=32, swap=swap)
+    x = Tensor.randn(4, dim)
+
+    y, log_det_fwd = layer.forward(x)
+    x_rec, log_det_inv = layer.inverse(y)
+
+    diff = (x - x_rec).abs().max().item()
+    det_sum = (log_det_fwd + log_det_inv).abs().max().item()
+
+    assert diff < 1e-5, f"Coupling layer reconstruction error {diff} >= 1e-5"
+    assert det_sum < 1e-5, f"Coupling layer log-det sum {det_sum} != 0"
+
+
+def test_realnvp_5_layer_stack_round_trip():
+    """
+    Validates that a 5-layer stacked RealNVP flow can be perfectly inverted
+    and log |det J| + log |det J_inv| = 0.
+    """
+    dim = 12
+    n_layers = 5
+    flow = RealNVPFlow(dim=dim, n_layers=n_layers, hidden_dim=32)
+    x = Tensor.randn(8, dim)
+
+    # Forward flow: z -> x
+    y, log_det_fwd = flow.forward(x)
+    assert y.shape == (8, dim)
+    assert log_det_fwd.shape == (8,)
+
+    # Reverse flow: x -> z'
+    x_rec, log_det_inv = flow.inverse(y)
+    assert x_rec.shape == (8, dim)
+    assert log_det_inv.shape == (8,)
+
+    diff = (x - x_rec).abs().max().item()
+    det_sum = (log_det_fwd + log_det_inv).abs().max().item()
+
+    assert diff < 1e-5, f"5-layer RealNVP reconstruction error {diff} >= 1e-5"
+    assert det_sum < 1e-5, f"5-layer RealNVP log-det sum {det_sum} != 0"
+
+
+def test_realnvp_autograd_training_step():
+    """
+    Validates gradient propagation through the 5-layer RealNVPFlow network.
+    """
+    dim = 6
+    flow = RealNVPFlow(dim=dim, n_layers=5, hidden_dim=32)
+    x = Tensor.randn(4, dim)
+
+    y, log_det = flow.forward(x)
+    # Standard maximum likelihood loss proxy: 0.5 * ||y||^2 - log_det
+    loss = (0.5 * (y * y).sum(axis=-1) - log_det).mean()
+
+    # Get all layer parameters
+    params = nn.state.get_parameters(flow)
+    assert len(params) > 0, "Flow must have trainable parameters"
+
+    loss.backward()
+
+    grads = [p.grad for p in params if p.grad is not None]
+    assert len(grads) == len(params), "All parameters must have gradients"
+    Tensor.realize(*grads)
+
+    for p in params:
+        grad_np = p.grad.numpy()
+        assert np.all(np.isfinite(grad_np)), "Parameter grad must be finite without NaNs"
+

@@ -6,7 +6,7 @@ Uses the Natural Extension Reference Frame (NeRF) orthonormal basis projection t
 import math
 from typing import Optional, Tuple, List, Dict
 import numpy as np
-from tinygrad import Tensor, dtypes
+from tinygrad import Tensor, dtypes, nn
 
 
 def _tensor_atan2(y: Tensor, x: Tensor) -> Tensor:
@@ -326,3 +326,125 @@ class ZMatrixBijector:
 
         out_log_det = log_det_inv if is_batched else log_det_inv.squeeze(0)
         return ic_dict, out_log_det
+
+
+class AffineCouplingLayer:
+    """
+    RealNVP Affine Coupling Layer using tinygrad.nn.Linear MLPs.
+    Splits input dimension into two partitions (A and B), uses A to predict scale and shift for B,
+    then concatenates back. If swap=True, the roles of A and B are reversed.
+    """
+
+    def __init__(self, dim: int, hidden_dim: int = 64, swap: bool = False):
+        self.dim = dim
+        self.swap = swap
+        self.dim_a = dim // 2
+        self.dim_b = dim - self.dim_a
+
+        in_dim = self.dim_b if swap else self.dim_a
+        out_dim = self.dim_a if swap else self.dim_b
+
+        self.l1 = nn.Linear(in_dim, hidden_dim)
+        self.l2 = nn.Linear(hidden_dim, hidden_dim)
+        self.l3 = nn.Linear(hidden_dim, out_dim * 2)
+
+    def _net(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+        h = self.l1(x).relu()
+        h = self.l2(h).relu()
+        out = self.l3(h)
+        out_dim = out.shape[-1] // 2
+        # Scale is bounded with tanh to guarantee numerical stability and non-explosive gradients
+        s = out[..., :out_dim].tanh()
+        t = out[..., out_dim:]
+        return s, t
+
+    def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+        """
+        Forward affine coupling:
+        y_A = x_A
+        y_B = x_B * exp(s(x_A)) + t(x_A)
+        log |det J| = sum(s(x_A))
+        """
+        is_batched = len(x.shape) == 2
+        x_b = x if is_batched else x.unsqueeze(0)
+
+        if self.swap:
+            xa, xb = x_b[..., self.dim_b:], x_b[..., :self.dim_b]
+            s, t = self._net(xa)
+            yb = xb * s.exp() + t
+            ya = xa
+            y = Tensor.cat(yb, ya, dim=-1)
+        else:
+            xa, xb = x_b[..., :self.dim_a], x_b[..., self.dim_a:]
+            s, t = self._net(xa)
+            yb = xb * s.exp() + t
+            ya = xa
+            y = Tensor.cat(ya, yb, dim=-1)
+
+        log_det = s.sum(axis=-1)
+        return (y if is_batched else y.squeeze(0)), (log_det if is_batched else log_det.squeeze(0))
+
+    def inverse(self, y: Tensor) -> Tuple[Tensor, Tensor]:
+        """
+        Inverse affine coupling:
+        x_A = y_A
+        x_B = (y_B - t(y_A)) * exp(-s(y_A))
+        log |det J_inv| = -sum(s(y_A))
+        """
+        is_batched = len(y.shape) == 2
+        y_b = y if is_batched else y.unsqueeze(0)
+
+        if self.swap:
+            ya, yb = y_b[..., self.dim_b:], y_b[..., :self.dim_b]
+            s, t = self._net(ya)
+            xb = (yb - t) * (-s).exp()
+            xa = ya
+            x = Tensor.cat(xb, xa, dim=-1)
+        else:
+            ya, yb = y_b[..., :self.dim_a], y_b[..., self.dim_a:]
+            s, t = self._net(ya)
+            xb = (yb - t) * (-s).exp()
+            xa = ya
+            x = Tensor.cat(xa, xb, dim=-1)
+
+        log_det = (-s).sum(axis=-1)
+        return (x if is_batched else x.squeeze(0)), (log_det if is_batched else log_det.squeeze(0))
+
+
+class RealNVPFlow:
+    """
+    Stacked sequence of RealNVP Affine Coupling Layers with alternating partition masks.
+    """
+
+    def __init__(self, dim: int, n_layers: int = 5, hidden_dim: int = 64):
+        self.dim = dim
+        self.n_layers = n_layers
+        self.layers = [
+            AffineCouplingLayer(dim, hidden_dim=hidden_dim, swap=(i % 2 == 1))
+            for i in range(n_layers)
+        ]
+
+    def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+        """
+        Forward flow through all stacked coupling layers.
+        """
+        cur = x
+        is_batched = len(x.shape) == 2
+        total_log_det = Tensor.zeros(x.shape[0] if is_batched else 1, dtype=dtypes.float32)
+        for layer in self.layers:
+            cur, ld = layer.forward(cur)
+            total_log_det = total_log_det + (ld if is_batched else ld.unsqueeze(0))
+        return cur, (total_log_det if is_batched else total_log_det.squeeze(0))
+
+    def inverse(self, y: Tensor) -> Tuple[Tensor, Tensor]:
+        """
+        Exact inverse flow in reverse layer order.
+        """
+        cur = y
+        is_batched = len(y.shape) == 2
+        total_log_det = Tensor.zeros(y.shape[0] if is_batched else 1, dtype=dtypes.float32)
+        for layer in reversed(self.layers):
+            cur, ld = layer.inverse(cur)
+            total_log_det = total_log_det + (ld if is_batched else ld.unsqueeze(0))
+        return cur, (total_log_det if is_batched else total_log_det.squeeze(0))
+
