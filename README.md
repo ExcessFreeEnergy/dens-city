@@ -21,17 +21,15 @@ $$\Omega[\rho] = \mathcal{F}_{\rm ideal}[\rho] + \mathcal{F}_{\rm FMT}^{\rm ex}[
 
 ---
 
-## 2. Why GCMC Chokes on Long-Range Forces
+## 2. Notes on Long-Range Forces
 
+### Why GCMC Chokes on Long-Range Forces
 Grand Canonical Monte Carlo (GCMC) simulates discrete particles through stochastic atom insertions, deletions, and displacements:
 - **Reciprocal-Space Recalculation**: In Ewald summation (or Particle-Mesh Ewald), every particle insertion or deletion alters the global structure factor $\sum_j q_j e^{i \mathbf{k} \cdot \mathbf{r}_j}$. Updates across thousands of trial moves per second create a massive computational bottleneck.
 - **Neutrality Violations**: Insertion of an isolated charged ion breaks electroneutrality in the box, which requires artificial background neutralizing plasma or fractional insertion schemes.
 - **The Overlap Wall**: Insertion of a full molecule with Lennard-Jones cores and partial charges into a dense polar fluid (such as liquid water) suffers a $>99.9\%$ rejection rate, which demands millions of failed trial steps for a handful of accepted configurations.
 
----
-
-## 3. Why cDFT Solves This for Free
-
+### Why cDFT Solves This for Free
 In cDFT, there are no particles, no trial moves, and no discrete insertions. The system contains only a continuous, smooth charge density field:
 $$\rho_q(\mathbf{r}) = \sum_i q_i \rho_i(\mathbf{r})$$
 
@@ -52,7 +50,7 @@ $$\nabla^2 \phi(\mathbf{r}) = -\frac{\rho_q(\mathbf{r})}{\varepsilon_0 \varepsil
 
 ---
 
-## 4. Quickstart & CLI Usage
+## 3. Quickstart & CLI Usage
 
 Activate the virtual environment:
 ```bash
@@ -73,7 +71,7 @@ python scripts/run_cdft.py --materials benzene --pressure 1.01325
 
 ---
 
-## 5. Automated Tests
+## 4. Automated Tests
 
 ```bash
 source .venv/bin/activate
@@ -82,7 +80,7 @@ python -m pytest tests/ -v
 
 ---
 
-## 6. Citations
+## 5. Citations
 
 - A. T. Bui, S. J. Cox, "Dielectrocapillarity for exquisite control of fluids", *arXiv:2503.09855* (2025).
 - A. T. Bui, S. J. Cox, "Learning classical density functionals for ionic fluids", *Phys. Rev. Lett.* **134**, 148001 (2025). [doi:10.1103/PhysRevLett.134.148001](https://doi.org/10.1103/PhysRevLett.134.148001)
@@ -92,6 +90,6 @@ python -m pytest tests/ -v
 
 ---
 
-## 7. License
+## 6. License
 
 GNU General Public License v3.0. See [LICENSE](LICENSE) for details.
