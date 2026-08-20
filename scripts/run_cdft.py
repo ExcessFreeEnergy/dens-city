@@ -125,8 +125,9 @@ def main() -> None:
             print(f"\n[{idx:02d}/{len(materials_list):02d}] Initializing Fluid: {colored(mat_name, 'green')}...")
             mat = MaterialLoader.load_material(mat_name, temperature_k=args.temp)
             print(f"  Dimension Mode   : {mat.dimension_mode}")
-            print(f"  Effective Core   : σ = {mat.effective_sigma:.3f} Å, ε = {mat.effective_epsilon_k:.1f} K")
-            print(f"  Bulk Reservoir   : ρ = {mat.bulk_density_a3:.4f} Å⁻³, μ_ex = {mat.bulk_mu:.3f} kBT")
+            print(f"  Molecular Span   : {mat.molecular_span_a:.2f} Å (R_g = {mat.radius_of_gyration_a:.2f} Å, {mat.num_sites} sites)")
+            print(f"  Effective LJ Core: σ = {mat.effective_sigma:.3f} Å, ε = {mat.effective_epsilon_k:.1f} K")
+            print(f"  Bulk Reservoir   : ρ = {mat.bulk_density_a3:.5f} Å⁻³ ({mat.molarity_mol_l:.2f} M), μ_ex = {mat.bulk_mu:.3f} kBT")
 
             solver = TinyCDFT(
                 material=mat,
@@ -151,6 +152,10 @@ def main() -> None:
             results_summary.append({
                 "material": mat.name,
                 "mode": mat.dimension_mode,
+                "sigma": mat.effective_sigma,
+                "epsilon_k": mat.effective_epsilon_k,
+                "bulk_density": mat.bulk_density_a3,
+                "molarity": mat.molarity_mol_l,
                 "loss": res["final_loss"],
                 "wall_pressure_bar": res["wall_pressure_bar"],
                 "excess_adsorption": res["excess_adsorption"],
@@ -162,14 +167,14 @@ def main() -> None:
             print(colored(f"Error simulating {mat_name}: {e}", "red"), file=sys.stderr)
 
     total_time = time.time() - t_start_total
-    print("\n" + colored("==========================================================================", "cyan"))
+    print("\n" + colored("==========================================================================================================", "cyan"))
     print(colored(f"  cDFT Simulation Suite Finished in {total_time:.2f} s ({len(results_summary)} / {len(materials_list)} succeeded)", "cyan"))
-    print(colored("==========================================================================", "cyan"))
-    print(f"{'Material':<25} {'Mode':<14} {'Loss':>8} {'P_wall (bar)':>14} {'Gamma (Å⁻²)':>14} {'Time (s)':>10}")
-    print("-" * 88)
+    print(colored("==========================================================================================================", "cyan"))
+    print(f"{'Material':<22} {'Mode':<13} {'σ (Å)':>6} {'ε (K)':>7} {'ρ_b (Å⁻³)':>10} {'M (mol/L)':>10} {'P_wall (bar)':>13} {'Time (s)':>9}")
+    print("-" * 106)
     for r in results_summary:
-        print(f"{r['material']:<25} {r['mode']:<14} {r['loss']:>8.2f} {r['wall_pressure_bar']:>14.2f} {r['excess_adsorption']:>14.4f} {r['elapsed']:>10.3f}")
-    print("-" * 88)
+        print(f"{r['material']:<22} {r['mode']:<13} {r['sigma']:>6.2f} {r['epsilon_k']:>7.1f} {r['bulk_density']:>10.5f} {r['molarity']:>10.2f} {r['wall_pressure_bar']:>13.2f} {r['elapsed']:>9.3f}")
+    print("-" * 106)
 
 
 if __name__ == "__main__":

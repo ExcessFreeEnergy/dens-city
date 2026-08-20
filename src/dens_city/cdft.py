@@ -28,11 +28,11 @@ class TinyCDFT:
         self,
         material: Material,
         n_grid: int = 128,
-        slit_width_a: float = 30.0,
+        slit_width_a: float = 40.0,
         temperature_k: Optional[float] = None,
         bulk_density_a3: Optional[float] = None,
         learning_rate: float = 0.01,
-        wall_sigma: float = 3.2,
+        wall_sigma: Optional[float] = None,
         wall_epsilon_k: float = 50.0,
     ):
         self.material = material
@@ -55,11 +55,12 @@ class TinyCDFT:
             sigma=sigma, epsilon_k=eps_k, dz=self.dz
         )
 
-        # Confining slit external wall potential
+        # Confining slit external wall potential (scaled to molecule's steric diameter)
+        wall_sig = wall_sigma if wall_sigma is not None else max(3.2, sigma * 0.85)
         self.v_ext = KernelBuilder.build_slit_wall_potential(
             n_grid=self.n_grid,
             dz=self.dz,
-            wall_sigma=wall_sigma,
+            wall_sigma=wall_sig,
             wall_epsilon_k=wall_epsilon_k,
         ) / self.temperature_k  # in units of k_B * T
 
