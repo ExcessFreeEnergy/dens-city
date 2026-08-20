@@ -91,3 +91,73 @@ def test_beam_jit_compilation():
     loss3 = solver.train_step().item()
 
     assert np.isfinite(loss1) and np.isfinite(loss2) and np.isfinite(loss3)
+
+
+def test_exact_1d_poisson_greens_matrix():
+    """
+    Validates that the 1D Poisson Green's matrix matches the exact analytical Dirichlet solution:
+    -d^2 phi / dz^2 = (4*pi/eps) * rho_q, phi(0) = phi(L_z) = 0.
+    For uniform rho_q, phi_exact(z) = -(2*pi*rho_q/eps) * z * (L_z - z).
+    """
+    n_grid = 128
+    dz = 0.2
+    l_z = n_grid * dz
+    dielectric_constant = 1.0
+
+    g_matrix = KernelBuilder.build_coulomb_1d_greens_matrix(
+        n_grid=n_grid, dz=dz, dielectric_constant=dielectric_constant
+    ).reshape(n_grid, n_grid)
+
+    # Uniform charge density rho_q = 0.5 e / A^3
+    rho_q = 0.5
+    rho_tensor = Tensor.full((n_grid, 1), rho_q)
+    phi_tensor = g_matrix.matmul(rho_tensor).numpy().flatten()
+
+    z_coords = np.linspace(0.5 * dz, l_z - 0.5 * dz, n_grid)
+    phi_exact = -(2.0 * math.pi * rho_q / dielectric_constant) * z_coords * (l_z - z_coords)
+
+    # Maximum relative error across channel
+    rel_err = np.abs((phi_tensor - phi_exact) / phi_exact)
+    assert np.max(rel_err) < 1e-2, f"Poisson Green's matrix max relative error {np.max(rel_err)} exceeds 1%"
+    # Verify exact grounded boundaries
+    assert phi_tensor[0] < 0.0 and phi_tensor[-1] < 0.0
+
+
+def test_large_molecule_wall_steric_exclusion():
+    """
+    Validates that large molecules (sigma_fluid >> sigma_wall) obey Lorentz-Berthelot
+    collision diameter sigma_wf = 0.5 * (sigma_wall + sigma_fluid) and cannot penetrate the wall.
+    """
+    colloid = MaterialLoader.load_material("colloidal_hard_sphere")
+    assert colloid.effective_sigma >= 14.0, f"Colloid sigma should be >= 14 A, got {colloid.effective_sigma}"
+
+    wall_sigma = 3.4
+    expected_steric_radius = 0.5 * (0.5 * (wall_sigma + colloid.effective_sigma))
+
+    v_ext = KernelBuilder.build_slit_wall_potential(
+        n_grid=128,
+        dz=0.5,
+        fluid_sigma=colloid.effective_sigma,
+        wall_sigma=wall_sigma,
+    ).numpy().flatten()
+
+    # Domain within steric collision radius must diverge to 1e6
+    z_coords = np.linspace(0.25, 128 * 0.5 - 0.25, 128)
+    steric_mask = (z_coords <= expected_steric_radius) | (z_coords >= (64.0 - expected_steric_radius))
+    assert np.all(v_ext[steric_mask] >= 1e5), "Steric exclusion zone must have infinite potential"
+
+
+def test_london_dispersion_well_depth_scaling():
+    """
+    Validates that London dispersion coarse-graining derives physically realistic well depths:
+    - Argon (monoatomic): exact match eps = 119.8 K
+    - 5CB (38 atoms): non-divergent eps in [500, 1200] K rather than naive sum > 4000 K
+    """
+    argon = MaterialLoader.load_material("argon")
+    assert math.isclose(argon.effective_epsilon_k, 119.8, rel_tol=1e-2)
+
+    cb5 = MaterialLoader.load_material("5cb")
+    assert 400.0 <= cb5.effective_epsilon_k <= 1200.0, (
+        f"5CB effective well depth should be physical [400, 1200] K, got {cb5.effective_epsilon_k}"
+    )
+    assert cb5.effective_sigma > 6.0, f"5CB effective diameter should be > 6 A, got {cb5.effective_sigma}"

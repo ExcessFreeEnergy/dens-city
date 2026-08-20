@@ -146,19 +146,23 @@ class KernelBuilder:
     def build_slit_wall_potential(
         n_grid: int,
         dz: float,
+        fluid_sigma: Optional[float] = None,
         wall_sigma: float = 3.4,
         wall_epsilon_k: float = 50.0,
         wall_type: str = "stele93",
     ) -> Tensor:
         """
         Constructs the external confining slit wall potential V_ext(z) with exact physical divergence.
-        For steric hard boundary overlap (z <= 0.5 * wall_sigma or z >= L_z - 0.5 * wall_sigma),
+        Computes Lorentz-Berthelot collision diameter sigma_wf = 0.5 * (wall_sigma + fluid_sigma).
+        For steric hard boundary overlap (z <= 0.5 * sigma_wf or z >= L_z - 0.5 * sigma_wf),
         V_ext(z) = 1e6 (exact impenetrable brick wall potential in units of k_B * T).
         """
         l_z = n_grid * dz
         v_vals = []
-        prefactor = (2.0 * math.pi * wall_epsilon_k * (wall_sigma**3)) / 3.0
-        steric_radius = 0.5 * wall_sigma
+        f_sig = fluid_sigma if fluid_sigma is not None else wall_sigma
+        sigma_wf = 0.5 * (wall_sigma + f_sig)
+        prefactor = (2.0 * math.pi * wall_epsilon_k * (sigma_wf**3)) / 3.0
+        steric_radius = 0.5 * sigma_wf
         v_wall_inf = 1e6  # Massive physical potential barrier (avoids IEEE 754 0 * inf NaN)
 
         for i in range(n_grid):
@@ -170,33 +174,47 @@ class KernelBuilder:
             if z_l <= steric_radius or z_r <= steric_radius:
                 v_vals.append(v_wall_inf)
             elif wall_type == "stele93":
-                s_l = wall_sigma / z_l
-                s_r = wall_sigma / z_r
+                s_l = sigma_wf / z_l
+                s_r = sigma_wf / z_r
                 v_l = prefactor * ((2.0 / 15.0) * (s_l**9) - (s_l**3))
                 v_r = prefactor * ((2.0 / 15.0) * (s_r**9) - (s_r**3))
                 v_total = min(v_wall_inf, v_l + v_r)
                 v_vals.append(v_total)
             else:
                 # Hard wall
-                v_vals.append(v_wall_inf if (z_l < wall_sigma or z_r < wall_sigma) else 0.0)
+                v_vals.append(v_wall_inf if (z_l < sigma_wf or z_r < sigma_wf) else 0.0)
 
         return Tensor(v_vals).reshape(1, 1, n_grid, 1).contiguous()
 
     @staticmethod
-    def build_coulomb_1d_kernel(n_grid: int, dz: float, dielectric_constant: float = 1.0) -> Tuple[Tensor, int]:
+    def build_coulomb_1d_greens_matrix(
+        n_grid: int, dz: float, dielectric_constant: float = 1.0
+    ) -> Tensor:
         r"""
-        1D Poisson / Coulomb Green's function for electrostatics in a confined slit pore [0, L_z]
-        with grounded Dirichlet boundary conditions \phi(0) = \phi(L_z) = 0:
-        G(z, z') = -(4\pi / \epsilon) * [ (L_z - max(z, z')) * min(z, z') / L_z ]
+        Constructs the exact 2-point 1D Poisson / Coulomb Green's function matrix G \in R^{N x N}
+        for electrostatics in a confined slit pore [0, L_z] with grounded Dirichlet boundary conditions
+        \phi(0) = \phi(L_z) = 0:
+        G_{ij} = -(4\pi \Delta z / \epsilon L_z) * \min(z_i, z_j) * (L_z - \max(z_i, z_j))
+
+        The electrostatic potential is evaluated via matrix multiplication: \phi = G * \rho_q.
         """
         l_z = n_grid * dz
-        pref = -4.0 * math.pi / dielectric_constant
-        k_half = n_grid
-        k_size = 2 * k_half + 1
-        kernel_vals = []
-        for i in range(-k_half, k_half + 1):
-            z = abs(i * dz)
-            val = pref * ((l_z - min(l_z, z)) * min(l_z, z)) / l_z if l_z > 0 else 0.0
-            kernel_vals.append(val)
-        kernel_tensor = Tensor(kernel_vals).reshape(1, 1, k_size, 1).contiguous()
-        return kernel_tensor, k_half
+        pref = -(4.0 * math.pi * dz) / (dielectric_constant * l_z) if l_z > 0 else 0.0
+        g_matrix = []
+        for i in range(n_grid):
+            z_i = (i + 0.5) * dz
+            row = []
+            for j in range(n_grid):
+                z_j = (j + 0.5) * dz
+                min_z = min(z_i, z_j)
+                max_z = max(z_i, z_j)
+                g_val = pref * min_z * (l_z - max_z)
+                row.append(g_val)
+            g_matrix.append(row)
+        return Tensor(g_matrix).reshape(1, 1, n_grid, n_grid).contiguous()
+
+    @staticmethod
+    def build_coulomb_1d_kernel(n_grid: int, dz: float, dielectric_constant: float = 1.0) -> Tuple[Tensor, int]:
+        """Deprecated alias pointing to Greens matrix solver for backwards compatibility."""
+        g_matrix = KernelBuilder.build_coulomb_1d_greens_matrix(n_grid, dz, dielectric_constant)
+        return g_matrix, n_grid

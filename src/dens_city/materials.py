@@ -351,9 +351,19 @@ class MaterialLoader:
             eff_eps_k = sites[0].epsilon_k
         else:
             # Volume-equivalent hard sphere diameter: sigma_eff = ( \sum sigma_i^3 )^(1/3)
-            heavy_sigmas = [s.sigma for s in sites if s.sigma > 0.5]
-            eff_sigma = sum(s**3 for s in heavy_sigmas) ** (1.0 / 3.0) if heavy_sigmas else sites[0].sigma
-            eff_eps_k = sum(s.epsilon_k for s in sites)
+            valid_sigmas = [s.sigma for s in sites if s.sigma > 0.0]
+            eff_sigma = sum(s**3 for s in valid_sigmas) ** (1.0 / 3.0) if valid_sigmas else sites[0].sigma
+
+            # Exact molecular WCA dispersion volume integral matching:
+            # \int v_att,eff(r) d^3r = \sum_i \sum_j \int v_att,ij(r) d^3r
+            # => eps_eff * sigma_eff^3 = \sum_i \sum_j \sqrt{eps_i * eps_j} * ((sigma_i + sigma_j)/2)^3
+            att_vol_sum = 0.0
+            for s1 in sites:
+                for s2 in sites:
+                    eps_ij = math.sqrt(max(0.0, s1.epsilon_k * s2.epsilon_k))
+                    sig_ij = 0.5 * (s1.sigma + s2.sigma)
+                    att_vol_sum += eps_ij * (sig_ij**3)
+            eff_eps_k = att_vol_sum / (eff_sigma**3) if eff_sigma > 0.0 else sites[0].epsilon_k
 
         temp = temperature_k if temperature_k is not None else 300.0
 

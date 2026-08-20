@@ -57,10 +57,12 @@ class TinyCDFT:
         )
 
         # Confining slit external wall potential with exact physical boundary divergence
-        wall_sig = wall_sigma if wall_sigma is not None else sigma
+        # Lorentz-Berthelot collision diameter incorporates the fluid's effective size
+        wall_sig = wall_sigma if wall_sigma is not None else 3.4
         self.v_ext = KernelBuilder.build_slit_wall_potential(
             n_grid=self.n_grid,
             dz=self.dz,
+            fluid_sigma=sigma,
             wall_sigma=wall_sig,
             wall_epsilon_k=wall_epsilon_k,
         ) / self.temperature_k  # in units of k_B * T
@@ -94,6 +96,21 @@ class TinyCDFT:
         Guarantees rho > 0 strictly throughout the domain with full autograd differentiability.
         """
         return (self.psi).exp() * self.bulk_density
+
+    def compute_electrostatic_potential(
+        self, charge_density: Tensor, dielectric_constant: float = 1.0
+    ) -> Tensor:
+        r"""
+        Solves 1D Poisson boundary value problem using exact Dirichlet Green's matrix G:
+        \phi(z) = G * \rho_q(z) where \phi(0) = \phi(L_z) = 0.
+        """
+        g_matrix = KernelBuilder.build_coulomb_1d_greens_matrix(
+            self.n_grid, self.dz, dielectric_constant=dielectric_constant
+        )
+        g_mat_2d = g_matrix.reshape(self.n_grid, self.n_grid)
+        rho_q_vec = charge_density.reshape(self.n_grid, 1)
+        phi_vec = g_mat_2d.matmul(rho_q_vec)
+        return phi_vec.reshape(1, 1, self.n_grid, 1)
 
     def grand_potential(self) -> Tensor:
         r"""

@@ -4,7 +4,7 @@
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10+-brightgreen.svg)](https://python.org)
 [![tinygrad: >=0.13.0](https://img.shields.io/badge/tinygrad-0.13.0+-orange.svg)](https://github.com/tinygrad/tinygrad)
 
-`dens-city` is a pure statistical mechanics Classical Density Functional Theory (cDFT) engine built from scratch in `tinygrad`.
+`dens-city` threads the needle between rigorous statistical mechanics and GPU tensor compilation in pure `tinygrad`.
 
 ---
 
