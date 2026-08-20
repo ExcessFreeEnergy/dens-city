@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dens-city"
 version = "0.1.0"
-description = "Unified Ab Initio Neural cDFT & PufferLib RL Platform for Programmable Fluids"
+description = "High-Performance Molecular Classical Density Functional Theory Platform"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "GPL-3.0-or-later" }
@@ -13,10 +13,10 @@ authors = [
     { name = "dens-city contributors" },
 ]
 dependencies = [
+    "tinygrad>=0.13.0",
     "numpy>=1.24.0",
     "scipy>=1.10.0",
     "pyyaml>=6.0",
-    "torch>=2.0.0",
     "tqdm>=4.66.0",
 ]
 
@@ -27,20 +27,9 @@ dev = [
     "matplotlib>=3.7.0",
     "ruff>=0.4.0",
 ]
-ui = [
-    "raylib>=6.0.0",
-]
-
-[project.scripts]
-dens-city = "dens_city.cli:main"
-dens-city-train = "dens_city.envs.train:main"
-dens-city-ui = "dens_city.ui.raylib_viewer:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.setuptools.package-data]
-"*" = ["*.so", "*.h", "*.cu", "*.cpp", "*.c"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
