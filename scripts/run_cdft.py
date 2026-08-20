@@ -84,8 +84,8 @@ def main() -> None:
         "--slit-width",
         "-w",
         type=float,
-        default=float(getenv("SLIT_WIDTH", 35.0)),
-        help="Confining slit width in Angstroms (default: 35.0)",
+        default=None,
+        help="Confining slit width in Angstroms (default: dynamic max(40.0, 10*sigma))",
     )
     parser.add_argument(
         "--lr",
@@ -101,6 +101,19 @@ def main() -> None:
         help="System temperature in Kelvin (default: 300.0 K)",
     )
     parser.add_argument(
+        "--pressure",
+        "-p",
+        type=float,
+        default=None,
+        help="Target bulk reservoir pressure in bar for EOS density solving",
+    )
+    parser.add_argument(
+        "--mu",
+        type=float,
+        default=None,
+        help="Target bulk chemical potential in k_B * T for EOS density solving",
+    )
+    parser.add_argument(
         "--no-plot",
         action="store_true",
         help="Disable ASCII density profile visualization",
@@ -113,7 +126,7 @@ def main() -> None:
     print(colored("  dens-city: Variational cDFT Statistical Mechanics Solver (tinygrad)    ", "cyan"))
     print(colored("==========================================================================", "cyan"))
     print(f"Target Materials   : {materials_list}")
-    print(f"Spatial Grid       : {args.grid} bins across {args.slit_width:.1f} Å slit")
+    print(f"Spatial Grid       : {args.grid} bins across {'dynamic scale-aware' if args.slit_width is None else f'{args.slit_width:.1f} Å'} slit")
     print(f"Optimization Steps : {args.steps} (lr = {args.lr})")
     print("--------------------------------------------------------------------------")
 
@@ -123,7 +136,12 @@ def main() -> None:
     for idx, mat_name in enumerate(materials_list, 1):
         try:
             print(f"\n[{idx:02d}/{len(materials_list):02d}] Initializing Fluid: {colored(mat_name, 'green')}...")
-            mat = MaterialLoader.load_material(mat_name, temperature_k=args.temp)
+            mat = MaterialLoader.load_material(
+                mat_name,
+                temperature_k=args.temp,
+                pressure_bar=args.pressure,
+                chemical_potential_kbt=args.mu,
+            )
             print(f"  Dimension Mode   : {mat.dimension_mode}")
             print(f"  Molecular Span   : {mat.molecular_span_a:.2f} Å (R_g = {mat.radius_of_gyration_a:.2f} Å, {mat.num_sites} sites)")
             print(f"  Effective LJ Core: σ = {mat.effective_sigma:.3f} Å, ε = {mat.effective_epsilon_k:.1f} K")

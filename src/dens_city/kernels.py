@@ -1,11 +1,11 @@
 """
 Anti-aliased kernel builders for Classical Density Functional Theory (cDFT).
-Computes analytically integrated weight functions, WCA/Lennard-Jones dispersion,
-Coulomb Green's functions, and confining wall potentials in pure tinygrad Tensors.
+Computes analytically integrated weight functions, scale-invariant WCA/Lennard-Jones dispersion,
+Coulomb Green's functions, and exact steric confining wall potentials.
 """
 
 import math
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 from tinygrad import Tensor
 
 
@@ -74,19 +74,21 @@ class KernelBuilder:
 
     @staticmethod
     def build_wca_attraction_kernel(
-        sigma: float, epsilon_k: float, dz: float, r_cut: float = 15.0
+        sigma: float, epsilon_k: float, dz: float, r_cut: Optional[float] = None
     ) -> Tuple[Tensor, int]:
-        """
+        r"""
         Analytically integrates 1D planar WCA attractive dispersion potential:
         v_att(z) = \int_{|z|}^{r_cut} 2\pi r v_att(r) dr
         where v_att(r) = -epsilon for r <= r_min, and 4\epsilon [(\sigma/r)^12 - (\sigma/r)^6] for r > r_min.
+        Cutoff radius scales with molecular diameter: r_cut = 5.0 * sigma.
         """
+        cutoff = r_cut if r_cut is not None else 5.0 * sigma
         r_min = (2.0 ** (1.0 / 6.0)) * sigma
-        k_half = int(math.ceil(r_cut / dz)) + 1
+        k_half = int(math.ceil(cutoff / dz)) + 1
         k_size = 2 * k_half + 1
 
         def int_r_vatt(r: float) -> float:
-            """Indefinite integral \int 2\pi r v_att(r) dr."""
+            r"""Indefinite integral \int 2\pi r v_att(r) dr."""
             if r <= 0.0:
                 return 0.0
             if r <= r_min:
@@ -102,17 +104,15 @@ class KernelBuilder:
 
                 return val_rmin + (anti_deriv(r) - anti_deriv(r_min))
 
-        val_rcut = int_r_vatt(r_cut)
+        val_rcut = int_r_vatt(cutoff)
 
         kernel_vals = []
         for i in range(-k_half, k_half + 1):
             z_center = abs(i * dz)
             z1 = max(0.0, z_center - dz / 2.0)
-            z2 = min(r_cut, z_center + dz / 2.0)
+            z2 = min(cutoff, z_center + dz / 2.0)
 
-            if z1 < r_cut:
-                # 1D potential at distance z is: V_1D(z) = \int_z^r_cut 2\pi r v_att(r) dr = int_r_vatt(r_cut) - int_r_vatt(z)
-                # Integrating over cell [z1, z2] with midpoint approximation:
+            if z1 < cutoff:
                 z_mid = (z1 + z2) / 2.0
                 v_1d_mid = val_rcut - int_r_vatt(z_mid)
                 kernel_vals.append(v_1d_mid)
@@ -126,43 +126,45 @@ class KernelBuilder:
     def build_slit_wall_potential(
         n_grid: int,
         dz: float,
-        wall_sigma: float = 3.2,
+        wall_sigma: float = 3.4,
         wall_epsilon_k: float = 50.0,
         wall_type: str = "stele93",
     ) -> Tensor:
         """
-        Constructs the external confining slit wall potential V_ext(z).
-        Using Steele 9-3 potential:
-        V_wall(z) = (2\pi \epsilon \sigma^3 / 3) * [ (2/15)(\sigma/z)^9 - (\sigma/z)^3 ]
+        Constructs the external confining slit wall potential V_ext(z) with exact physical divergence.
+        For steric hard boundary overlap (z <= 0.5 * wall_sigma or z >= L_z - 0.5 * wall_sigma),
+        V_ext(z) = 1e6 (exact impenetrable brick wall potential in units of k_B * T).
         """
         l_z = n_grid * dz
         v_vals = []
         prefactor = (2.0 * math.pi * wall_epsilon_k * (wall_sigma**3)) / 3.0
+        steric_radius = 0.5 * wall_sigma
+        v_wall_inf = 1e6  # Massive physical potential barrier (avoids IEEE 754 0 * inf NaN)
 
         for i in range(n_grid):
             z = (i + 0.5) * dz
-            z_left = max(0.2, z)
-            z_right = max(0.2, l_z - z)
+            z_l = z
+            z_r = l_z - z
 
-            if wall_type == "stele93":
-                s_l = wall_sigma / z_left
-                s_r = wall_sigma / z_right
+            # Exact steric exclusion boundary
+            if z_l <= steric_radius or z_r <= steric_radius:
+                v_vals.append(v_wall_inf)
+            elif wall_type == "stele93":
+                s_l = wall_sigma / z_l
+                s_r = wall_sigma / z_r
                 v_l = prefactor * ((2.0 / 15.0) * (s_l**9) - (s_l**3))
                 v_r = prefactor * ((2.0 / 15.0) * (s_r**9) - (s_r**3))
-                v_total = v_l + v_r
+                v_total = min(v_wall_inf, v_l + v_r)
+                v_vals.append(v_total)
             else:
                 # Hard wall
-                v_total = 1000.0 if (z < wall_sigma or (l_z - z) < wall_sigma) else 0.0
-
-            # Clamp extreme values for numerical stability
-            v_clamped = min(1000.0, max(-500.0, v_total))
-            v_vals.append(v_clamped)
+                v_vals.append(v_wall_inf if (z_l < wall_sigma or z_r < wall_sigma) else 0.0)
 
         return Tensor(v_vals).reshape(1, 1, n_grid, 1).contiguous()
 
     @staticmethod
     def build_coulomb_1d_kernel(n_grid: int, dz: float) -> Tuple[Tensor, int]:
-        """
+        r"""
         1D Poisson / Coulomb Green's function for electrostatics:
         v_C(z) = -2\pi |z|
         """

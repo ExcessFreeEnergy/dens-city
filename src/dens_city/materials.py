@@ -2,18 +2,103 @@
 Material metadata loader and force field parameter resolver for arbitrary .mol2 files.
 Extracts site coordinates, partial charges, and Lennard-Jones parameters strictly
 from the molecular geometry and force field database with zero hardcoded values.
+Provides self-consistent Carnahan-Starling + Mean-Field Equation of State (EOS) solvers.
 """
 
 import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 TEST_DATA_DIR = REPO_ROOT / "test_data"
 FF_JSON_PATH = TEST_DATA_DIR / "forcefield_parameters.json"
+
+
+def solve_bulk_density_from_pressure(
+    p_bar: float,
+    temp_k: float,
+    sigma: float,
+    epsilon_k: float,
+    phase: str = "liquid",
+) -> float:
+    """
+    Self-consistently solves for bulk number density rho_bulk (molecules / Å³) at target pressure P
+    using the Carnahan-Starling + Mean-Field attractive Equation of State (EOS):
+    P(rho, T) = rho * k_B * T * [ (1 + eta + eta^2 - eta^3) / (1 - eta)^3 ] - (16*pi/9) * rho^2 * epsilon * sigma^3
+    """
+    # 1 bar = 1e5 Pa = 1e-4 N / Å² = 1e-4 * (1 J / (1e10 Å)) -> in (k_B * T / Å³) units:
+    # P / (k_B * T) = (P_bar * 1e5 Pa) / (1.380649e-23 J/K * T * 1e30 m^-3) = P_bar / (1.380649e-23 * T * 1e25)
+    #               = P_bar * 7.2429716e-4 / T
+    p_target_kbt = (p_bar * 1e5) / (1.380649e-23 * temp_k * 1e30)
+    a_att = (16.0 * math.pi / 9.0) * (epsilon_k / temp_k) * (sigma**3)
+
+    def eos_pressure(rho: float) -> float:
+        eta = (math.pi / 6.0) * rho * (sigma**3)
+        if eta >= 1.0 or eta <= 0.0:
+            return float("inf") if eta >= 1.0 else -float("inf")
+        z_cs = (1.0 + eta + eta**2 - eta**3) / ((1.0 - eta) ** 3)
+        return rho * z_cs - a_att * (rho**2)
+
+    # Maximum physical close packing (FCC sphere packing eta = pi / (3 * sqrt(2)) ~ 0.74)
+    rho_max = 0.65 / ((math.pi / 6.0) * (sigma**3))
+
+    # Bisection search for density root
+    if phase == "liquid":
+        low, high = 0.15 / ((math.pi / 6.0) * (sigma**3)), rho_max * 0.95
+    else:
+        low, high = 1e-8, 0.05 / ((math.pi / 6.0) * (sigma**3))
+
+    for _ in range(100):
+        mid = 0.5 * (low + high)
+        p_mid = eos_pressure(mid)
+        if abs(p_mid - p_target_kbt) < 1e-8 or (high - low) < 1e-9:
+            return mid
+        if phase == "liquid":
+            if p_mid < p_target_kbt:
+                low = mid
+            else:
+                high = mid
+        else:
+            if p_mid < p_target_kbt:
+                low = mid
+            else:
+                high = mid
+
+    return 0.5 * (low + high)
+
+
+def solve_bulk_density_from_chemical_potential(
+    mu_kbt: float,
+    temp_k: float,
+    sigma: float,
+    epsilon_k: float,
+) -> float:
+    """
+    Solves for bulk number density rho_bulk at target chemical potential mu / (k_B * T)
+    via Newton-Raphson on mu(rho, T) = mu_target.
+    """
+    a_att = (32.0 * math.pi / 9.0) * (epsilon_k / temp_k) * (sigma**3)
+
+    def eos_mu(rho: float) -> float:
+        eta = (math.pi / 6.0) * rho * (sigma**3)
+        eta = max(1e-12, min(0.65, eta))
+        mu_id = math.log(rho * (sigma**3))
+        mu_hs = (eta * (8.0 - 9.0 * eta + 3.0 * (eta**2))) / ((1.0 - eta) ** 3)
+        mu_att = -a_att * rho
+        return mu_id + mu_hs + mu_att
+
+    # Bisection
+    low, high = 1e-8, 0.65 / ((math.pi / 6.0) * (sigma**3))
+    for _ in range(80):
+        mid = 0.5 * (low + high)
+        if eos_mu(mid) < mu_kbt:
+            low = mid
+        else:
+            high = mid
+    return 0.5 * (low + high)
 
 
 @dataclass
@@ -53,7 +138,6 @@ class Material:
     @property
     def molarity_mol_l(self) -> float:
         """Calculates molar concentration in mol/L (M) from number density."""
-        # 1 molecule/Å³ = 1e27 molecules/L -> / (6.02214076e23 mol⁻¹) = 1660.53878 mol/L
         return self.bulk_density_a3 * 1660.53878
 
     @property
@@ -102,13 +186,13 @@ class Material:
 
         # Packing fraction eta = (pi / 6) * rho * sigma^3
         eta = (math.pi / 6.0) * rho_b * (sig**3)
-        eta = min(0.48, max(1e-5, eta))
 
         # Ideal chemical potential (in k_B * T)
-        mu_id = math.log(max(1e-10, rho_b * (sig**3)))
+        mu_id = math.log(max(1e-15, rho_b * (sig**3)))
 
         # Carnahan-Starling excess hard-sphere chemical potential
-        mu_hs_ex = (eta * (8.0 - 9.0 * eta + 3.0 * (eta**2))) / ((1.0 - eta) ** 3)
+        one_minus_eta = max(1e-12, 1.0 - eta)
+        mu_hs_ex = (eta * (8.0 - 9.0 * eta + 3.0 * (eta**2))) / (one_minus_eta**3)
 
         # Mean-field attractive chemical potential: \int v_att(r) d^3r = -(32\pi/9) * epsilon * sigma^3
         v_att_integral = -(32.0 * math.pi / 9.0) * (eps_k / temp) * (sig**3)
@@ -166,11 +250,12 @@ class MaterialLoader:
         target: Union[str, Path],
         temperature_k: Optional[float] = None,
         bulk_density_a3: Optional[float] = None,
-        packing_fraction: float = 0.35,
+        pressure_bar: Optional[float] = None,
+        chemical_potential_kbt: Optional[float] = None,
     ) -> Material:
         """
         Parses an arbitrary .mol2 file and resolves site Lennard-Jones parameters.
-        Zero hardcoded fluid tables or names.
+        Derives bulk thermodynamic state self-consistently from Equation of State.
         """
         ff_db = cls.get_forcefield_database()
 
@@ -250,18 +335,30 @@ class MaterialLoader:
             # Volume-equivalent hard sphere diameter: sigma_eff = ( \sum sigma_i^3 )^(1/3)
             heavy_sigmas = [s.sigma for s in sites if s.sigma > 0.5]
             eff_sigma = sum(s**3 for s in heavy_sigmas) ** (1.0 / 3.0) if heavy_sigmas else sites[0].sigma
-
-            # Total cohesive dispersion well depth: sum of site epsilon contributions
             eff_eps_k = sum(s.epsilon_k for s in sites)
 
-        # Standard physical thermodynamic state:
         temp = temperature_k if temperature_k is not None else 300.0
 
+        # Derive bulk density from Equation of State:
         if bulk_density_a3 is not None:
             density = bulk_density_a3
+        elif chemical_potential_kbt is not None:
+            density = solve_bulk_density_from_chemical_potential(
+                mu_kbt=chemical_potential_kbt,
+                temp_k=temp,
+                sigma=eff_sigma,
+                epsilon_k=eff_eps_k,
+            )
+        elif pressure_bar is not None:
+            density = solve_bulk_density_from_pressure(
+                p_bar=pressure_bar,
+                temp_k=temp,
+                sigma=eff_sigma,
+                epsilon_k=eff_eps_k,
+            )
         else:
-            # Natural liquid packing density: rho_bulk = (6 * eta) / (pi * sigma_eff^3)
-            density = (6.0 * packing_fraction) / (math.pi * (eff_sigma**3))
+            # Default thermodynamic state: standard liquid state packing fraction eta = 0.35
+            density = (6.0 * 0.35) / (math.pi * (eff_sigma**3))
 
         dim_mode = cls.classify_dimension_mode(sites)
 
