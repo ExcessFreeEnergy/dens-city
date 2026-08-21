@@ -3,12 +3,12 @@ Differentiable Z-Matrix (Internal Coordinate <-> Cartesian) Bijector with Exact 
 Uses the Natural Extension Reference Frame (NeRF) orthonormal basis projection to guarantee exact invertibility.
 """
 
+from typing import Optional, Tuple, List, Dict, Callable
 import math
-from typing import Optional, Tuple, List, Dict
-import numpy as np
-from tinygrad import Tensor, dtypes, nn
+from tinygrad import Tensor, dtypes, nn, function
 
 
+@function
 def _tensor_atan2(y: Tensor, x: Tensor) -> Tensor:
     """
     Vectorized and differentiable 4-quadrant atan2 in tinygrad.
@@ -17,6 +17,19 @@ def _tensor_atan2(y: Tensor, x: Tensor) -> Tensor:
     base_atan = (y / safe_x).atan()
     offset = (x < 0).where((y >= 0).where(math.pi, -math.pi), 0.0)
     return base_atan + offset
+
+
+@function
+def _cross(u: Tensor, v: Tensor) -> Tensor:
+    """
+    Vectorized 3D cross product u x v for trailing dimension of size 3.
+    """
+    return Tensor.cat(
+        u[..., 1:2] * v[..., 2:3] - u[..., 2:3] * v[..., 1:2],
+        u[..., 2:3] * v[..., 0:1] - u[..., 0:1] * v[..., 2:3],
+        u[..., 0:1] * v[..., 1:2] - u[..., 1:2] * v[..., 0:1],
+        dim=-1,
+    )
 
 
 class ZMatrixBijector:
@@ -30,17 +43,6 @@ class ZMatrixBijector:
         n_atoms: int,
         z_indices: Optional[List[Tuple[int, int, int]]] = None,
     ):
-        """
-        Initializes the Z-Matrix bijector.
-
-        Parameters
-        ----------
-        n_atoms : int
-            Total number of atoms in the molecular system (N >= 1).
-        z_indices : Optional[List[Tuple[int, int, int]]]
-            Parent reference triplets (p_i, a_i, d_i) for each atom i >= 3.
-            If None, defaults to sequential chain topology (i-1, i-2, i-3).
-        """
         if n_atoms < 1:
             raise ValueError(f"n_atoms must be >= 1, got {n_atoms}")
         self.n_atoms = n_atoms
@@ -58,35 +60,21 @@ class ZMatrixBijector:
         Computes exact Jacobian log-determinant for the internal-to-Cartesian transformation:
         \log |\det J_{IC \to X}| = \sum_{i=2}^N \log(b_i^2 \sin(\theta_i))
                                  = \sum_{i=2}^N [ 2 \ln(b_i) + \ln(\sin(\theta_i)) ]
-
-        Parameters
-        ----------
-        bonds : Tensor
-            Bond lengths of shape (N-1,) or (B, N-1).
-        angles : Tensor
-            Bond angles of shape (N-2,) or (B, N-2).
-
-        Returns
-        -------
-        Tensor
-            Log-determinant of Jacobian (scalar or (B,)).
         """
         is_batched = len(bonds.shape) == 2
         bonds_b = bonds if is_batched else bonds.unsqueeze(0)  # (B, N-1)
         angles_b = angles if is_batched else angles.unsqueeze(0)  # (B, N-2)
 
         if self.n_atoms < 3:
-            # For 1 or 2 atoms, internal angle Jacobian factor is not present
-            log_det = Tensor.zeros(bonds_b.shape[0])
+            log_det = Tensor.zeros(bonds_b.shape[0], dtype=dtypes.float32)
             return log_det if is_batched else log_det.squeeze(0)
 
-        # i=2 corresponds to bonds[:, 1] and angles[:, 0]
         b_sub = bonds_b[:, 1:]  # (B, N-2)
         th_sub = angles_b  # (B, N-2)
 
-        # 2 * ln(b_i) + ln(sin(theta_i))
-        sin_th = th_sub.sin().maximum(1e-12)
-        log_det = (2.0 * b_sub.maximum(1e-12).log() + sin_th.log()).sum(axis=-1)
+        sin_th = th_sub.sin().abs().maximum(1e-7)
+        b_val = b_sub.abs().maximum(1e-7)
+        log_det = (2.0 * b_val.log() + sin_th.log()).sum(axis=-1)
 
         return log_det if is_batched else log_det.squeeze(0)
 
@@ -100,25 +88,6 @@ class ZMatrixBijector:
     ) -> Tuple[Tensor, Tensor]:
         """
         Maps internal coordinates to 3D Cartesian coordinates.
-
-        Parameters
-        ----------
-        bonds : Tensor
-            Bond lengths of shape (N-1,) or (B, N-1).
-        angles : Optional[Tensor]
-            Bond angles in radians of shape (N-2,) or (B, N-2).
-        torsions : Optional[Tensor]
-            Dihedral/torsion angles in radians of shape (N-3,) or (B, N-3).
-        origin : Optional[Tensor]
-            Position of atom 0 (shape (3,) or (B, 3)). Defaults to (0, 0, 0).
-        orientation : Optional[Tensor]
-            3x3 rotation matrix for global orientation. Defaults to identity.
-
-        Returns
-        -------
-        Tuple[Tensor, Tensor]
-            - cartesian_coords : Tensor of shape (N, 3) or (B, N, 3).
-            - log_det_jacobian : Tensor of log-determinant (scalar or (B,)).
         """
         is_batched = len(bonds.shape) == 2
         bonds_b = bonds if is_batched else bonds.unsqueeze(0)  # (B, N-1)
@@ -129,9 +98,7 @@ class ZMatrixBijector:
             if angles is not None
             else Tensor.zeros((B, max(0, self.n_atoms - 2)), dtype=dtypes.float32)
         )
-        if len(angles_b.shape) == 1 and is_batched:
-            angles_b = angles_b.unsqueeze(0)
-        elif len(angles_b.shape) == 1 and not is_batched:
+        if len(angles_b.shape) == 1:
             angles_b = angles_b.unsqueeze(0)
 
         torsions_b = (
@@ -139,9 +106,7 @@ class ZMatrixBijector:
             if torsions is not None
             else Tensor.zeros((B, max(0, self.n_atoms - 3)), dtype=dtypes.float32)
         )
-        if len(torsions_b.shape) == 1 and is_batched:
-            torsions_b = torsions_b.unsqueeze(0)
-        elif len(torsions_b.shape) == 1 and not is_batched:
+        if len(torsions_b.shape) == 1:
             torsions_b = torsions_b.unsqueeze(0)
 
         # Log determinant of Jacobian
@@ -181,22 +146,12 @@ class ZMatrixBijector:
             ab = a - d
 
             # Normal vector n = ab x bc
-            ab_x, ab_y, ab_z = ab[:, 0:1], ab[:, 1:2], ab[:, 2:3]
-            bc_x, bc_y, bc_z = bc_hat[:, 0:1], bc_hat[:, 1:2], bc_hat[:, 2:3]
-
-            n_x = ab_y * bc_z - ab_z * bc_y
-            n_y = ab_z * bc_x - ab_x * bc_z
-            n_z = ab_x * bc_y - ab_y * bc_x
-            n_vec = Tensor.cat(n_x, n_y, n_z, dim=-1)
+            n_vec = _cross(ab, bc_hat)
             n_norm = (n_vec * n_vec).sum(axis=-1, keepdim=True).sqrt().maximum(1e-12)
             n_hat = n_vec / n_norm
 
             # In-plane orthogonal vector n_cross = n_hat x bc_hat
-            nh_x, nh_y, nh_z = n_hat[:, 0:1], n_hat[:, 1:2], n_hat[:, 2:3]
-            nc_x = nh_y * bc_z - nh_z * bc_y
-            nc_y = nh_z * bc_x - nh_x * bc_z
-            nc_z = nh_x * bc_y - nh_y * bc_x
-            n_cross = Tensor.cat(nc_x, nc_y, nc_z, dim=-1)
+            n_cross = _cross(n_hat, bc_hat)
 
             # Local coordinates of atom i
             b_i = bonds_b[:, (i - 1):i]
@@ -214,8 +169,6 @@ class ZMatrixBijector:
         all_coords = Tensor.stack(coords, dim=1)  # (B, N, 3)
 
         if orientation is not None:
-            # Apply global rotation matrix: (B, N, 3) @ (B, 3, 3)^T
-            # coords_rot = (all_coords - x0.unsqueeze(1)) @ orientation.transpose() + x0.unsqueeze(1)
             pass
 
         out_coords = all_coords if is_batched else all_coords.squeeze(0)
@@ -226,17 +179,6 @@ class ZMatrixBijector:
     def inverse(self, cartesian_coords: Tensor) -> Tuple[Dict[str, Tensor], Tensor]:
         r"""
         Maps 3D Cartesian coordinates back to internal coordinates (bonds, angles, torsions).
-
-        Parameters
-        ----------
-        cartesian_coords : Tensor
-            Cartesian coordinates of shape (N, 3) or (B, N, 3).
-
-        Returns
-        -------
-        Tuple[Dict[str, Tensor], Tensor]
-            - ic_dict : Dict containing 'bonds', 'angles', 'torsions', 'origin'.
-            - log_det_jacobian : Inverse log-determinant \log |\det J_{X \to IC}| = -\log |\det J_{IC \to X}|.
         """
         is_batched = len(cartesian_coords.shape) == 3
         coords_b = cartesian_coords if is_batched else cartesian_coords.unsqueeze(0)  # (B, N, 3)
@@ -278,21 +220,11 @@ class ZMatrixBijector:
             bc_hat = bc / bc_norm
 
             ab = a - d
-            ab_x, ab_y, ab_z = ab[:, 0:1], ab[:, 1:2], ab[:, 2:3]
-            bc_x, bc_y, bc_z = bc_hat[:, 0:1], bc_hat[:, 1:2], bc_hat[:, 2:3]
-
-            n_x = ab_y * bc_z - ab_z * bc_y
-            n_y = ab_z * bc_x - ab_x * bc_z
-            n_z = ab_x * bc_y - ab_y * bc_x
-            n_vec = Tensor.cat(n_x, n_y, n_z, dim=-1)
+            n_vec = _cross(ab, bc_hat)
             n_norm = (n_vec * n_vec).sum(axis=-1, keepdim=True).sqrt().maximum(1e-12)
             n_hat = n_vec / n_norm
 
-            nh_x, nh_y, nh_z = n_hat[:, 0:1], n_hat[:, 1:2], n_hat[:, 2:3]
-            nc_x = nh_y * bc_z - nh_z * bc_y
-            nc_y = nh_z * bc_x - nh_x * bc_z
-            nc_z = nh_x * bc_y - nh_y * bc_x
-            n_cross = Tensor.cat(nc_x, nc_y, nc_z, dim=-1)
+            n_cross = _cross(n_hat, bc_hat)
 
             # Local displacement projection v_rec
             disp = xi - p
@@ -309,9 +241,9 @@ class ZMatrixBijector:
             angles_list.append(th_i)
             torsions_list.append(phi_i)
 
-        bonds_out = Tensor.cat(*bonds_list, dim=-1) if bonds_list else Tensor.zeros((B, 0))
-        angles_out = Tensor.cat(*angles_list, dim=-1) if angles_list else Tensor.zeros((B, 0))
-        torsions_out = Tensor.cat(*torsions_list, dim=-1) if torsions_list else Tensor.zeros((B, 0))
+        bonds_out = Tensor.cat(*bonds_list, dim=-1) if bonds_list else Tensor.zeros((B, 0), dtype=dtypes.float32)
+        angles_out = Tensor.cat(*angles_list, dim=-1) if angles_list else Tensor.zeros((B, 0), dtype=dtypes.float32)
+        torsions_out = Tensor.cat(*torsions_list, dim=-1) if torsions_list else Tensor.zeros((B, 0), dtype=dtypes.float32)
         origin_out = coords_b[:, 0]
 
         # Inverse log determinant = -log_det(IC -> X)
@@ -330,30 +262,32 @@ class ZMatrixBijector:
 
 class AffineCouplingLayer:
     """
-    RealNVP Affine Coupling Layer using tinygrad.nn.Linear MLPs.
-    Splits input dimension into two partitions (A and B), uses A to predict scale and shift for B,
-    then concatenates back. If swap=True, the roles of A and B are reversed.
+    Affine Coupling Layer with exact invertibility and analytical Jacobian log-determinant.
+    Partitions input x into [x1, x2] and applies learned scale/shift transformations via Tinygrad NN.
     """
 
     def __init__(self, dim: int, hidden_dim: int = 64, swap: bool = False):
         self.dim = dim
         self.swap = swap
-        self.dim_a = dim // 2
+        self.dim_a = max(1, dim // 2)
         self.dim_b = dim - self.dim_a
 
+        # When swap=False: net takes dim_a, outputs dim_b * 2
+        # When swap=True: net takes dim_b, outputs dim_a * 2
         in_dim = self.dim_b if swap else self.dim_a
         out_dim = self.dim_a if swap else self.dim_b
 
-        self.l1 = nn.Linear(in_dim, hidden_dim)
-        self.l2 = nn.Linear(hidden_dim, hidden_dim)
-        self.l3 = nn.Linear(hidden_dim, out_dim * 2)
+        self.net: list[Callable[[Tensor], Tensor]] = [
+            nn.Linear(in_dim, hidden_dim),
+            Tensor.relu,
+            nn.Linear(hidden_dim, hidden_dim),
+            Tensor.relu,
+            nn.Linear(hidden_dim, out_dim * 2),
+        ]
 
     def _net(self, x: Tensor) -> Tuple[Tensor, Tensor]:
-        h = self.l1(x).relu()
-        h = self.l2(h).relu()
-        out = self.l3(h)
+        out = x.sequential(self.net)
         out_dim = out.shape[-1] // 2
-        # Scale is bounded with tanh to guarantee numerical stability and non-explosive gradients
         s = out[..., :out_dim].tanh()
         t = out[..., out_dim:]
         return s, t
@@ -368,18 +302,18 @@ class AffineCouplingLayer:
         is_batched = len(x.shape) == 2
         x_b = x if is_batched else x.unsqueeze(0)
 
+        x1, x2 = x_b[..., :self.dim_a], x_b[..., self.dim_a:]
+
         if self.swap:
-            xa, xb = x_b[..., self.dim_b:], x_b[..., :self.dim_b]
-            s, t = self._net(xa)
-            yb = xb * s.exp() + t
-            ya = xa
-            y = Tensor.cat(yb, ya, dim=-1)
+            s, t = self._net(x2)
+            y1 = x1 * s.exp() + t
+            y2 = x2
+            y = Tensor.cat(y1, y2, dim=-1)
         else:
-            xa, xb = x_b[..., :self.dim_a], x_b[..., self.dim_a:]
-            s, t = self._net(xa)
-            yb = xb * s.exp() + t
-            ya = xa
-            y = Tensor.cat(ya, yb, dim=-1)
+            s, t = self._net(x1)
+            y1 = x1
+            y2 = x2 * s.exp() + t
+            y = Tensor.cat(y1, y2, dim=-1)
 
         log_det = s.sum(axis=-1)
         return (y if is_batched else y.squeeze(0)), (log_det if is_batched else log_det.squeeze(0))
@@ -394,18 +328,18 @@ class AffineCouplingLayer:
         is_batched = len(y.shape) == 2
         y_b = y if is_batched else y.unsqueeze(0)
 
+        y1, y2 = y_b[..., :self.dim_a], y_b[..., self.dim_a:]
+
         if self.swap:
-            ya, yb = y_b[..., self.dim_b:], y_b[..., :self.dim_b]
-            s, t = self._net(ya)
-            xb = (yb - t) * (-s).exp()
-            xa = ya
-            x = Tensor.cat(xb, xa, dim=-1)
+            s, t = self._net(y2)
+            x1 = (y1 - t) * (-s).exp()
+            x2 = y2
+            x = Tensor.cat(x1, x2, dim=-1)
         else:
-            ya, yb = y_b[..., :self.dim_a], y_b[..., self.dim_a:]
-            s, t = self._net(ya)
-            xb = (yb - t) * (-s).exp()
-            xa = ya
-            x = Tensor.cat(xa, xb, dim=-1)
+            s, t = self._net(y1)
+            x1 = y1
+            x2 = (y2 - t) * (-s).exp()
+            x = Tensor.cat(x1, x2, dim=-1)
 
         log_det = (-s).sum(axis=-1)
         return (x if is_batched else x.squeeze(0)), (log_det if is_batched else log_det.squeeze(0))
@@ -419,7 +353,7 @@ class RealNVPFlow:
     def __init__(self, dim: int, n_layers: int = 5, hidden_dim: int = 64):
         self.dim = dim
         self.n_layers = n_layers
-        self.layers = [
+        self.layers: list[AffineCouplingLayer] = [
             AffineCouplingLayer(dim, hidden_dim=hidden_dim, swap=(i % 2 == 1))
             for i in range(n_layers)
         ]
@@ -447,4 +381,113 @@ class RealNVPFlow:
             cur, ld = layer.inverse(cur)
             total_log_det = total_log_det + (ld if is_batched else ld.unsqueeze(0))
         return cur, (total_log_det if is_batched else total_log_det.squeeze(0))
+
+
+class CompositeFlow:
+    """
+    Composite Invertible Normalizing Flow chaining RealNVPFlow with ZMatrixBijector.
+    Transforms latent Gaussian noise z -> Internal Coordinates -> 3D Cartesian Coordinates x.
+
+    Dimensionality partitioning for N atoms (N >= 3):
+    - Bonds: N - 1
+    - Angles: N - 2
+    - Torsions: N - 3
+    Total flow dimension: 3N - 6.
+    """
+
+    def __init__(
+        self,
+        n_atoms: int,
+        flow: Optional[RealNVPFlow] = None,
+        z_indices: Optional[List[Tuple[int, int, int]]] = None,
+        n_layers: int = 5,
+        hidden_dim: int = 64,
+    ):
+        if n_atoms < 1:
+            raise ValueError(f"n_atoms must be >= 1, got {n_atoms}")
+        self.n_atoms = n_atoms
+        self.n_bonds = max(0, n_atoms - 1)
+        self.n_angles = max(0, n_atoms - 2)
+        self.n_torsions = max(0, n_atoms - 3)
+        self.dim = self.n_bonds + self.n_angles + self.n_torsions
+
+        self.zmat = ZMatrixBijector(n_atoms=n_atoms, z_indices=z_indices)
+        self.flow = (
+            flow
+            if flow is not None
+            else RealNVPFlow(dim=max(1, self.dim), n_layers=n_layers, hidden_dim=hidden_dim)
+        )
+
+    def forward(self, z: Tensor, origin: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
+        """
+        Maps latent noise z to 3D Cartesian coordinates x:
+        z (B, 3N-6) -> RealNVPFlow -> ic_flat (B, 3N-6) -> ZMatrixBijector -> x (B, N, 3)
+        """
+        is_batched = len(z.shape) == 2
+        z_b = z if is_batched else z.unsqueeze(0)
+        B = z_b.shape[0]
+
+        if self.dim == 0:
+            # Single atom at origin
+            coords = origin if origin is not None else Tensor.zeros((B, 1, 3), dtype=dtypes.float32)
+            if len(coords.shape) == 2:
+                coords = coords.unsqueeze(1)
+            log_det = Tensor.zeros(B, dtype=dtypes.float32)
+            return (coords if is_batched else coords.squeeze(0)), (log_det if is_batched else log_det.squeeze(0))
+
+        # 1. Flow transformation: z -> ic_flat
+        ic_flat, log_det_flow = self.flow.forward(z_b)
+
+        # 2. Slice flat internal coordinates into structural components
+        bonds = ic_flat[:, :self.n_bonds]
+        angles = (
+            ic_flat[:, self.n_bonds : self.n_bonds + self.n_angles]
+            if self.n_angles > 0
+            else None
+        )
+        torsions = (
+            ic_flat[:, self.n_bonds + self.n_angles : self.dim]
+            if self.n_torsions > 0
+            else None
+        )
+
+        # 3. Z-Matrix transformation: internal coordinates -> 3D Cartesian coordinates
+        coords, log_det_zmat = self.zmat.forward(
+            bonds=bonds, angles=angles, torsions=torsions, origin=origin
+        )
+
+        total_log_det = log_det_flow + log_det_zmat
+        return (coords if is_batched else coords.squeeze(0)), (total_log_det if is_batched else total_log_det.squeeze(0))
+
+    def inverse(self, coords: Tensor) -> Tuple[Tensor, Tensor]:
+        """
+        Maps 3D Cartesian coordinates x to latent noise z:
+        x (B, N, 3) -> ZMatrixBijector -> ic_flat (B, 3N-6) -> RealNVPFlow.inverse -> z (B, 3N-6)
+        """
+        is_batched = len(coords.shape) == 3
+        coords_b = coords if is_batched else coords.unsqueeze(0)
+        B = coords_b.shape[0]
+
+        if self.dim == 0:
+            z_out = Tensor.zeros((B, 0), dtype=dtypes.float32)
+            log_det = Tensor.zeros(B, dtype=dtypes.float32)
+            return (z_out if is_batched else z_out.squeeze(0)), (log_det if is_batched else log_det.squeeze(0))
+
+        # 1. Z-Matrix inverse transformation: 3D Cartesian coordinates -> internal coordinates
+        ic_dict, log_det_zmat_inv = self.zmat.inverse(coords_b)
+
+        # 2. Concatenate internal coordinates into flat tensor
+        parts = [ic_dict["bonds"]]
+        if self.n_angles > 0:
+            parts.append(ic_dict["angles"])
+        if self.n_torsions > 0:
+            parts.append(ic_dict["torsions"])
+        ic_flat = Tensor.cat(*parts, dim=-1)
+
+        # 3. Flow inverse transformation: ic_flat -> z
+        z, log_det_flow_inv = self.flow.inverse(ic_flat)
+
+        total_log_det_inv = log_det_zmat_inv + log_det_flow_inv
+        return (z if is_batched else z.squeeze(0)), (total_log_det_inv if is_batched else total_log_det_inv.squeeze(0))
+
 

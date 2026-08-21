@@ -8,7 +8,7 @@ import math
 import numpy as np
 import pytest
 from tinygrad import Tensor, nn
-from dens_city.boltzmann.bijectors import ZMatrixBijector, AffineCouplingLayer, RealNVPFlow
+from dens_city.boltzmann.bijectors import ZMatrixBijector, AffineCouplingLayer, RealNVPFlow, CompositeFlow
 from dens_city.materials import MaterialLoader
 
 
@@ -247,4 +247,65 @@ def test_realnvp_autograd_training_step():
     for p in params:
         grad_np = p.grad.numpy()
         assert np.all(np.isfinite(grad_np)), "Parameter grad must be finite without NaNs"
+
+
+@pytest.mark.parametrize("n_atoms", [3, 4, 5, 6])
+def test_composite_flow_round_trip(n_atoms: int):
+    """
+    Validates exact round-trip invertibility of CompositeFlow (RealNVP + ZMatrix):
+    x (B, N, 3) -> z (B, 3N-6) -> x' (B, N, 3)
+    with total log-determinant sum log|det J| + log|det J_inv| == 0.
+    """
+    comp_flow = CompositeFlow(n_atoms=n_atoms, n_layers=4, hidden_dim=32)
+    B = 8
+    dim = comp_flow.dim
+    assert dim == 3 * n_atoms - 6
+
+    # Generate valid physical 3D molecular conformations
+    bonds = Tensor.ones(B, n_atoms - 1) * 1.5
+    angles = Tensor.ones(B, n_atoms - 2) * 1.8 if n_atoms >= 3 else None
+    torsions = Tensor.ones(B, n_atoms - 3) * 0.5 if n_atoms >= 4 else None
+    coords_orig, _ = comp_flow.zmat.forward(bonds=bonds, angles=angles, torsions=torsions)
+
+    # 1. Reverse pass: x -> z
+    z, log_det_inv = comp_flow.inverse(coords_orig)
+    assert z.shape == (B, dim)
+    assert log_det_inv.shape == (B,)
+
+    # 2. Forward pass: z -> x'
+    coords_rec, log_det_fwd = comp_flow.forward(z)
+    assert coords_rec.shape == (B, n_atoms, 3)
+    assert log_det_fwd.shape == (B,)
+
+    err_coords = (coords_orig - coords_rec).abs().max().item()
+    det_sum = (log_det_fwd + log_det_inv).abs().max().item()
+
+    assert err_coords < 1e-4, f"CompositeFlow coordinate round-trip error {err_coords} >= 1e-4"
+    assert det_sum < 1e-4, f"CompositeFlow log-det sum {det_sum} != 0"
+
+
+def test_composite_flow_autograd():
+    """
+    Validates end-to-end autograd backpropagation through CompositeFlow from 3D Cartesian coordinates.
+    """
+    n_atoms = 4
+    comp_flow = CompositeFlow(n_atoms=n_atoms, n_layers=4, hidden_dim=32)
+    z = Tensor.randn(4, comp_flow.dim)
+
+    coords, log_det = comp_flow.forward(z)
+    # Loss in 3D Cartesian space: harmonic spring potential on coordinates
+    loss = (0.5 * (coords * coords).sum() - log_det.sum()).mean()
+
+    params = nn.state.get_parameters(comp_flow.flow)
+    assert len(params) > 0, "CompositeFlow must have trainable parameters"
+
+    loss.backward()
+    grads = [p.grad for p in params if p.grad is not None]
+    assert len(grads) == len(params), "All parameters must have non-null gradients"
+    Tensor.realize(*grads)
+
+    for p in params:
+        grad_np = p.grad.numpy()
+        assert np.all(np.isfinite(grad_np)), "Gradients must be finite without NaNs"
+
 

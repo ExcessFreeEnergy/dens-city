@@ -207,3 +207,40 @@ def test_batched_evaluation_and_autograd():
 
     assert np.all(np.isfinite(grad)), "Gradients must be finite without NaNs"
     assert not np.all(grad == 0.0), "Gradients must be non-zero"
+
+
+def test_shifted_force_zero_energy_and_continuous_force_at_cutoff():
+    """
+    Validates that Shifted-Force (SF) ensures BOTH the potential energy U(r)
+    AND the force magnitude F(r) = -dU/dr vanish continuously at r = r_cut.
+    """
+    sigma = 3.4
+    epsilon = 119.8
+    r_cut = 12.0
+
+    energy_fn = MicroscopicEnergy(
+        sigmas=[sigma, sigma],
+        epsilons=[epsilon, epsilon],
+        box_size=(30.0, 30.0, 40.0),
+        r_cut=r_cut,
+    )
+
+    # Separation right at cutoff boundary r = r_cut - eps
+    delta_r = 1e-4
+    p_a = Tensor([[10.0, 10.0, 20.0], [10.0 + r_cut - delta_r, 10.0, 20.0]])
+    p_a.requires_grad = True
+
+    u_pair = energy_fn.compute_pair_energy(p_a, shift=True)
+    # Energy must be O((delta_r)^2) ~ 0
+    assert abs(u_pair.item()) < 1e-4, f"SF energy at cutoff {u_pair.item()} must be close to 0"
+
+    # Evaluate force F = - dU/dx
+    u_pair.backward()
+    grad_a = p_a.grad.numpy()
+    force_magnitude = np.abs(grad_a[1, 0])
+
+    # In Shifted-Force, force at r_cut - delta_r is O(delta_r) ~ 0, unlike Shifted-Potential where force is O(1)
+    assert force_magnitude < 1e-2, (
+        f"Shifted-Force potential must have smoothly vanishing force at r_cut, got {force_magnitude}"
+    )
+

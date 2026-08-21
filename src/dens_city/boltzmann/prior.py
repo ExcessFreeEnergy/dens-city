@@ -7,7 +7,7 @@ with many-body particle configuration sampling in 3D slit pores.
 import math
 from typing import Tuple, Union
 import numpy as np
-from tinygrad import Tensor, dtypes
+from tinygrad import Tensor, dtypes, function
 
 
 class CDFTBaseDistribution:
@@ -24,20 +24,6 @@ class CDFTBaseDistribution:
         box_size_xy: Tuple[float, float] = (30.0, 30.0),
         n_particles: int = 1,
     ):
-        """
-        Initializes the cDFT prior distribution.
-
-        Parameters
-        ----------
-        rho_z : Union[np.ndarray, Tensor]
-            1D equilibrium density profile on a uniform grid in Z.
-        l_z : float
-            Confined slit width (in Å).
-        box_size_xy : Tuple[float, float]
-            Transverse periodic box dimensions (Lx, Ly) in Å.
-        n_particles : int
-            Number of particles N per configuration.
-        """
         if isinstance(rho_z, Tensor):
             self.rho_np = np.asarray(rho_z.numpy(), dtype=np.float64).flatten()
         else:
@@ -62,50 +48,35 @@ class CDFTBaseDistribution:
             raise ValueError("cDFT density profile mass integral must be strictly positive.")
         self.cdf = cdf / self.total_mass
 
-        # Precompute tinygrad tensors for vectorized differentiable log_prob evaluation
+        # Precompute tinygrad tensors for vectorized differentiable log_prob and pure tensor sampling
         self.rho_tensor = Tensor(self.rho_np.astype(np.float32), dtype=dtypes.float32)
+        self.cdf_tensor = Tensor(self.cdf.astype(np.float32), dtype=dtypes.float32)
 
     def sample(self, n_samples: int = 1) -> Tensor:
         """
-        Draws N-particle configurations from the cDFT base distribution.
-
-        Parameters
-        ----------
-        n_samples : int
-            Number of configuration samples B.
-
-        Returns
-        -------
-        Tensor
-            Sampled coordinates of shape (n_samples, n_particles, 3) if n_samples > 1 else (n_particles, 3).
+        Draws N-particle configurations from the cDFT base distribution using pure on-device Tensor operations.
         """
-        total_pts = n_samples * self.n_particles
         # Uniform sampling in transverse X and Y
-        x = np.random.uniform(0.0, self.lx, size=total_pts)
-        y = np.random.uniform(0.0, self.ly, size=total_pts)
+        x = Tensor.rand(n_samples, self.n_particles) * self.lx
+        y = Tensor.rand(n_samples, self.n_particles) * self.ly
 
-        # Inverse-CDF transform sampling in confined Z
-        u = np.random.uniform(0.0, 1.0, size=total_pts)
-        z = np.interp(u, self.cdf, self.z_edges)
+        # Pure tinygrad vectorized inverse-CDF piecewise linear interpolation
+        u = Tensor.rand(n_samples, self.n_particles)
+        k = ((u.unsqueeze(-1) >= self.cdf_tensor).sum(axis=-1) - 1).clip(0, self.n_grid - 1)
+        u0 = self.cdf_tensor[k]
+        u1 = self.cdf_tensor[(k + 1).clip(0, self.n_grid)]
+        du = (u1 - u0).maximum(1e-12)
+        alpha = (u - u0) / du
+        z = (k.cast(dtypes.float32) + alpha) * self.dz
 
-        pts = np.stack([x, y, z], axis=-1).reshape(n_samples, self.n_particles, 3).astype(np.float32)
-        out_tensor = Tensor(pts, dtype=dtypes.float32)
-        return out_tensor if n_samples > 1 else out_tensor.squeeze(0)
+        pts = Tensor.stack(x, y, z, dim=-1)
+        return pts if n_samples > 1 else pts.squeeze(0)
 
+    @function
     def log_prob(self, pos: Tensor) -> Tensor:
         r"""
         Computes exact base distribution log probability:
         \log p_0(\vec{r}_1 \dots \vec{r}_N) = \sum_{i=1}^N \left[ -\ln(L_x L_y) + \ln(\rho_{\rm cDFT}(z_i)) - \ln\left(\int \rho_{\rm cDFT}(z) dz\right) \right]
-
-        Parameters
-        ----------
-        pos : Tensor
-            Particle coordinates of shape (N, 3) or (B, N, 3).
-
-        Returns
-        -------
-        Tensor
-            Log-probabilities (scalar or (B,)).
         """
         is_batched = len(pos.shape) == 3
         pos_b = pos if is_batched else pos.unsqueeze(0)  # (B, N, 3)

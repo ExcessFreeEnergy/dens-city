@@ -7,7 +7,7 @@ and exact Steele 9-3 / hard-core steric wall potentials in confined Z dimension.
 import math
 from typing import Optional, Tuple, Union, List
 import numpy as np
-from tinygrad import Tensor, dtypes
+from tinygrad import Tensor, dtypes, function
 from dens_city.materials import Material
 
 
@@ -30,32 +30,6 @@ class MicroscopicEnergy:
         wall_epsilon_k: float = 50.0,
         wall_type: str = "stele93",
     ):
-        """
-        Initializes the microscopic energy evaluator.
-
-        Parameters
-        ----------
-        material : Optional[Material]
-            Material instance from dens_city.materials.
-        sigmas : Optional[Tensor-like]
-            Particle Lennard-Jones diameters (in Å).
-        epsilons : Optional[Tensor-like]
-            Particle Lennard-Jones well depths (in Kelvin).
-        charges : Optional[Tensor-like]
-            Particle partial charges (in elementary charge units e).
-        box_size : Tuple[float, float, float]
-            Periodic box dimensions (Lx, Ly, Lz) in Å.
-        r_cut : Optional[float]
-            Spherical interaction cutoff (in Å). Enforces r_cut <= min(Lx, Ly) / 2.
-        dielectric_constant : float
-            Relative dielectric permittivity epsilon_r.
-        wall_sigma : float
-            Substrate wall atom diameter (in Å).
-        wall_epsilon_k : float
-            Substrate wall interaction energy (in Kelvin).
-        wall_type : str
-            Wall potential model ('stele93' or 'hard').
-        """
         # Extract particle parameters
         if material is not None:
             if material.sites:
@@ -86,6 +60,7 @@ class MicroscopicEnergy:
 
         # Box dimensions
         self.lx, self.ly, self.lz = float(box_size[0]), float(box_size[1]), float(box_size[2])
+        self.box_xy = Tensor([self.lx, self.ly], dtype=dtypes.float32)
         max_valid_rcut = 0.5 * min(self.lx, self.ly)
         if r_cut is not None:
             self.r_cut = min(float(r_cut), max_valid_rcut)
@@ -101,15 +76,18 @@ class MicroscopicEnergy:
         self.e_ij = (self.epsilons.unsqueeze(1) * self.epsilons.unsqueeze(0)).sqrt()
         self.q_ij = self.charges.unsqueeze(1) * self.charges.unsqueeze(0)
 
-        # Precompute cutoff potential shifts at r = r_cut
+        # Precompute cutoff potential shifts and force gradients at r = r_cut for Shifted-Force (SF)
         sr_cut = self.s_ij / self.r_cut
         sr6_cut = sr_cut**6
         self.u_lj_cut = 4.0 * self.e_ij * (sr6_cut * sr6_cut - sr6_cut)
+        self.du_lj_cut = -(24.0 * self.e_ij / self.r_cut) * (2.0 * sr6_cut * sr6_cut - sr6_cut)
         self.u_coul_cut = (self.q_ij * self.c_coul) / self.r_cut
+        self.du_coul_cut = -(self.q_ij * self.c_coul) / (self.r_cut**2)
 
-        # Upper triangular mask (excludes diagonal and double counting)
-        self.triu_mask = Tensor(np.triu(np.ones((self.n_particles, self.n_particles), dtype=np.float32), k=1))
-        self.eye = Tensor(np.eye(self.n_particles, dtype=np.float32))
+        # Upper triangular mask (excludes diagonal and double counting) in pure tinygrad
+        idx = Tensor.arange(self.n_particles)
+        self.triu_mask = (idx.unsqueeze(1) < idx.unsqueeze(0)).float()
+        self.eye = Tensor.eye(self.n_particles)
 
         # Wall potential parameters in Z
         self.wall_sigma = float(wall_sigma)
@@ -122,22 +100,11 @@ class MicroscopicEnergy:
         self.steric_radius = 0.5 * self.sigma_wf  # (N,)
         self.wall_prefactor = (2.0 * math.pi * self.wall_epsilon_k * (self.sigma_wf**3)) / 3.0  # (N,)
 
+    @function
     def compute_pair_energy(self, pos: Tensor, shift: bool = True) -> Tensor:
         """
-        Computes pairwise Lennard-Jones + Coulomb energy with Minimum Image Convention in X and Y.
-
-        Parameters
-        ----------
-        pos : Tensor
-            Coordinates tensor of shape (N, 3) or (B, N, 3).
-        shift : bool
-            If True, shifts potentials to 0 at r_cut to guarantee continuous energy and finite gradients.
-            If False, evaluates bare unshifted potentials for exact single-point verifications.
-
-        Returns
-        -------
-        Tensor
-            Total pairwise energy (scalar for unbatched, (B,) for batched) in Kelvin.
+        Computes pairwise Lennard-Jones + Coulomb energy with Minimum Image Convention in X and Y,
+        applying exact Shifted-Force (SF) boundary continuity.
         """
         is_batched = len(pos.shape) == 3
         pos_b = pos if is_batched else pos.unsqueeze(0)  # (B, N, 3)
@@ -151,20 +118,24 @@ class MicroscopicEnergy:
         dz = diff[..., 2]
 
         r_sq = dx * dx + dy * dy + dz * dz
-        # Regularize diagonal self-interaction distance to prevent 0/0 NaNs
-        r = (r_sq + self.eye.unsqueeze(0)).sqrt()  # (B, N, N)
+        # Regularize diagonal self-interaction and overlapping particles to eliminate 0/0 NaN singularities
+        r = (r_sq + self.eye.unsqueeze(0) + 1e-4).sqrt()  # (B, N, N)
+        dr = r - self.r_cut
 
-        # 1. Lennard-Jones 12-6 pairwise term
+        # 1. Lennard-Jones 12-6 pairwise Shifted-Force term
         s_ij = self.s_ij.unsqueeze(0)  # (1, N, N)
         e_ij = self.e_ij.unsqueeze(0)  # (1, N, N)
-        sr6 = (s_ij / r) ** 6
+        sr = s_ij / r
+        sr6 = sr**6
         u_lj_bare = 4.0 * e_ij * (sr6 * sr6 - sr6)
-        u_lj = (u_lj_bare - self.u_lj_cut.unsqueeze(0)) if shift else u_lj_bare
+        u_lj_sf = u_lj_bare - self.u_lj_cut.unsqueeze(0) - self.du_lj_cut.unsqueeze(0) * dr
+        u_lj = u_lj_sf if shift else u_lj_bare
 
-        # 2. Coulomb pairwise electrostatic term
+        # 2. Coulomb pairwise electrostatic Shifted-Force term
         q_ij = self.q_ij.unsqueeze(0)  # (1, N, N)
         u_coul_bare = (q_ij * self.c_coul) / r
-        u_coul = (u_coul_bare - self.u_coul_cut.unsqueeze(0)) if shift else u_coul_bare
+        u_coul_sf = u_coul_bare - self.u_coul_cut.unsqueeze(0) - self.du_coul_cut.unsqueeze(0) * dr
+        u_coul = u_coul_sf if shift else u_coul_bare
 
         # Spherical cutoff mask & upper triangular exclusion
         within_cutoff = (r <= self.r_cut).float()
@@ -175,19 +146,10 @@ class MicroscopicEnergy:
 
         return u_pair if is_batched else u_pair.squeeze(0)
 
+    @function
     def compute_wall_energy(self, pos: Tensor) -> Tensor:
         """
         Computes external confining slit wall potential energy in Z for all particles.
-
-        Parameters
-        ----------
-        pos : Tensor
-            Coordinates tensor of shape (N, 3) or (B, N, 3).
-
-        Returns
-        -------
-        Tensor
-            Total external wall potential energy in Kelvin.
         """
         is_batched = len(pos.shape) == 3
         pos_b = pos if is_batched else pos.unsqueeze(0)  # (B, N, 3)
@@ -196,42 +158,27 @@ class MicroscopicEnergy:
         z_l = z
         z_r = self.lz - z
 
-        sigma_wf = self.sigma_wf.unsqueeze(0)  # (1, N)
-        steric_r = self.steric_radius.unsqueeze(0)  # (1, N)
-        pref = self.wall_prefactor.unsqueeze(0)  # (1, N)
-
-        # Distance ratios safely bounded from below to avoid negative/zero division
-        s_l = sigma_wf / z_l.maximum(1e-6)
-        s_r = sigma_wf / z_r.maximum(1e-6)
+        # Distance ratios safely bounded by steric radius to eliminate float32 (s_l**9) overflow
+        s_l = self.sigma_wf / z_l.maximum(self.steric_radius)
+        s_r = self.sigma_wf / z_r.maximum(self.steric_radius)
 
         if self.wall_type == "stele93":
-            v_l = pref * ((2.0 / 15.0) * (s_l**9) - (s_l**3))
-            v_r = pref * ((2.0 / 15.0) * (s_r**9) - (s_r**3))
+            v_l = self.wall_prefactor * ((2.0 / 15.0) * (s_l**9) - (s_l**3))
+            v_r = self.wall_prefactor * ((2.0 / 15.0) * (s_r**9) - (s_r**3))
             v_stele = (v_l + v_r).minimum(self.v_wall_inf)
-            is_steric = (z_l <= steric_r) | (z_r <= steric_r)
+            is_steric = (z_l <= self.steric_radius) | (z_r <= self.steric_radius)
             v_wall = is_steric.where(self.v_wall_inf, v_stele)
         else:
             # Pure hard wall
-            is_steric = (z_l < sigma_wf) | (z_r < sigma_wf)
+            is_steric = (z_l < self.sigma_wf) | (z_r < self.sigma_wf)
             v_wall = is_steric.where(self.v_wall_inf, 0.0)
 
         u_wall = v_wall.sum(axis=-1)  # (B,)
         return u_wall if is_batched else u_wall.squeeze(0)
 
+    @function
     def __call__(self, pos: Tensor, shift: bool = True) -> Tensor:
         """
         Computes total microscopic Hamiltonian U(pos) = U_pair(pos) + U_ext(pos).
-
-        Parameters
-        ----------
-        pos : Tensor
-            Coordinates tensor of shape (N, 3) or (B, N, 3).
-        shift : bool
-            Whether to apply potential shifts at r_cut.
-
-        Returns
-        -------
-        Tensor
-            Total system potential energy in Kelvin.
         """
         return self.compute_pair_energy(pos, shift=shift) + self.compute_wall_energy(pos)
