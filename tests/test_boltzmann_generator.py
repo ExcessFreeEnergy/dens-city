@@ -8,7 +8,7 @@ import math
 import numpy as np
 import pytest
 from tinygrad import Tensor
-from dens_city.boltzmann.bijectors import RealNVPFlow, CompositeFlow
+from dens_city.boltzmann.bijectors import RealNVPFlow, CompositeFlow, Base2CartesianFlow
 from dens_city.boltzmann.prior import CDFTBaseDistribution
 from dens_city.boltzmann.energy import MicroscopicEnergy
 from dens_city.boltzmann.generator import BoltzmannGenerator
@@ -75,7 +75,8 @@ def test_boltzmann_generator_with_cdft_prior():
     )
 
     energy_fn = MicroscopicEnergy(
-        material=argon,
+        sigmas=[argon.effective_sigma, argon.effective_sigma],
+        epsilons=[argon.effective_epsilon_k, argon.effective_epsilon_k],
         box_size=box_size,
         r_cut=10.0,
     )
@@ -105,6 +106,45 @@ def test_boltzmann_generator_with_cdft_prior():
     assert np.all(np.isfinite(lp.numpy()))
 
 
+def test_boltzmann_generator_with_base2_cartesian_flow():
+    """
+    Validates end-to-end BoltzmannGenerator with 4-channel Base2CartesianFlow.
+    Ensures 100% dyadic factorable base-2 execution and automatic slicing of dummy sites.
+    """
+    water = MaterialLoader.load_material("water")
+    energy_fn = MicroscopicEnergy(
+        material=water,
+        box_size=(30.0, 30.0, 30.0),
+        r_cut=10.0,
+        pad_to_power_of_2=True,
+    )
+    assert energy_fn.n_particles == 4
+    assert energy_fn.n_real_particles == 3
+
+    flow = Base2CartesianFlow(n_atoms=energy_fn.n_particles, n_layers=4, hidden_dim=32)
+    assert flow.dim == 16  # 4 atoms * 4 channels = 16 (2^4)
+
+    generator = BoltzmannGenerator(
+        flow=flow,
+        energy_fn=energy_fn,
+        temperature_k=300.0,
+        learning_rate=0.01,
+    )
+
+    losses = generator.train(steps=20, batch_size=16)
+    assert len(losses) == 20
+    assert np.all(np.isfinite(losses)), "Losses must be finite"
+
+    # Sample configurations: must be automatically sliced to real 3 atoms
+    samples = generator.sample(n_samples=8)
+    assert samples.shape == (8, 3, 3), f"Samples shape {samples.shape} != (8, 3, 3)"
+    assert np.all(np.isfinite(samples.numpy())), "Sampled coordinates must be finite"
+
+    lp = generator.log_prob(samples)
+    assert lp.shape == (8,)
+    assert np.all(np.isfinite(lp.numpy()))
+
+
 def test_boltzmann_generator_with_composite_flow():
     """
     Validates end-to-end BoltzmannGenerator training using CompositeFlow (RealNVP + ZMatrix)
@@ -122,6 +162,7 @@ def test_boltzmann_generator_with_composite_flow():
         material=water,
         box_size=(30.0, 30.0, 30.0),
         r_cut=10.0,
+        pad_to_power_of_2=False,
     )
 
     generator = BoltzmannGenerator(
@@ -145,3 +186,36 @@ def test_boltzmann_generator_with_composite_flow():
     lp = generator.log_prob(samples)
     assert lp.shape == (6,), f"Log prob shape {lp.shape} != (6,)"
     assert np.all(np.isfinite(lp.numpy())), "Log probability must be finite"
+
+
+def test_boltzmann_generator_with_power_of_2_padded_composite_flow():
+    """
+    Validates end-to-end BoltzmannGenerator with 3-site water padded to power-of-2 (N_pad = 4).
+    Verifies that generator.sample automatically slices dummy sites back to (B, 3, 3).
+    """
+    water = MaterialLoader.load_material("water")
+    energy_fn = MicroscopicEnergy(
+        material=water,
+        box_size=(30.0, 30.0, 30.0),
+        r_cut=10.0,
+        pad_to_power_of_2=True,
+    )
+    assert energy_fn.n_particles == 4
+    assert energy_fn.n_real_particles == 3
+
+    flow = CompositeFlow(n_atoms=energy_fn.n_particles, n_layers=4, hidden_dim=32)
+    generator = BoltzmannGenerator(
+        flow=flow,
+        energy_fn=energy_fn,
+        temperature_k=300.0,
+        learning_rate=0.005,
+    )
+
+    losses = generator.train(steps=15, batch_size=16)
+    assert len(losses) == 15
+    assert np.all(np.isfinite(losses)), "Losses must be finite"
+
+    # Sample configurations: must be automatically sliced to real 3 atoms
+    samples = generator.sample(n_samples=6)
+    assert samples.shape == (6, 3, 3), f"Samples shape {samples.shape} != (6, 3, 3)"
+    assert np.all(np.isfinite(samples.numpy())), "Sampled coordinates must be finite"

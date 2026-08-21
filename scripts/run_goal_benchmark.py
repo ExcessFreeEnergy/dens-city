@@ -31,14 +31,21 @@ def get_material_site_count(mat_name: str) -> int:
         return 1
 
 
-def get_sorted_materials(data_dir: Path, selected: Optional[List[str]] = None) -> List[Tuple[str, int]]:
+def get_power_of_2_padded_size(n: int) -> int:
+    return 1 << (n - 1).bit_length() if n > 1 else 1
+
+
+def get_sorted_materials(data_dir: Path, selected: Optional[List[str]] = None) -> List[Tuple[str, int, int]]:
     mol2_files = sorted(data_dir.glob("*.mol2"))
     all_names = [f.stem for f in mol2_files]
     target_names = [m for m in selected if m in all_names] if selected else all_names
 
-    mats_with_sites = [(m, get_material_site_count(m)) for m in target_names]
-    # Sort strictly by site count ascending, then alphabetically by name
-    return sorted(mats_with_sites, key=lambda item: (item[1], item[0]))
+    mats_with_sites = [
+        (m, get_material_site_count(m), get_power_of_2_padded_size(get_material_site_count(m)))
+        for m in target_names
+    ]
+    # Sort strictly by power-of-2 bucket ascending, then by actual site count, then alphabetically
+    return sorted(mats_with_sites, key=lambda item: (item[2], item[1], item[0]))
 
 
 def analyze_compiler_log(log_content: str) -> Dict[str, any]:
@@ -66,6 +73,7 @@ def analyze_compiler_log(log_content: str) -> Dict[str, any]:
 def run_single_material(
     material: str,
     site_count: int,
+    pad_site_count: int,
     log_dir: Path,
     data_dir: Path,
     cdft_steps: int = 3,
@@ -129,12 +137,13 @@ def run_single_material(
         with open(log_file_path, "a", encoding="utf-8") as log_f:
             log_f.write("\n" + "=" * 80 + "\n")
             log_f.write(f"  Compiler & BEAM Summary Note: {comp_info['beam_note']}\n")
-            log_f.write(f"  Material Sites: {site_count} | Status: {status} | Elapsed: {elapsed:.2f}s\n")
+            log_f.write(f"  Material Sites: {site_count} (Padded: {pad_site_count}) | Status: {status} | Elapsed: {elapsed:.2f}s\n")
             log_f.write("=" * 80 + "\n")
 
     return {
         "material": material,
         "sites": site_count,
+        "pad_sites": pad_site_count,
         "status": status,
         "elapsed": elapsed,
         "log_path": str(log_file_path),
@@ -145,7 +154,7 @@ def run_single_material(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Site-Sorted Goal Benchmark Runner for dens-city")
+    parser = argparse.ArgumentParser(description="Power-of-2 Site-Grouped Goal Benchmark Runner for dens-city")
     parser.add_argument("--workers", type=int, default=1, help="Number of concurrent worker processes (default: 1 for GPU BEAM safety)")
     parser.add_argument("--timeout", type=float, default=500.0, help="Per-material timeout in seconds (default: 500.0)")
     parser.add_argument("--materials", nargs="+", default=None, help="Specific materials to run (default: all)")
@@ -158,23 +167,29 @@ def main():
 
     sorted_materials = get_sorted_materials(data_dir, args.materials)
 
-    print("=" * 100)
-    print(f"  dens-city: BEAM=2 DEBUG=2 Site-Sorted Benchmark for {len(sorted_materials)} Materials")
+    print("=" * 110)
+    print(f"  dens-city: BEAM=2 DEBUG=2 Power-of-2 Site-Grouped Benchmark for {len(sorted_materials)} Materials")
     print(f"  Configuration: Timeout={args.timeout}s, Workers={args.workers}, Output={log_dir}")
     print(f"  Iterations: 3 cDFT steps, 3 BG steps, 2 BG samples")
-    print("=" * 100)
-    print(f"{'#':<3} | {'Material':<25} | {'Sites':<5} | {'Status':<12} | {'Time (s)':<8} | {'Log Size':<10} | {'BEAM Compiler Note'}")
-    print("-" * 100)
+    print("=" * 110)
+    print(f"{'#':<3} | {'Bucket':<8} | {'Material':<24} | {'Sites (Pad)':<11} | {'Status':<12} | {'Time (s)':<8} | {'BEAM Compiler Note'}")
+    print("-" * 110)
 
     results = []
     t_start = time.perf_counter()
+    current_bucket = None
 
     if args.workers <= 1:
-        # Strictly sequential execution preserving site ordering (1 site back to back, then 2, 3, ...)
-        for idx, (mat, sites) in enumerate(sorted_materials, 1):
+        # Strictly sequential execution grouped by power-of-2 buckets
+        for idx, (mat, sites, pad_sites) in enumerate(sorted_materials, 1):
+            if current_bucket != pad_sites:
+                current_bucket = pad_sites
+                b_name = f"2^{int(pad_sites.bit_length()-1)}"
+
             res = run_single_material(
                 mat,
                 sites,
+                pad_sites,
                 log_dir,
                 data_dir,
                 cdft_steps=3,
@@ -183,44 +198,37 @@ def main():
                 timeout=args.timeout,
             )
             results.append(res)
-            print(
-                f"[{idx:02d}] | {res['material']:<25} | {res['sites']:<5} | "
-                f"{res['status']:<12} | {res['elapsed']:8.2f} | "
-                f"{res['log_size_kb']:7.1f} KB | {res['beam_note']}"
-            )
+            site_str = f"{sites} ({pad_sites})"
+            print(f"[{idx:02d}] | {b_name:<8} | {mat:<24} | {site_str:<11} | {res['status']:<12} | {res['elapsed']:8.2f} | {res['beam_note']}")
     else:
-        with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as executor:
-            future_to_item = {
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
+            future_to_mat = {
                 executor.submit(
                     run_single_material,
                     mat,
                     sites,
+                    pad_sites,
                     log_dir,
                     data_dir,
-                    cdft_steps=3,
-                    bg_steps=3,
-                    bg_samples=2,
-                    timeout=args.timeout,
-                ): (mat, sites)
-                for mat, sites in sorted_materials
+                    3, 3, 2,
+                    args.timeout,
+                ): (mat, sites, pad_sites)
+                for mat, sites, pad_sites in sorted_materials
             }
-
-            for idx, future in enumerate(concurrent.futures.as_completed(future_to_item), 1):
+            for idx, future in enumerate(concurrent.futures.as_completed(future_to_mat), 1):
+                mat, sites, pad_sites = future_to_mat[future]
                 res = future.result()
                 results.append(res)
-                print(
-                    f"[{idx:02d}] | {res['material']:<25} | {res['sites']:<5} | "
-                    f"{res['status']:<12} | {res['elapsed']:8.2f} | "
-                    f"{res['log_size_kb']:7.1f} KB | {res['beam_note']}"
-                )
+                b_name = f"2^{int(pad_sites.bit_length()-1)}"
+                site_str = f"{sites} ({pad_sites})"
+                print(f"[{idx:02d}] | {b_name:<8} | {mat:<24} | {site_str:<11} | {res['status']:<12} | {res['elapsed']:8.2f} | {res['beam_note']}")
 
     total_time = time.perf_counter() - t_start
     n_success = sum(1 for r in results if r["status"] == "SUCCESS")
-
-    print("=" * 100)
-    print(f"Site-Sorted Benchmark Complete: {n_success}/{len(sorted_materials)} Successful in {total_time:.2f}s")
+    print("=" * 110)
+    print(f"Power-of-2 Grouped Benchmark Complete: {n_success}/{len(results)} Successful in {total_time:.2f}s")
     print(f"All logs saved to: {log_dir}")
-    print("=" * 100)
+    print("=" * 110)
 
 
 if __name__ == "__main__":

@@ -57,9 +57,10 @@ class CDFTBaseDistribution:
         self.rho_tensor = Tensor(self.rho_np.astype(np.float32), dtype=dtypes.float32)
         self.cdf_tensor = Tensor(self.cdf.astype(np.float32), dtype=dtypes.float32)
 
-    def sample(self, n_samples: int = 1) -> Tensor:
+    def sample(self, n_samples: int = 1, as_4channel: bool = False) -> Tensor:
         """
         Draws N-particle configurations from the cDFT base distribution using pure on-device Tensor operations.
+        Returns shape (n_samples, N, 4) if as_4channel=True else (n_samples, N, 3).
         """
         # Uniform sampling in transverse X and Y
         x = Tensor.rand(n_samples, self.n_particles) * self.lx
@@ -74,7 +75,11 @@ class CDFTBaseDistribution:
         alpha = (u - u0) / du
         z = (k.cast(dtypes.float32) + alpha) * self.dz
 
-        pts = Tensor.stack(x, y, z, dim=-1)
+        if as_4channel:
+            w = Tensor.zeros(n_samples, self.n_particles, dtype=dtypes.float32)
+            pts = Tensor.stack(x, y, z, w, dim=-1)
+        else:
+            pts = Tensor.stack(x, y, z, dim=-1)
         return pts if n_samples > 1 else pts.squeeze(0)
 
     def log_prob(self, pos: Tensor) -> Tensor:
@@ -82,9 +87,18 @@ class CDFTBaseDistribution:
         Computes exact base distribution log probability:
         \log p_0(\vec{r}_1 \dots \vec{r}_N) = \sum_{i=1}^N \left[ -\ln(L_x L_y) + \ln(\rho_{\rm cDFT}(z_i)) - \ln\left(\int \rho_{\rm cDFT}(z) dz\right) \right]
         """
-        is_batched = len(pos.shape) == 3
-        pos_b = pos if is_batched else pos.unsqueeze(0)  # (B, N, 3)
+        if len(pos.shape) == 2:
+            if pos.shape[-1] in (3, 4):
+                pos_b = pos.unsqueeze(0)
+            else:
+                ch = 4 if pos.shape[-1] == self.n_particles * 4 else 3
+                pos_b = pos.reshape(-1, self.n_particles, ch)
+        elif len(pos.shape) == 3:
+            pos_b = pos
+        else:
+            pos_b = pos.reshape(1, self.n_particles, -1)
 
+        is_batched = len(pos.shape) >= 2
         z = pos_b[..., 2]  # (B, N)
 
         # 1D linear grid interpolation for rho(z)

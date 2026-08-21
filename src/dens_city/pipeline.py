@@ -20,7 +20,7 @@ from dens_city.materials import MaterialLoader, Material
 from dens_city.cdft import TinyCDFT
 from dens_city.boltzmann.prior import CDFTBaseDistribution
 from dens_city.boltzmann.energy import MicroscopicEnergy
-from dens_city.boltzmann.bijectors import RealNVPFlow, CompositeFlow
+from dens_city.boltzmann.bijectors import RealNVPFlow, CompositeFlow, Base2CartesianFlow
 from dens_city.boltzmann.generator import BoltzmannGenerator
 
 
@@ -263,34 +263,27 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
             n_particles=n_sites,
         )
 
-        # Microscopic Hamiltonian with Shifted-Force boundary condition
+        # Microscopic Hamiltonian with Shifted-Force boundary condition & Power-of-2 Padding
         energy_fn = MicroscopicEnergy(
             material=material,
             box_size=box_size_3d,
             r_cut=task.r_cut,
+            pad_to_power_of_2=True,
         )
+        n_pad_sites = energy_fn.n_particles
 
-        # Invertible Flow Architecture & cDFT Spatial Prior Handoff
-        if n_sites >= 3:
-            flow = CompositeFlow(
-                n_atoms=n_sites,
-                n_layers=4,
-                hidden_dim=32,
-            )
-            # Spatial prior for Atom 0 origin in slit pore
-            flow_prior = CDFTBaseDistribution(
-                rho_z=rho_profile,
-                l_z=slit_w,
-                box_size_xy=box_xy,
-                n_particles=1,
-            )
-        else:
-            flow = RealNVPFlow(
-                dim=max(1, n_sites * 3),
-                n_layers=4,
-                hidden_dim=32,
-            )
-            flow_prior = prior
+        # 4-Channel Base-2 Cartesian Flow (dim = N_pad * 4: strictly dyadic 2^k)
+        flow = Base2CartesianFlow(
+            n_atoms=n_pad_sites,
+            n_layers=4,
+            hidden_dim=32 if n_pad_sites <= 8 else 64,
+        )
+        flow_prior = CDFTBaseDistribution(
+            rho_z=rho_profile,
+            l_z=slit_w,
+            box_size_xy=box_xy,
+            n_particles=n_pad_sites,
+        )
 
         # Boltzmann Generator Optimization
         generator = BoltzmannGenerator(
@@ -317,9 +310,10 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
         all_energies = []
         n_batches = math.ceil(task.bg_samples / task.bg_batch_size)
         for _ in range(n_batches):
-            b_samples = generator.sample(n_samples=task.bg_batch_size)
-            b_energies = energy_fn.eval_energy(b_samples)
-            all_samples.append(b_samples.numpy())
+            b_samples_pad = generator.sample(n_samples=task.bg_batch_size, return_all_pad=True)
+            b_energies = energy_fn.eval_energy(b_samples_pad)
+            b_samples_real = b_samples_pad[:, :n_sites, :] if len(b_samples_pad.shape) == 3 else b_samples_pad[:n_sites, :]
+            all_samples.append(b_samples_real.numpy())
             all_energies.extend(b_energies.numpy().tolist())
 
         samples_np = np.concatenate(all_samples, axis=0)[:task.bg_samples]

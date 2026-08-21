@@ -25,7 +25,7 @@ def test_cdft_prior_histogram_r2_overlap():
     result = cdft.solve(steps=50, verbose=False)
 
     rho_np = result["rho"]
-    dz = cdft.dz
+    dz = cdft.dz_val
 
     prior = CDFTBaseDistribution(
         rho_z=rho_np,

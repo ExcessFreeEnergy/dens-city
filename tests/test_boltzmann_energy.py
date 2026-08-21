@@ -8,7 +8,7 @@ import math
 import numpy as np
 import pytest
 from tinygrad import Tensor
-from dens_city.boltzmann.energy import MicroscopicEnergy
+from dens_city.boltzmann.energy import MicroscopicEnergy, regularize_energy
 from dens_city.materials import MaterialLoader
 
 
@@ -243,4 +243,149 @@ def test_shifted_force_zero_energy_and_continuous_force_at_cutoff():
     assert force_magnitude < 1e-2, (
         f"Shifted-Force potential must have smoothly vanishing force at r_cut, got {force_magnitude}"
     )
+
+
+def test_noe_energy_regularization_linear_and_log_regimes():
+    """
+    Validates Frank Noé's logarithmic energy regularization formula:
+    E_reg = E for E < E_high
+    E_reg = E_high + log(E - E_high + 1) for E_high <= E < E_max
+    E_reg = E_high + log(E_max - E_high + 1) for E >= E_max
+    and verifies that analytical derivatives match autograd gradients across all regimes.
+    """
+    e_high = 10000.0
+    e_max = 1e20
+
+    # 1. Linear regime (E < E_high): negative, zero, and intermediate positive energies
+    e_linear = Tensor([-200.0, 0.0, 500.0, 9999.0])
+    e_linear.requires_grad = True
+    reg_linear = regularize_energy(e_linear, e_high=e_high, e_max=e_max)
+
+    # In the linear regime, E_reg == E
+    np.testing.assert_allclose(reg_linear.numpy(), e_linear.numpy(), rtol=1e-5)
+
+    # Derivative d(E_reg)/dE == 1.0 everywhere in linear regime
+    reg_linear.sum().backward()
+    np.testing.assert_allclose(e_linear.grad.numpy(), [1.0, 1.0, 1.0, 1.0], rtol=1e-5)
+
+    # 2. Boundary and Logarithmic regime (E_high <= E < E_max)
+    test_energies = [10000.0, 10001.0, 20000.0, 100000.0, 1e6]
+    e_log = Tensor(test_energies)
+    e_log.requires_grad = True
+    reg_log = regularize_energy(e_log, e_high=e_high, e_max=e_max)
+
+    # Expected values E_high + log(E - E_high + 1)
+    expected_vals = [e_high + math.log(val - e_high + 1.0) for val in test_energies]
+    np.testing.assert_allclose(reg_log.numpy(), expected_vals, rtol=1e-4)
+
+    # Expected derivatives 1 / (E - E_high + 1)
+    reg_log.sum().backward()
+    expected_grads = [1.0 / (val - e_high + 1.0) for val in test_energies]
+    # Note: At exact boundary E = E_high, subgradient of maximum(0.0) is 0.5; for all E > E_high, exact 1/(E-E_high+1)
+    np.testing.assert_allclose(e_log.grad.numpy()[1:], expected_grads[1:], rtol=1e-3)
+
+    # 3. Clamped ceiling regime (E >= E_max)
+    e_overflow = Tensor([1e21, 1e22])
+    e_overflow.requires_grad = True
+    reg_overflow = regularize_energy(e_overflow, e_high=e_high, e_max=e_max)
+    expected_ceiling = e_high + math.log(e_max - e_high + 1.0)
+    np.testing.assert_allclose(reg_overflow.numpy(), [expected_ceiling, expected_ceiling], rtol=1e-4)
+
+    # Derivative in clamped ceiling regime must be 0.0
+    reg_overflow.sum().backward()
+    np.testing.assert_allclose(e_overflow.grad.numpy(), [0.0, 0.0], atol=1e-6)
+
+
+def test_overlapping_atom_gradient_taming():
+    """
+    Validates that severely overlapping particles (e.g. during early flow training iterations)
+    would produce catastrophic gradient explosions (> 10^13) under bare Lennard-Jones,
+    while Noé energy regularization tames the gradient to a stable, gentle magnitude (O(10))
+    directing overlapping atoms strictly apart without NaNs or numerical overflow.
+    """
+    sigma = 3.4
+    epsilon = 119.8
+    energy_fn = MicroscopicEnergy(
+        sigmas=[sigma, sigma],
+        epsilons=[epsilon, epsilon],
+        box_size=(30.0, 30.0, 40.0),
+        r_cut=12.0,
+        e_high=10000.0,
+    )
+
+    # Place pair at severe overlap: r = 0.5 Å << sigma = 3.4 Å along x-axis
+    p_unreg = Tensor([[15.0, 15.0, 20.0], [15.5, 15.0, 20.0]])
+    p_unreg.requires_grad = True
+    u_unreg = energy_fn(p_unreg, shift=True, regularize=False)
+
+    # Unregularized energy is > 10^12 K
+    assert u_unreg.item() > 1e12, f"Bare LJ energy {u_unreg.item()} must be astronomical"
+
+    u_unreg.backward()
+    unreg_grad = p_unreg.grad.numpy()
+    unreg_force_mag = np.abs(unreg_grad[1, 0])
+    # Unregularized force gradient explodes to > 10^13
+    assert unreg_force_mag > 1e13, f"Bare gradient magnitude {unreg_force_mag} must be explosive"
+
+    # Now evaluate with Noé regularization
+    p_reg = Tensor([[15.0, 15.0, 20.0], [15.5, 15.0, 20.0]])
+    p_reg.requires_grad = True
+    u_reg = energy_fn(p_reg, shift=True, regularize=True)
+
+    # Regularized energy is smoothly compressed around E_high + log(excess) ~ 10029 K
+    assert 10000.0 < u_reg.item() < 10100.0, f"Regularized energy {u_reg.item()} must be gently compressed"
+
+    u_reg.backward()
+    reg_grad = p_reg.grad.numpy()
+    reg_force_atom1_x = reg_grad[0, 0]
+    reg_force_atom2_x = reg_grad[1, 0]
+
+    # Gradients are finite and non-zero
+    assert np.all(np.isfinite(reg_grad)), "Regularized gradients must be finite without NaNs"
+    assert not np.all(reg_grad == 0.0), "Regularized gradients must be non-zero"
+
+    # Gradient magnitude is tamed to gentle O(10) instead of 10^13
+    assert abs(reg_force_atom2_x) < 100.0, f"Regularized force {reg_force_atom2_x} must be gentle"
+
+    # Physical direction: negative on atom 2 (moves in +x direction to increase r), positive on atom 1
+    # Because loss L = U(x), gradient dL/dx points toward higher energy, so -grad pushes atoms apart
+    assert reg_force_atom1_x > 0.0, "Force gradient on atom 1 must push it toward -x"
+    assert reg_force_atom2_x < 0.0, "Force gradient on atom 2 must push it toward +x"
+
+
+def test_energy_fn_regularization_toggle():
+    """
+    Validates that MicroscopicEnergy respects regularize=False and e_high=None configurations.
+    """
+    sigma = 3.4
+    epsilon = 119.8
+
+    # 1. MicroscopicEnergy with e_high=1e4
+    fn_reg = MicroscopicEnergy(
+        sigmas=[sigma, sigma],
+        epsilons=[epsilon, epsilon],
+        box_size=(30.0, 30.0, 40.0),
+        r_cut=12.0,
+        e_high=10000.0,
+    )
+
+    pos_clash = Tensor([[15.0, 15.0, 20.0], [15.5, 15.0, 20.0]])
+    u_regularized = fn_reg(pos_clash, regularize=True).item()
+    u_unregularized = fn_reg(pos_clash, regularize=False).item()
+
+    assert u_regularized < 20000.0, f"Regularized energy {u_regularized} must be compressed"
+    assert u_unregularized > 1e12, f"Unregularized energy {u_unregularized} must be uncompressed"
+
+    # 2. MicroscopicEnergy with e_high=None (regularization disabled at init)
+    fn_noreg = MicroscopicEnergy(
+        sigmas=[sigma, sigma],
+        epsilons=[epsilon, epsilon],
+        box_size=(30.0, 30.0, 40.0),
+        r_cut=12.0,
+        e_high=None,
+    )
+
+    u_none = fn_noreg(pos_clash, regularize=True).item()
+    assert u_none == u_unregularized, f"When e_high=None, energy {u_none} must remain unregularized"
+
 

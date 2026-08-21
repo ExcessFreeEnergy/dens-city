@@ -11,6 +11,33 @@ from tinygrad import Tensor, TinyJit, dtypes
 from dens_city.materials import Material
 
 
+def regularize_energy(
+    energy: Tensor,
+    e_high: Union[float, Tensor] = 1e4,
+    e_max: Union[float, Tensor] = 1e20,
+) -> Tensor:
+    r"""
+    Applies Frank Noé's continuous logarithmic energy regularization for energies exceeding e_high:
+    $$E_{\rm reg} = \begin{cases}
+        E & E < E_{\rm high} \\
+        E_{\rm high} + \log(E - E_{\rm high} + 1) & E_{\rm high} \le E < E_{\rm max} \\
+        E_{\rm high} + \log(E_{\rm max} - E_{\rm high} + 1) & E \ge E_{\rm max}
+    \end{cases}$$
+    Provides continuous, non-zero gradients \nabla E / (E - E_high + 1) to push clashing atoms
+    apart during early training iterations without numerical gradient explosions.
+
+    Hard-bounds excess to 0.0 before evaluating .log() to prevent NaNs in both forward
+    and autograd backward compiler passes.
+    """
+    eh = Tensor(float(e_high), dtype=dtypes.float32) if not isinstance(e_high, Tensor) else e_high
+    em = Tensor(float(e_max), dtype=dtypes.float32) if not isinstance(e_max, Tensor) else e_max
+    excess = (energy - eh).maximum(0.0)
+    excess_clamped = excess.minimum(em - eh)
+    e_reg = eh + (excess_clamped + 1.0).log()
+    is_high = (energy >= eh)
+    return is_high.where(e_reg, energy)
+
+
 class MicroscopicEnergy:
     """
     Evaluates the exact 3D microscopic Hamiltonian U(x) for discrete particle configurations
@@ -29,6 +56,9 @@ class MicroscopicEnergy:
         wall_epsilon_k: float = 119.8,
         wall_type: str = "stele93",
         dielectric_constant: float = 1.0,
+        pad_to_power_of_2: bool = True,
+        e_high: Optional[float] = 1e4,
+        e_max: float = 1e20,
     ):
         if material is not None:
             if material.sites:
@@ -52,10 +82,27 @@ class MicroscopicEnergy:
         else:
             raise ValueError("Must provide either a Material instance or explicit (sigmas, epsilons).")
 
-        self.n_particles = len(s_list)
+        self.n_real_particles = len(s_list)
+        # Pad number of sites to the nearest power of 2 (1, 2, 4, 8, 16, 32, 64, ...) if requested
+        if pad_to_power_of_2:
+            self.n_particles = 1 << (self.n_real_particles - 1).bit_length() if self.n_real_particles > 1 else 1
+        else:
+            self.n_particles = self.n_real_particles
+
+        n_pad = self.n_particles - self.n_real_particles
+        if n_pad > 0:
+            s_list = s_list + [1.0] * n_pad
+            e_list = e_list + [0.0] * n_pad
+            q_list = q_list + [0.0] * n_pad
+
         self.sigmas = Tensor(s_list, dtype=dtypes.float32).realize()
         self.epsilons = Tensor(e_list, dtype=dtypes.float32).realize()
         self.charges = Tensor(q_list, dtype=dtypes.float32).realize()
+
+        # Real-atom exclusion and reduction mask
+        idx = Tensor.arange(self.n_particles)
+        self.is_real_atom = (idx < self.n_real_particles).float().realize()  # (N,)
+        atom_mask_2d = self.is_real_atom.unsqueeze(1) * self.is_real_atom.unsqueeze(0)  # (N, N)
 
         # Box dimensions as realized device buffers
         self.lx = Tensor([float(box_size[0])], dtype=dtypes.float32).realize()
@@ -90,9 +137,8 @@ class MicroscopicEnergy:
         self.u_coul_cut = ((self.q_ij * self.c_coul) / self.r_cut).realize()
         self.du_coul_cut = (-(self.q_ij * self.c_coul) / (self.r_cut * self.r_cut)).realize()
 
-        # Upper triangular mask (excludes diagonal and double counting) in pure tinygrad
-        idx = Tensor.arange(self.n_particles)
-        self.triu_mask = (idx.unsqueeze(1) < idx.unsqueeze(0)).float().unsqueeze(0).realize()
+        # Upper triangular mask (excludes diagonal, double counting, and dummy atoms)
+        self.triu_mask = ((idx.unsqueeze(1) < idx.unsqueeze(0)).float() * atom_mask_2d).unsqueeze(0).realize()
         self.eye = Tensor.eye(self.n_particles).unsqueeze(0).realize()
 
         # Wall potential parameters in Z as realized device buffers
@@ -101,10 +147,20 @@ class MicroscopicEnergy:
         self.wall_type = wall_type
         self.v_wall_inf = Tensor([1e6], dtype=dtypes.float32).realize()
 
-        # Lorentz-Berthelot collision diameter with wall
+        # Lorentz-Berthelot collision diameter with wall (masked for dummy atoms)
         self.sigma_wf = (0.5 * (self.wall_sigma + self.sigmas)).realize()  # (N,)
-        self.steric_radius = (0.5 * self.sigma_wf).realize()  # (N,)
-        self.wall_prefactor = (((2.0 * math.pi * self.wall_epsilon_k) / 3.0) * (self.sigma_wf**3)).realize()  # (N,)
+        self.steric_radius = ((0.5 * self.sigma_wf) * self.is_real_atom).realize()  # (N,)
+        self.wall_prefactor = ((((2.0 * math.pi * self.wall_epsilon_k) / 3.0) * (self.sigma_wf**3)) * self.is_real_atom).realize()  # (N,)
+
+        # Energy regularization parameters as realized device buffers
+        self.e_high_val = float(e_high) if e_high is not None else None
+        self.e_max_val = float(e_max)
+        if self.e_high_val is not None:
+            self.e_high = Tensor(self.e_high_val, dtype=dtypes.float32).realize()
+            self.e_max = Tensor(self.e_max_val, dtype=dtypes.float32).realize()
+        else:
+            self.e_high = None
+            self.e_max = None
 
         # JIT-compiled energy evaluation
         self.eval_energy = TinyJit(self.__call__)
@@ -113,12 +169,26 @@ class MicroscopicEnergy:
         """
         Computes pairwise Lennard-Jones + Coulomb energy with Minimum Image Convention in X and Y,
         applying exact Shifted-Force (SF) boundary continuity.
+        Supports both (B, N, 3) and (B, N, 4) coordinates.
         """
-        is_batched = len(pos.shape) == 3
-        pos_b = pos if is_batched else pos.unsqueeze(0)  # (B, N, 3)
+        is_batched = len(pos.shape) >= 2 and (len(pos.shape) == 3 or (len(pos.shape) == 2 and pos.shape[-1] not in (3, 4)))
+        if len(pos.shape) == 2:
+            if pos.shape[-1] in (3, 4):
+                pos_b = pos.unsqueeze(0)
+            else:
+                # Flat (B, N*3) or (B, N*4)
+                ch = 4 if pos.shape[-1] == self.n_particles * 4 else 3
+                pos_b = pos.reshape(-1, self.n_particles, ch)
+        elif len(pos.shape) == 3:
+            pos_b = pos
+        else:
+            pos_b = pos.reshape(1, self.n_particles, -1)
+
+        # Slice 3D Cartesian coordinates (x, y, z)
+        pos_3d = pos_b[..., :3]
 
         # Vectorized pairwise displacement matrix (B, N, N, 3)
-        diff = pos_b.unsqueeze(2) - pos_b.unsqueeze(1)
+        diff = pos_3d.unsqueeze(2) - pos_3d.unsqueeze(1)
 
         # Minimum Image Convention in periodic X and Y dimensions
         dx = diff[..., 0] - self.lx * (diff[..., 0] / self.lx + 0.5).floor()
@@ -159,8 +229,17 @@ class MicroscopicEnergy:
         """
         Computes external confining slit wall potential energy in Z for all particles.
         """
-        is_batched = len(pos.shape) == 3
-        pos_b = pos if is_batched else pos.unsqueeze(0)  # (B, N, 3)
+        is_batched = len(pos.shape) >= 2 and (len(pos.shape) == 3 or (len(pos.shape) == 2 and pos.shape[-1] not in (3, 4)))
+        if len(pos.shape) == 2:
+            if pos.shape[-1] in (3, 4):
+                pos_b = pos.unsqueeze(0)
+            else:
+                ch = 4 if pos.shape[-1] == self.n_particles * 4 else 3
+                pos_b = pos.reshape(-1, self.n_particles, ch)
+        elif len(pos.shape) == 3:
+            pos_b = pos
+        else:
+            pos_b = pos.reshape(1, self.n_particles, -1)
 
         z = pos_b[..., 2]  # (B, N)
         z_l = z
@@ -187,11 +266,31 @@ class MicroscopicEnergy:
             is_steric = (z_l < self.sigma_wf) | (z_r < self.sigma_wf)
             v_wall = is_steric.where(self.v_wall_inf, 0.0)
 
-        u_wall = v_wall.sum(axis=-1)  # (B,)
+        u_wall = (v_wall * self.is_real_atom.unsqueeze(0)).sum(axis=-1)  # (B,)
         return u_wall if is_batched else u_wall.squeeze(0)
 
-    def __call__(self, pos: Tensor, shift: bool = True) -> Tensor:
+    def regularize_energy(
+        self,
+        energy: Tensor,
+        e_high: Optional[Union[float, Tensor]] = None,
+        e_max: Optional[Union[float, Tensor]] = None,
+    ) -> Tensor:
+        """
+        Regularizes high energy configurations using Noé's soft logarithmic ceiling:
+        E_reg = E_high + log(E - E_high + 1) for E >= E_high.
+        """
+        eh = e_high if e_high is not None else self.e_high
+        em = e_max if e_max is not None else self.e_max
+        if eh is None:
+            return energy
+        return regularize_energy(energy, e_high=eh, e_max=em if em is not None else 1e20)
+
+    def __call__(self, pos: Tensor, shift: bool = True, regularize: bool = True) -> Tensor:
         """
         Computes total microscopic Hamiltonian U(pos) = U_pair(pos) + U_ext(pos).
+        Optionally applies Noé energy regularization for E >= E_high.
         """
-        return self.compute_pair_energy(pos, shift=shift) + self.compute_wall_energy(pos)
+        u = self.compute_pair_energy(pos, shift=shift) + self.compute_wall_energy(pos)
+        if regularize and self.e_high is not None:
+            return self.regularize_energy(u)
+        return u

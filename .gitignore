@@ -36,6 +36,7 @@ output.xyz*
 # Data directories
 data/
 /data/
+runs/
 
 # macOS metadata
 .DS_Store

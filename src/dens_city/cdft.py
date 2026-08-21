@@ -257,13 +257,14 @@ class TinyCDFT:
             grid[row][col] = "█"
 
         # Bulk density baseline
-        bulk_row = int((self.bulk_density - r_min) / (r_max - r_min) * (height - 1))
+        bulk_rho = float(self.bulk_density.item()) if isinstance(self.bulk_density, Tensor) else float(self.bulk_density)
+        bulk_row = int((bulk_rho - r_min) / (r_max - r_min) * (height - 1))
         bulk_row = min(height - 1, max(0, height - 1 - bulk_row))
         for col in range(width):
             if grid[bulk_row][col] == " ":
                 grid[bulk_row][col] = "-"
 
-        lines = [f"=== cDFT Density Profile: {self.material.name} (Max: {r_max:.4f} Å⁻³, Bulk: {self.bulk_density:.4f} Å⁻³) ==="]
+        lines = [f"=== cDFT Density Profile: {self.material.name} (Max: {r_max:.4f} Å⁻³, Bulk: {bulk_rho:.4f} Å⁻³) ==="]
         lines.append(f"{r_max:>7.4f} ┌" + "─" * width + "┐")
         for row in grid:
             lines.append("        │" + "".join(row) + "│")
