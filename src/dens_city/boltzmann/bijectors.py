@@ -364,10 +364,11 @@ class RealNVPFlow:
         """
         cur = x
         is_batched = len(x.shape) == 2
-        total_log_det = Tensor.zeros(x.shape[0] if is_batched else 1, dtype=dtypes.float32)
+        log_dets = []
         for layer in self.layers:
             cur, ld = layer.forward(cur)
-            total_log_det = total_log_det + (ld if is_batched else ld.unsqueeze(0))
+            log_dets.append(ld if is_batched else ld.unsqueeze(0))
+        total_log_det = sum(log_dets)
         return cur, (total_log_det if is_batched else total_log_det.squeeze(0))
 
     def inverse(self, y: Tensor) -> Tuple[Tensor, Tensor]:
@@ -376,10 +377,11 @@ class RealNVPFlow:
         """
         cur = y
         is_batched = len(y.shape) == 2
-        total_log_det = Tensor.zeros(y.shape[0] if is_batched else 1, dtype=dtypes.float32)
+        log_dets = []
         for layer in reversed(self.layers):
             cur, ld = layer.inverse(cur)
-            total_log_det = total_log_det + (ld if is_batched else ld.unsqueeze(0))
+            log_dets.append(ld if is_batched else ld.unsqueeze(0))
+        total_log_det = sum(log_dets)
         return cur, (total_log_det if is_batched else total_log_det.squeeze(0))
 
 

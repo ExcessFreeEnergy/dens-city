@@ -40,6 +40,21 @@ class BoltzmannGenerator:
         opt_type = nn.optim.Muon if getenv("MUON") else nn.optim.SGD if getenv("SGD") else nn.optim.Adam
         self.opt = opt_type(nn.state.get_parameters(self.flow), lr=learning_rate)
         self.train_step = TinyJit(self._train_step)
+        self._sample_step = TinyJit(self._forward_flow)
+
+    def _forward_flow(self, z: Tensor) -> Tensor:
+        """
+        Pure JIT-compiled forward flow inference mapping latent noise z to 3D Cartesian coordinates.
+        """
+        if self.is_composite:
+            x, _ = self.flow.forward(z)
+            return x
+        else:
+            is_3d = len(z.shape) == 3
+            B = z.shape[0]
+            z_flat = z.reshape(B, self.dim) if is_3d else z
+            x_flat, _ = self.flow.forward(z_flat)
+            return x_flat.reshape(z.shape) if is_3d else x_flat
 
     def compute_loss(self, z: Tensor) -> Tensor:
         r"""
@@ -109,29 +124,17 @@ class BoltzmannGenerator:
 
     def sample(self, n_samples: int = 1) -> Tensor:
         """
-        Draws equilibrium configurations from the trained Boltzmann generator.
+        Draws equilibrium configurations from the trained Boltzmann generator using JIT-compiled inference.
         """
         if self.prior is not None:
             z = self.prior.sample(n_samples=n_samples)
-            if self.is_composite:
-                z_flat = z.reshape(n_samples, self.dim) if len(z.shape) > 2 else z
-                x, _ = self.flow.forward(z_flat)
-                return (x if n_samples > 1 else x.squeeze(0)).realize()
-            else:
-                is_3d = len(z.shape) == 3
-                z_flat = z.reshape(n_samples, self.dim) if is_3d else z
-                x_flat, _ = self.flow.forward(z_flat)
-                res = x_flat.reshape(z.shape) if is_3d else x_flat
-                return res.realize()
+            if self.is_composite and len(z.shape) > 2:
+                z = z.reshape(n_samples, self.dim)
         else:
             z = Tensor.randn(n_samples, self.dim)
-            if self.is_composite:
-                x, _ = self.flow.forward(z)
-                return (x if n_samples > 1 else x.squeeze(0)).realize()
-            else:
-                x, _ = self.flow.forward(z)
-                res = x if n_samples > 1 else x.squeeze(0)
-                return res.realize()
+
+        out = self._sample_step(z)
+        return (out if n_samples > 1 else out.squeeze(0)).realize()
 
     def log_prob(self, x: Tensor) -> Tensor:
         """
