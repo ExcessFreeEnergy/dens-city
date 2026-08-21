@@ -3,7 +3,7 @@ Differentiable Z-Matrix (Internal Coordinate <-> Cartesian) Bijector with Exact 
 Uses the Natural Extension Reference Frame (NeRF) orthonormal basis projection to guarantee exact invertibility.
 """
 
-from typing import Optional, Tuple, List, Dict, Callable
+from typing import Optional, Tuple, List, Dict, Callable, Union
 import math
 from tinygrad import Tensor, dtypes, nn, function
 
@@ -24,12 +24,89 @@ def _cross(u: Tensor, v: Tensor) -> Tensor:
     """
     Vectorized 3D cross product u x v for trailing dimension of size 3.
     """
-    return Tensor.cat(
-        u[..., 1:2] * v[..., 2:3] - u[..., 2:3] * v[..., 1:2],
-        u[..., 2:3] * v[..., 0:1] - u[..., 0:1] * v[..., 2:3],
-        u[..., 0:1] * v[..., 1:2] - u[..., 1:2] * v[..., 0:1],
-        dim=-1,
-    )
+    c0 = u[..., 1] * v[..., 2] - u[..., 2] * v[..., 1]
+    c1 = u[..., 2] * v[..., 0] - u[..., 0] * v[..., 2]
+    c2 = u[..., 0] * v[..., 1] - u[..., 1] * v[..., 0]
+    return Tensor.stack(c0, c1, c2, dim=-1)
+
+
+@function
+def _nerf_step(
+    p: Tensor,
+    a: Tensor,
+    d: Tensor,
+    b_i: Tensor,
+    th_i: Tensor,
+    phi_i: Tensor,
+) -> Tensor:
+    """
+    Fused Natural Extension Reference Frame (NeRF) forward step.
+    Orthonormal basis projection, cross products, and trigonometric displacement
+    are fused into a single compound elementwise kernel graph.
+    """
+    bc = p - a
+    bc_norm = (bc * bc).sum(axis=-1, keepdim=True).sqrt().maximum(1e-12)
+    bc_hat = bc / bc_norm
+
+    ab = a - d
+    n0 = ab[..., 1] * bc_hat[..., 2] - ab[..., 2] * bc_hat[..., 1]
+    n1 = ab[..., 2] * bc_hat[..., 0] - ab[..., 0] * bc_hat[..., 2]
+    n2 = ab[..., 0] * bc_hat[..., 1] - ab[..., 1] * bc_hat[..., 0]
+    n_vec = Tensor.stack(n0, n1, n2, dim=-1)
+    n_norm = (n_vec * n_vec).sum(axis=-1, keepdim=True).sqrt().maximum(1e-12)
+    n_hat = n_vec / n_norm
+
+    c0 = n_hat[..., 1] * bc_hat[..., 2] - n_hat[..., 2] * bc_hat[..., 1]
+    c1 = n_hat[..., 2] * bc_hat[..., 0] - n_hat[..., 0] * bc_hat[..., 2]
+    c2 = n_hat[..., 0] * bc_hat[..., 1] - n_hat[..., 1] * bc_hat[..., 0]
+    n_cross = Tensor.stack(c0, c1, c2, dim=-1)
+
+    vx = -b_i * th_i.cos()
+    vy = b_i * th_i.sin() * phi_i.cos()
+    vz = b_i * th_i.sin() * phi_i.sin()
+
+    return p + bc_hat * vx + n_cross * vy + n_hat * vz
+
+
+@function
+def _nerf_inverse_step(
+    p: Tensor,
+    a: Tensor,
+    d: Tensor,
+    xi: Tensor,
+) -> Tuple[Tensor, Tensor, Tensor]:
+    """
+    Fused Natural Extension Reference Frame (NeRF) inverse step.
+    Computes bond length, planar angle, and dihedral torsion angle in a single compound kernel.
+    """
+    bc = p - a
+    bc_norm = (bc * bc).sum(axis=-1, keepdim=True).sqrt().maximum(1e-12)
+    bc_hat = bc / bc_norm
+
+    ab = a - d
+    n0 = ab[..., 1] * bc_hat[..., 2] - ab[..., 2] * bc_hat[..., 1]
+    n1 = ab[..., 2] * bc_hat[..., 0] - ab[..., 0] * bc_hat[..., 2]
+    n2 = ab[..., 0] * bc_hat[..., 1] - ab[..., 1] * bc_hat[..., 0]
+    n_vec = Tensor.stack(n0, n1, n2, dim=-1)
+    n_norm = (n_vec * n_vec).sum(axis=-1, keepdim=True).sqrt().maximum(1e-12)
+    n_hat = n_vec / n_norm
+
+    c0 = n_hat[..., 1] * bc_hat[..., 2] - n_hat[..., 2] * bc_hat[..., 1]
+    c1 = n_hat[..., 2] * bc_hat[..., 0] - n_hat[..., 0] * bc_hat[..., 2]
+    c2 = n_hat[..., 0] * bc_hat[..., 1] - n_hat[..., 1] * bc_hat[..., 0]
+    n_cross = Tensor.stack(c0, c1, c2, dim=-1)
+
+    disp = xi - p
+    vx = (disp * bc_hat).sum(axis=-1, keepdim=True)
+    vy = (disp * n_cross).sum(axis=-1, keepdim=True)
+    vz = (disp * n_hat).sum(axis=-1, keepdim=True)
+
+    b_i = (disp * disp).sum(axis=-1, keepdim=True).sqrt()
+    cos_th_i = (-vx / b_i.maximum(1e-12)).clip(-1.0, 1.0)
+    th_i = cos_th_i.acos()
+    phi_i = _tensor_atan2(vz, vy)
+
+    return b_i, th_i, phi_i
 
 
 class ZMatrixBijector:
@@ -58,65 +135,86 @@ class ZMatrixBijector:
     def log_jacobian_det(self, bonds: Tensor, angles: Tensor) -> Tensor:
         r"""
         Computes exact Jacobian log-determinant for the internal-to-Cartesian transformation:
-        \log |\det J_{IC \to X}| = \sum_{i=2}^N \log(b_i^2 \sin(\theta_i))
-                                 = \sum_{i=2}^N [ 2 \ln(b_i) + \ln(\sin(\theta_i)) ]
+        \log |\det J| = \sum_{i=2}^{N} 2 \ln b_i + \sum_{i=3}^{N} \ln \sin \theta_i
         """
         is_batched = len(bonds.shape) == 2
-        bonds_b = bonds if is_batched else bonds.unsqueeze(0)  # (B, N-1)
-        angles_b = angles if is_batched else angles.unsqueeze(0)  # (B, N-2)
+        bonds_b = bonds if is_batched else bonds.unsqueeze(0)
+        angles_b = angles if is_batched else angles.unsqueeze(0)
+        B = bonds_b.shape[0]
 
-        if self.n_atoms < 3:
-            log_det = Tensor.zeros(bonds_b.shape[0], dtype=dtypes.float32)
-            return log_det if is_batched else log_det.squeeze(0)
+        log_det = Tensor.zeros(B, dtype=dtypes.float32)
 
-        b_sub = bonds_b[:, 1:]  # (B, N-2)
-        th_sub = angles_b  # (B, N-2)
+        if self.n_atoms >= 2 and bonds_b.shape[-1] >= 1:
+            # First bond b1 does not carry curvature term
+            pass
 
-        sin_th = th_sub.sin().abs().maximum(1e-7)
-        b_val = b_sub.abs().maximum(1e-7)
-        log_det = (2.0 * b_val.log() + sin_th.log()).sum(axis=-1)
+        if self.n_atoms >= 3 and bonds_b.shape[-1] >= 2:
+            # b2 contributes 2 ln b2
+            b_rest = bonds_b[:, 1:]
+            log_det = log_det + 2.0 * (b_rest.maximum(1e-12)).log().sum(axis=-1)
+
+        if self.n_atoms >= 3 and angles_b.shape[-1] >= 1:
+            # angles th2, th3, ... contribute ln sin(th)
+            sin_angles = (angles_b.sin()).maximum(1e-12)
+            log_det = log_det + sin_angles.log().sum(axis=-1)
 
         return log_det if is_batched else log_det.squeeze(0)
 
     def forward(
         self,
-        bonds: Tensor,
+        internal_coords: Optional[Union[Tensor, Dict[str, Tensor]]] = None,
+        bonds: Optional[Tensor] = None,
         angles: Optional[Tensor] = None,
         torsions: Optional[Tensor] = None,
         origin: Optional[Tensor] = None,
         orientation: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
+        r"""
+        Reconstructs 3D Cartesian coordinates from internal coordinates via NeRF.
+        Supports both unified internal_coords (flat Tensor or dict) and explicit (bonds, angles, torsions) kwargs.
         """
-        Maps internal coordinates to 3D Cartesian coordinates.
-        """
-        is_batched = len(bonds.shape) == 2
-        bonds_b = bonds if is_batched else bonds.unsqueeze(0)  # (B, N-1)
+        is_batched = False
+        if internal_coords is not None:
+            if isinstance(internal_coords, dict):
+                bonds = internal_coords.get("bonds", Tensor.zeros((1, max(0, self.n_atoms - 1))))
+                angles = internal_coords.get("angles", Tensor.zeros((1, max(0, self.n_atoms - 2))))
+                torsions = internal_coords.get("torsions", Tensor.zeros((1, max(0, self.n_atoms - 3))))
+                is_batched = len(bonds.shape) == 2
+            else:
+                is_batched = len(internal_coords.shape) == 2
+                ic_b = internal_coords if is_batched else internal_coords.unsqueeze(0)
+                n_bonds = max(0, self.n_atoms - 1)
+                n_angles = max(0, self.n_atoms - 2)
+                bonds = ic_b[:, :n_bonds]
+                angles = ic_b[:, n_bonds : (n_bonds + n_angles)]
+                torsions = ic_b[:, (n_bonds + n_angles) :]
+        elif bonds is not None:
+            is_batched = len(bonds.shape) == 2
+
+        if bonds is None:
+            bonds = Tensor.zeros((1, max(0, self.n_atoms - 1)), dtype=dtypes.float32)
+        bonds_b = bonds if len(bonds.shape) == 2 else bonds.unsqueeze(0)
         B = bonds_b.shape[0]
 
-        angles_b = (
-            angles
-            if angles is not None
-            else Tensor.zeros((B, max(0, self.n_atoms - 2)), dtype=dtypes.float32)
-        )
-        if len(angles_b.shape) == 1:
-            angles_b = angles_b.unsqueeze(0)
+        if angles is None:
+            angles_b = Tensor.zeros((B, max(0, self.n_atoms - 2)), dtype=dtypes.float32)
+        else:
+            angles_b = angles if len(angles.shape) == 2 else angles.unsqueeze(0)
 
-        torsions_b = (
-            torsions
-            if torsions is not None
-            else Tensor.zeros((B, max(0, self.n_atoms - 3)), dtype=dtypes.float32)
-        )
-        if len(torsions_b.shape) == 1:
-            torsions_b = torsions_b.unsqueeze(0)
+        if torsions is None:
+            torsions_b = Tensor.zeros((B, max(0, self.n_atoms - 3)), dtype=dtypes.float32)
+        else:
+            torsions_b = torsions if len(torsions.shape) == 2 else torsions.unsqueeze(0)
 
-        # Log determinant of Jacobian
         log_det = self.log_jacobian_det(bonds_b, angles_b)
 
-        # Atom 0 at origin
-        x0 = origin if origin is not None else Tensor.zeros((B, 3), dtype=dtypes.float32)
-        if len(x0.shape) == 1:
-            x0 = x0.unsqueeze(0).expand(B, 3)
-        coords = [x0]
+        # Place origin atom 0
+        if origin is not None:
+            x0 = origin if len(origin.shape) == 2 else origin.unsqueeze(0)
+        else:
+            x0 = Tensor.zeros((B, 3), dtype=dtypes.float32)
+
+        coords: List[Tensor] = [x0]
 
         if self.n_atoms >= 2:
             # Atom 1 along local X-axis: x1 = x0 + [b1, 0, 0]
@@ -137,33 +235,11 @@ class ZMatrixBijector:
             a = coords[a_idx]
             d = coords[d_idx]
 
-            # Unit vector from a to p: bc
-            bc = p - a
-            bc_norm = (bc * bc).sum(axis=-1, keepdim=True).sqrt().maximum(1e-12)
-            bc_hat = bc / bc_norm
+            b_i = bonds_b[:, (i - 1) : i]
+            th_i = angles_b[:, (i - 2) : (i - 1)]
+            phi_i = torsions_b[:, (i - 3) : (i - 2)]
 
-            # Vector from d to a
-            ab = a - d
-
-            # Normal vector n = ab x bc
-            n_vec = _cross(ab, bc_hat)
-            n_norm = (n_vec * n_vec).sum(axis=-1, keepdim=True).sqrt().maximum(1e-12)
-            n_hat = n_vec / n_norm
-
-            # In-plane orthogonal vector n_cross = n_hat x bc_hat
-            n_cross = _cross(n_hat, bc_hat)
-
-            # Local coordinates of atom i
-            b_i = bonds_b[:, (i - 1):i]
-            th_i = angles_b[:, (i - 2):(i - 1)]
-            phi_i = torsions_b[:, (i - 3):(i - 2)]
-
-            vx = -b_i * th_i.cos()
-            vy = b_i * th_i.sin() * phi_i.cos()
-            vz = b_i * th_i.sin() * phi_i.sin()
-
-            # Global coordinate x_i = p + bc*vx + n_cross*vy + n*vz
-            xi = p + bc_hat * vx + n_cross * vy + n_hat * vz
+            xi = _nerf_step(p, a, d, b_i, th_i, phi_i)
             coords.append(xi)
 
         all_coords = Tensor.stack(coords, dim=1)  # (B, N, 3)
@@ -214,28 +290,7 @@ class ZMatrixBijector:
             d = coords_b[:, d_idx]
             xi = coords_b[:, i]
 
-            # Orthonormal basis vectors at parent p
-            bc = p - a
-            bc_norm = (bc * bc).sum(axis=-1, keepdim=True).sqrt().maximum(1e-12)
-            bc_hat = bc / bc_norm
-
-            ab = a - d
-            n_vec = _cross(ab, bc_hat)
-            n_norm = (n_vec * n_vec).sum(axis=-1, keepdim=True).sqrt().maximum(1e-12)
-            n_hat = n_vec / n_norm
-
-            n_cross = _cross(n_hat, bc_hat)
-
-            # Local displacement projection v_rec
-            disp = xi - p
-            vx = (disp * bc_hat).sum(axis=-1, keepdim=True)
-            vy = (disp * n_cross).sum(axis=-1, keepdim=True)
-            vz = (disp * n_hat).sum(axis=-1, keepdim=True)
-
-            b_i = (disp * disp).sum(axis=-1, keepdim=True).sqrt()
-            cos_th_i = (-vx / b_i.maximum(1e-12)).clip(-1.0, 1.0)
-            th_i = cos_th_i.acos()
-            phi_i = _tensor_atan2(vz, vy)
+            b_i, th_i, phi_i = _nerf_inverse_step(p, a, d, xi)
 
             bonds_list.append(b_i)
             angles_list.append(th_i)
