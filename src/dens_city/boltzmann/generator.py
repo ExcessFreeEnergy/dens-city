@@ -56,17 +56,17 @@ class BoltzmannGenerator:
 
     def _forward_flow(self, z: Tensor, origin: Optional[Tensor] = None) -> Tensor:
         """
-        Forward flow mapping latent noise z to 3D Cartesian coordinates.
+        Forward flow mapping latent noise z to 3D Cartesian coordinates (B, N, 3).
         """
         if self.is_composite:
             x, _ = self.flow.forward(z, origin=origin)
             return x
         else:
-            is_3d = len(z.shape) == 3
             B = z.shape[0]
-            z_flat = z.reshape(B, self.dim) if is_3d else z
+            n_particles = max(1, self.dim // 3)
+            z_flat = z.reshape(B, self.dim)
             x_flat, _ = self.flow.forward(z_flat)
-            return x_flat.reshape(z.shape) if is_3d else x_flat
+            return x_flat.reshape(B, n_particles, 3)
 
     def compute_loss(self, z: Tensor, origin: Optional[Tensor] = None) -> Tensor:
         r"""
@@ -85,12 +85,13 @@ class BoltzmannGenerator:
             else:
                 log_pz = log_pz_internal
         else:
-            is_3d = len(z.shape) == 3
-            z_flat = z.reshape(B, self.dim) if is_3d else z
+            n_particles = max(1, self.dim // 3)
+            z_flat = z.reshape(B, self.dim)
             x_flat, log_det = self.flow.forward(z_flat)
-            x = x_flat.reshape(z.shape) if is_3d else x_flat
+            x = x_flat.reshape(B, n_particles, 3)
             if self.prior is not None:
-                log_pz = self.prior.log_prob(z)  # (B,)
+                z_3d = z.reshape(B, n_particles, 3)
+                log_pz = self.prior.log_prob(z_3d)  # (B,)
             else:
                 log_pz = -0.5 * (z_flat * z_flat + self.log_2pi).sum(axis=-1)
 
@@ -170,7 +171,7 @@ class BoltzmannGenerator:
             return self._forward_flow(z, origin=origin)
         else:
             if self.prior is not None:
-                z = self.prior.sample(n_samples=n_samples)
+                z = self.prior.sample(n_samples=n_samples).reshape(n_samples, self.dim)
             else:
                 z = Tensor.randn(n_samples, self.dim)
             return self._forward_flow(z)
@@ -194,23 +195,23 @@ class BoltzmannGenerator:
             if self.prior is not None:
                 log_pz = self.prior.log_prob(z)
             else:
-                log_pz = -0.5 * (z * z + math.log(2.0 * math.pi)).sum(axis=-1)
+                log_pz = -0.5 * (z * z + self.log_2pi).sum(axis=-1)
             res = log_pz + log_det_inv
             return (res if is_batched else res.squeeze(0)).realize()
         else:
-            is_3d = len(x.shape) == 3
-            B = x.shape[0] if is_3d or len(x.shape) == 2 else 1
-            x_flat = x.reshape(B, self.dim) if is_3d else (x if len(x.shape) == 2 else x.unsqueeze(0))
+            is_batched = len(x.shape) == 3
+            x_b = x if is_batched else x.unsqueeze(0)
+            B, N, _ = x_b.shape
+            x_flat = x_b.reshape(B, self.dim)
 
             z_flat, log_det_inv = self.flow.inverse(x_flat)
-            z = z_flat.reshape(x.shape) if is_3d else z_flat
+            z = z_flat.reshape(B, N, 3)
 
             if self.prior is not None:
                 log_pz = self.prior.log_prob(z)
             else:
-                log_pz = -0.5 * (z_flat * z_flat + math.log(2.0 * math.pi)).sum(axis=-1)
+                log_pz = -0.5 * (z_flat * z_flat + self.log_2pi).sum(axis=-1)
 
             log_qx = log_pz + log_det_inv
-            res = log_qx if (is_3d or len(x.shape) == 2) else log_qx.squeeze(0)
-            return res.realize()
+            return (log_qx if is_batched else log_qx.squeeze(0)).realize()
 
