@@ -9,14 +9,11 @@ import math
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
-from tinygrad import Tensor, TinyJit, nn, GlobalCounters
+from tinygrad import Tensor, TinyJit, nn, GlobalCounters, Context
 from tinygrad.helpers import getenv, trange
 
 from dens_city.kernels import KernelBuilder
 from dens_city.materials import Material, MaterialLoader
-
-# Enable training mode globally for optimizer graph execution
-Tensor.training = True
 
 
 class TinyCDFT:
@@ -157,6 +154,7 @@ class TinyCDFT:
         Pure JIT-compiled optimization step.
         Computes forward free energy, executes reverse-mode autograd, and realizes optimizer step.
         """
+        Tensor.training = True
         self.opt.zero_grad()
         loss = self.grand_potential().backward()
         return loss.realize(*self.opt.schedule_step())

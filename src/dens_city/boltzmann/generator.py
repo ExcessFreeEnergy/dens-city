@@ -5,14 +5,11 @@ via variational Reverse Kullback-Leibler (KL) divergence minimization in pure ti
 
 import math
 from typing import Callable, Optional, List, Union
-from tinygrad import Tensor, TinyJit, nn, dtypes, GlobalCounters
+from tinygrad import Tensor, TinyJit, nn, dtypes, GlobalCounters, Context
 from tinygrad.helpers import getenv, trange
 
 from dens_city.boltzmann.bijectors import RealNVPFlow, CompositeFlow
 from dens_city.boltzmann.prior import CDFTBaseDistribution
-
-# Enable training mode globally for optimizer graph execution
-Tensor.training = True
 
 
 class BoltzmannGenerator:

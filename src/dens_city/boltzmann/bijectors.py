@@ -120,15 +120,15 @@ class ZMatrixBijector:
 
         if self.n_atoms >= 2:
             # Atom 1 along local X-axis: x1 = x0 + [b1, 0, 0]
-            b1 = bonds_b[:, 0:1]
-            dx1 = Tensor.cat(b1, Tensor.zeros((B, 2), dtype=dtypes.float32), dim=-1)
+            b1 = bonds_b[:, 0]
+            dx1 = Tensor.stack(b1, Tensor.zeros(B, dtype=dtypes.float32), Tensor.zeros(B, dtype=dtypes.float32), dim=-1)
             coords.append(x0 + dx1)
 
         if self.n_atoms >= 3:
             # Atom 2 in local XY-plane: x2 = x1 + [-b2*cos(th2), b2*sin(th2), 0]
-            b2 = bonds_b[:, 1:2]
-            th2 = angles_b[:, 0:1]
-            dx2 = Tensor.cat(-b2 * th2.cos(), b2 * th2.sin(), Tensor.zeros((B, 1), dtype=dtypes.float32), dim=-1)
+            b2 = bonds_b[:, 1]
+            th2 = angles_b[:, 0]
+            dx2 = Tensor.stack(-b2 * th2.cos(), b2 * th2.sin(), Tensor.zeros(B, dtype=dtypes.float32), dim=-1)
             coords.append(coords[1] + dx2)
 
         for idx, (p_idx, a_idx, d_idx) in enumerate(self.z_indices):
