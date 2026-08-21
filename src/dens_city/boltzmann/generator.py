@@ -42,12 +42,12 @@ class BoltzmannGenerator:
         self.train_step = TinyJit(self._train_step)
         self._sample_step = TinyJit(self._forward_flow)
 
-    def _forward_flow(self, z: Tensor) -> Tensor:
+    def _forward_flow(self, z: Tensor, origin: Optional[Tensor] = None) -> Tensor:
         """
         Pure JIT-compiled forward flow inference mapping latent noise z to 3D Cartesian coordinates.
         """
         if self.is_composite:
-            x, _ = self.flow.forward(z)
+            x, _ = self.flow.forward(z, origin=origin)
             return x
         else:
             is_3d = len(z.shape) == 3
@@ -56,7 +56,7 @@ class BoltzmannGenerator:
             x_flat, _ = self.flow.forward(z_flat)
             return x_flat.reshape(z.shape) if is_3d else x_flat
 
-    def compute_loss(self, z: Tensor) -> Tensor:
+    def compute_loss(self, z: Tensor, origin: Optional[Tensor] = None) -> Tensor:
         r"""
         Evaluates the variational Reverse KL Divergence training loss:
         \mathcal{L}(\theta) = \mathbb{E}_{z \sim p_z} \left[ \beta U(f_\theta(z)) - \log p_z(z) - \log |\det J_{f_\theta}(z)| \right]
@@ -65,34 +65,37 @@ class BoltzmannGenerator:
 
         if self.is_composite:
             z_flat = z.reshape(B, self.dim) if len(z.shape) > 2 else z
-            x, log_det = self.flow.forward(z_flat)
+            x, log_det = self.flow.forward(z_flat, origin=origin)
+            log_pz_internal = -0.5 * (z_flat * z_flat + math.log(2.0 * math.pi)).sum(axis=-1)
+            if self.prior is not None and origin is not None:
+                log_pz_origin = self.prior.log_prob(origin)
+                log_pz = log_pz_internal + log_pz_origin
+            else:
+                log_pz = log_pz_internal
         else:
             is_3d = len(z.shape) == 3
             z_flat = z.reshape(B, self.dim) if is_3d else z
             x_flat, log_det = self.flow.forward(z_flat)
             x = x_flat.reshape(z.shape) if is_3d else x_flat
+            if self.prior is not None:
+                log_pz = self.prior.log_prob(z)  # (B,)
+            else:
+                log_pz = -0.5 * (z_flat * z_flat + math.log(2.0 * math.pi)).sum(axis=-1)
 
         # Evaluate exact microscopic potential energy
         u_exact = self.energy_fn(x)  # (B,)
-
-        # Base distribution log probability log p_z(z)
-        if self.prior is not None:
-            log_pz = self.prior.log_prob(z)  # (B,)
-        else:
-            z_eval = z.reshape(B, self.dim) if len(z.shape) > 2 else z
-            log_pz = -0.5 * (z_eval * z_eval + math.log(2.0 * math.pi)).sum(axis=-1)
 
         # Variational KL Loss
         loss_batch = self.beta * u_exact - log_pz - log_det
         return loss_batch.mean()
 
-    def _train_step(self, z: Tensor) -> Tensor:
+    def _train_step(self, z: Tensor, origin: Optional[Tensor] = None) -> Tensor:
         """
         Executes a single JIT-compiled gradient descent step on the flow parameters.
         """
         Tensor.training = True
         self.opt.zero_grad()
-        loss = self.compute_loss(z).backward()
+        loss = self.compute_loss(z, origin=origin).backward()
         return loss.realize(*self.opt.schedule_step())
 
     def train(
@@ -108,12 +111,21 @@ class BoltzmannGenerator:
         iterator = trange(steps) if verbose else range(steps)
         for i in iterator:
             GlobalCounters.reset()
-            if self.prior is not None:
-                z = self.prior.sample(n_samples=batch_size).realize()
-            else:
+            if self.is_composite:
                 z = Tensor.randn(batch_size, self.dim).realize()
+                origin = (
+                    self.prior.sample(n_samples=batch_size).reshape(batch_size, 3).realize()
+                    if self.prior is not None
+                    else None
+                )
+                loss = self.train_step(z, origin) if origin is not None else self.train_step(z)
+            else:
+                if self.prior is not None:
+                    z = self.prior.sample(n_samples=batch_size).realize()
+                else:
+                    z = Tensor.randn(batch_size, self.dim).realize()
+                loss = self.train_step(z)
 
-            loss = self.train_step(z)
             loss_val = loss.item()
             losses.append(loss_val)
 
@@ -126,14 +138,21 @@ class BoltzmannGenerator:
         """
         Draws equilibrium configurations from the trained Boltzmann generator using JIT-compiled inference.
         """
-        if self.prior is not None:
-            z = self.prior.sample(n_samples=n_samples)
-            if self.is_composite and len(z.shape) > 2:
-                z = z.reshape(n_samples, self.dim)
+        if self.is_composite:
+            z = Tensor.randn(n_samples, self.dim).realize()
+            origin = (
+                self.prior.sample(n_samples=n_samples).reshape(n_samples, 3).realize()
+                if self.prior is not None
+                else None
+            )
+            out = self._sample_step(z, origin) if origin is not None else self._sample_step(z)
         else:
-            z = Tensor.randn(n_samples, self.dim)
+            if self.prior is not None:
+                z = self.prior.sample(n_samples=n_samples).realize()
+            else:
+                z = Tensor.randn(n_samples, self.dim).realize()
+            out = self._sample_step(z)
 
-        out = self._sample_step(z)
         return (out if n_samples > 1 else out.squeeze(0)).realize()
 
     def log_prob(self, x: Tensor) -> Tensor:

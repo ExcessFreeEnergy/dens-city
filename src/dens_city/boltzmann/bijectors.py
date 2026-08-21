@@ -102,7 +102,7 @@ def _nerf_inverse_step(
     vz = (disp * n_hat).sum(axis=-1, keepdim=True)
 
     b_i = (disp * disp).sum(axis=-1, keepdim=True).sqrt()
-    cos_th_i = (-vx / b_i.maximum(1e-12)).clip(-1.0, 1.0)
+    cos_th_i = (-vx / b_i.maximum(1e-12)).clip(-1.0 + 1e-6, 1.0 - 1e-6)
     th_i = cos_th_i.acos()
     phi_i = _tensor_atan2(vz, vy)
 
@@ -280,7 +280,7 @@ class ZMatrixBijector:
                 (v1 * v1).sum(axis=-1, keepdim=True).sqrt().maximum(1e-12)
                 * (v2 * v2).sum(axis=-1, keepdim=True).sqrt().maximum(1e-12)
             )
-            th2 = cos_th2.clip(-1.0, 1.0).acos()
+            th2 = cos_th2.clip(-1.0 + 1e-6, 1.0 - 1e-6).acos()
             angles_list.append(th2)
 
         for idx, (p_idx, a_idx, d_idx) in enumerate(self.z_indices):

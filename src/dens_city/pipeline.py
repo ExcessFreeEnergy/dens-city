@@ -270,14 +270,20 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
             r_cut=task.r_cut,
         )
 
-        # Invertible Flow Architecture
+        # Invertible Flow Architecture & cDFT Spatial Prior Handoff
         if n_sites >= 3:
             flow = CompositeFlow(
                 n_atoms=n_sites,
                 n_layers=4,
                 hidden_dim=32,
             )
-            flow_prior = None
+            # Spatial prior for Atom 0 origin in slit pore
+            flow_prior = CDFTBaseDistribution(
+                rho_z=rho_profile,
+                l_z=slit_w,
+                box_size_xy=box_xy,
+                n_particles=1,
+            )
         else:
             flow = RealNVPFlow(
                 dim=max(1, n_sites * 3),
@@ -306,16 +312,22 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
 
         bg_loss = bg_losses[-1] if bg_losses else 0.0
 
-        # Sample Uncorrelated 3D Equilibrium Configurations
-        samples_tensor = generator.sample(n_samples=task.bg_samples)
-        samples_np = samples_tensor.numpy()
+        # Sample Uncorrelated 3D Equilibrium Configurations in static chunks of bg_batch_size
+        all_samples = []
+        all_energies = []
+        n_batches = math.ceil(task.bg_samples / task.bg_batch_size)
+        for _ in range(n_batches):
+            b_samples = generator.sample(n_samples=task.bg_batch_size)
+            b_energies = energy_fn.eval_energy(b_samples)
+            all_samples.append(b_samples.numpy())
+            all_energies.extend(b_energies.numpy().tolist())
+
+        samples_np = np.concatenate(all_samples, axis=0)[:task.bg_samples]
+        energies = all_energies[:task.bg_samples]
 
         if len(samples_np.shape) == 2:
             # Reshape flat samples (B, N*3) -> (B, N, 3)
             samples_np = samples_np.reshape(task.bg_samples, n_sites, 3)
-
-        # Calculate potential energies of generated configurations for trajectory metadata
-        energies = energy_fn.eval_energy(samples_tensor).numpy().tolist()
 
         t_bg = time.perf_counter() - t_bg_start
 
