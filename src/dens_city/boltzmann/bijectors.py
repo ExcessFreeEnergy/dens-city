@@ -39,8 +39,7 @@ def _nerf_step(
 ) -> Tensor:
     """
     Fused Natural Extension Reference Frame (NeRF) forward step.
-    Orthonormal basis projection, cross products, and trigonometric displacement
-    are fused into a single compound elementwise kernel graph.
+    Orthonormal basis projection, cross products, and trigonometric displacement.
     """
     bc = p - a
     bc_norm = (bc * bc).sum(axis=-1, keepdim=True).sqrt().maximum(1e-12)
@@ -74,7 +73,7 @@ def _nerf_inverse_step(
 ) -> Tuple[Tensor, Tensor, Tensor]:
     """
     Fused Natural Extension Reference Frame (NeRF) inverse step.
-    Computes bond length, planar angle, and dihedral torsion angle in a single compound kernel.
+    Computes bond length, planar angle, and dihedral torsion angle.
     """
     bc = p - a
     bc_norm = (bc * bc).sum(axis=-1, keepdim=True).sqrt().maximum(1e-12)
@@ -207,7 +206,7 @@ class ZMatrixBijector:
 
         # Place origin atom 0
         if origin is not None:
-            x0 = origin if len(origin.shape) == 2 else origin.unsqueeze(0)
+            x0 = origin.reshape(B, 3)
         else:
             x0 = Tensor.zeros((B, 3), dtype=dtypes.float32)
 
@@ -240,7 +239,7 @@ class ZMatrixBijector:
             xi = _nerf_step(p, a, d, b_i, th_i, phi_i)
             coords.append(xi)
 
-        all_coords = Tensor.stack(coords, dim=1)  # (B, N, 3)
+        all_coords = Tensor.stack(*coords, dim=1)  # (B, N, 3)
 
         if orientation is not None:
             pass

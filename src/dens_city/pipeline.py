@@ -188,7 +188,7 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
         artifacts_created.append(npy_path)
 
         csv_path = os.path.join(mat_out_dir, "density_profile.csv")
-        z_grid = np.linspace(0.5 * cdft.dz, cdft.slit_width_a - 0.5 * cdft.dz, cdft.n_grid)
+        z_grid = np.linspace(0.5 * cdft.dz_val, cdft.slit_width_a - 0.5 * cdft.dz_val, cdft.n_grid)
         np.savetxt(csv_path, np.column_stack([z_grid, rho_profile]), delimiter=",", header="z_angstrom,rho_a3", comments="")
         artifacts_created.append(csv_path)
 

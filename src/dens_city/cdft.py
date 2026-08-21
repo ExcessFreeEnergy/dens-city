@@ -9,7 +9,7 @@ import math
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
-from tinygrad import Tensor, TinyJit, nn, GlobalCounters, Context
+from tinygrad import Tensor, TinyJit, nn, GlobalCounters, Context, dtypes
 from tinygrad.helpers import getenv, trange
 
 from dens_city.kernels import KernelBuilder
@@ -40,44 +40,53 @@ class TinyCDFT:
 
         # Slit pore dimension scales with molecular diameter if not explicitly provided
         self.slit_width_a = slit_width_a if slit_width_a is not None else 12.0 * sigma
-        self.dz = self.slit_width_a / n_grid
-        self.temperature_k = temperature_k if temperature_k is not None else material.temperature_k
-        self.bulk_density = bulk_density_a3 if bulk_density_a3 is not None else material.bulk_density_a3
+        self.dz_val = self.slit_width_a / n_grid
+        self.dz = Tensor(self.dz_val, dtype=dtypes.float32).realize()
+        self.temp_val = temperature_k if temperature_k is not None else material.temperature_k
+        self.temperature_k = Tensor(self.temp_val, dtype=dtypes.float32).realize()
+        self.bulk_rho_val = bulk_density_a3 if bulk_density_a3 is not None else material.bulk_density_a3
+        self.bulk_density = Tensor(self.bulk_rho_val, dtype=dtypes.float32).realize()
 
-        # 1. Build anti-aliased spatial kernels
-        self.fmt_kernels = KernelBuilder.build_fmt_planar_kernels(sigma, self.dz)
+        # 1. Build anti-aliased spatial kernels and realize them on device
+        self.fmt_kernels = {
+            k: v.realize() if isinstance(v, Tensor) else v
+            for k, v in KernelBuilder.build_fmt_planar_kernels(sigma, self.dz_val).items()
+        }
         self.fmt_pad = self.fmt_kernels["pad"]
 
         # WCA attractive dispersion kernel (scale-invariant cutoff r_cut = 5.0 * sigma)
-        self.att_kernel, self.att_pad = KernelBuilder.build_wca_attraction_kernel(
-            sigma=sigma, epsilon_k=eps_k, dz=self.dz
+        att_kern_raw, self.att_pad = KernelBuilder.build_wca_attraction_kernel(
+            sigma=sigma, epsilon_k=eps_k, dz=self.dz_val
         )
+        self.att_kernel = att_kern_raw.realize()
 
         # Confining slit external wall potential with exact physical boundary divergence
         # Lorentz-Berthelot collision diameter incorporates the fluid's effective size
         wall_sig = wall_sigma if wall_sigma is not None else 3.4
-        self.v_ext = KernelBuilder.build_slit_wall_potential(
+        v_ext_raw = KernelBuilder.build_slit_wall_potential(
             n_grid=self.n_grid,
-            dz=self.dz,
+            dz=self.dz_val,
             fluid_sigma=sigma,
             wall_sigma=wall_sig,
             wall_epsilon_k=wall_epsilon_k,
-        ) / self.temperature_k  # in units of k_B * T
+        ) / self.temp_val  # in units of k_B * T
+        self.v_ext = v_ext_raw.realize()
 
         # 2. Compute exact discrete excess chemical potential so grad(Omega) == 0 at rho = rho_bulk
-        eta = (math.pi / 6.0) * self.bulk_density * (sigma**3)
+        eta = (math.pi / 6.0) * self.bulk_rho_val * (sigma**3)
         one_minus_eta = max(1e-12, 1.0 - eta)
         mu_fmt = -math.log(one_minus_eta) + (eta * (14.0 - 13.0 * eta + 5.0 * (eta**2))) / (2.0 * (one_minus_eta**3))
-        att_kernel_sum = float(self.att_kernel.numpy().sum()) * self.dz
-        mu_att = (self.bulk_density * att_kernel_sum) / self.temperature_k
-        self.mu_ex = mu_fmt + mu_att
+        att_kernel_sum = float(self.att_kernel.numpy().sum()) * self.dz_val
+        mu_att = (self.bulk_rho_val * att_kernel_sum) / self.temp_val
+        mu_ex_val = mu_fmt + mu_att
+        self.mu_ex = Tensor(mu_ex_val, dtype=dtypes.float32).realize()
 
         # 3. Dynamic Boltzmann Initialization: psi_0(z) = -beta * V_ext(z)
         # Allows psi_0 > 0 for attractive wells (V_ext < 0) bounded by physical close packing eta_max = 0.60
         psi_max = math.log(0.60 / max(1e-4, eta))
         v_ext_np = self.v_ext.numpy().reshape(self.n_grid)
         psi_init_vals = np.clip(-v_ext_np, -50.0, psi_max)
-        self.psi = Tensor(psi_init_vals).reshape(1, 1, self.n_grid, 1).contiguous()
+        self.psi = Tensor(psi_init_vals).reshape(1, 1, self.n_grid, 1).contiguous().realize()
         self.psi.requires_grad = True
 
         # 4. Setup optimizer and per-instance TinyJit compilation
@@ -102,8 +111,8 @@ class TinyCDFT:
         \phi(z) = G * \rho_q(z) where \phi(0) = \phi(L_z) = 0.
         """
         g_matrix = KernelBuilder.build_coulomb_1d_greens_matrix(
-            self.n_grid, self.dz, dielectric_constant=dielectric_constant
-        )
+            self.n_grid, self.dz_val, dielectric_constant=dielectric_constant
+        ).realize()
         g_mat_2d = g_matrix.reshape(self.n_grid, self.n_grid)
         rho_q_vec = charge_density.reshape(self.n_grid, 1)
         phi_vec = g_mat_2d.matmul(rho_q_vec)
@@ -183,11 +192,11 @@ class TinyCDFT:
             "loss_history": losses,
             "final_loss": losses[-1] if losses else 0.0,
             "rho": rho_final,
-            "z_coords": np.linspace(0.5 * self.dz, self.slit_width_a - 0.5 * self.dz, self.n_grid),
+            "z_coords": np.linspace(0.5 * self.dz_val, self.slit_width_a - 0.5 * self.dz_val, self.n_grid),
             "wall_pressure_bar": self.get_wall_contact_pressure(),
             "excess_adsorption": self.get_excess_adsorption(),
             "peak_density": float(np.max(rho_final)),
-            "bulk_density": self.bulk_density,
+            "bulk_density": self.bulk_rho_val,
         }
 
     def get_density_profile(self) -> np.ndarray:
@@ -204,10 +213,10 @@ class TinyCDFT:
         Converted to bar (1 bar = 1e5 Pa).
         """
         rho_arr = self.get_density_profile()
-        v_ext_arr = self.v_ext.numpy().reshape(self.n_grid) * self.temperature_k
+        v_ext_arr = self.v_ext.numpy().reshape(self.n_grid) * self.temp_val
 
         # Numerical derivative of external wall potential: dV_ext / dz (in K / Å)
-        dv_dz = np.gradient(v_ext_arr, self.dz)
+        dv_dz = np.gradient(v_ext_arr, self.dz_val)
 
         # Dynamically identify the wall interaction domain up to the bulk plateau
         mid = self.n_grid // 2
@@ -217,7 +226,7 @@ class TinyCDFT:
         bulk_cutoff_idx = (min_grad_idx + int(plateau_candidates[0])) if len(plateau_candidates) > 0 else mid
 
         # Integrate virial force density over the dynamically detected wall interaction domain
-        f_integral = -float(np.sum(rho_arr[min_grad_idx:bulk_cutoff_idx] * dv_dz[min_grad_idx:bulk_cutoff_idx]) * self.dz)
+        f_integral = -float(np.sum(rho_arr[min_grad_idx:bulk_cutoff_idx] * dv_dz[min_grad_idx:bulk_cutoff_idx]) * self.dz_val)
         p_virial_bar = f_integral * (1e30 * 1.380649e-23 * 1e-5)
 
         return p_virial_bar
@@ -229,7 +238,7 @@ class TinyCDFT:
         relative to the theoretical reservoir bulk density.
         """
         rho_arr = self.get_density_profile()
-        return float(np.sum(rho_arr - self.bulk_density) * self.dz)
+        return float(np.sum(rho_arr - self.bulk_rho_val) * self.dz_val)
 
     def ascii_plot(self, width: int = 60, height: int = 15) -> str:
         """Renders an ASCII visualization of the density profile across the slit."""

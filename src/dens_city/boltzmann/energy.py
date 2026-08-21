@@ -53,54 +53,58 @@ class MicroscopicEnergy:
             raise ValueError("Must provide either a Material instance or explicit (sigmas, epsilons).")
 
         self.n_particles = len(s_list)
-        self.sigmas = Tensor(s_list, dtype=dtypes.float32)
-        self.epsilons = Tensor(e_list, dtype=dtypes.float32)
-        self.charges = Tensor(q_list, dtype=dtypes.float32)
+        self.sigmas = Tensor(s_list, dtype=dtypes.float32).realize()
+        self.epsilons = Tensor(e_list, dtype=dtypes.float32).realize()
+        self.charges = Tensor(q_list, dtype=dtypes.float32).realize()
 
-        # Box dimensions
-        self.lx, self.ly, self.lz = float(box_size[0]), float(box_size[1]), float(box_size[2])
-        self.box_xy = Tensor([self.lx, self.ly], dtype=dtypes.float32)
-        max_valid_rcut = 0.5 * min(self.lx, self.ly)
-        if r_cut is not None:
-            self.r_cut = min(float(r_cut), max_valid_rcut)
-        else:
-            self.r_cut = max_valid_rcut
+        # Box dimensions as realized device buffers
+        self.lx = Tensor([float(box_size[0])], dtype=dtypes.float32).realize()
+        self.ly = Tensor([float(box_size[1])], dtype=dtypes.float32).realize()
+        self.lz = Tensor([float(box_size[2])], dtype=dtypes.float32).realize()
+        self.box_xy = Tensor([float(box_size[0]), float(box_size[1])], dtype=dtypes.float32).realize()
+        max_valid_rcut = 0.5 * min(float(box_size[0]), float(box_size[1]))
+        r_cut_val = min(float(r_cut), max_valid_rcut) if r_cut is not None else max_valid_rcut
+        self.r_cut = Tensor([r_cut_val], dtype=dtypes.float32).realize()
 
         # Coulomb prefactor C_coul = e^2 / (4 * pi * eps_0 * eps_r * k_B) in Kelvin * Å
         self.dielectric_constant = max(1e-6, float(dielectric_constant))
-        self.c_coul = 167101.0 / self.dielectric_constant
+        c_coul_val = 167101.0 / self.dielectric_constant
+        self.c_coul = Tensor([c_coul_val], dtype=dtypes.float32).realize()
         self.has_charges = bool((self.charges.abs() > 1e-6).any().item())
 
-        # Precompute Lorentz-Berthelot pairwise combining matrices (N, N)
-        self.s_ij = 0.5 * (self.sigmas.unsqueeze(1) + self.sigmas.unsqueeze(0))
-        self.e_ij = (self.epsilons.unsqueeze(1) * self.epsilons.unsqueeze(0)).sqrt()
-        self.q_ij = self.charges.unsqueeze(1) * self.charges.unsqueeze(0)
+        # Precompute Lorentz-Berthelot pairwise combining matrices (1, N, N) as realized device buffers
+        s_ij_2d = 0.5 * (self.sigmas.unsqueeze(1) + self.sigmas.unsqueeze(0))
+        e_ij_2d = (self.epsilons.unsqueeze(1) * self.epsilons.unsqueeze(0)).sqrt()
+        q_ij_2d = self.charges.unsqueeze(1) * self.charges.unsqueeze(0)
+        self.s_ij = s_ij_2d.unsqueeze(0).realize()
+        self.e_ij = e_ij_2d.unsqueeze(0).realize()
+        self.q_ij = q_ij_2d.unsqueeze(0).realize()
 
         # Precompute cutoff potential shifts and force gradients at r = r_cut for Shifted-Force (SF)
         sr_cut = self.s_ij / self.r_cut
         sr2_cut = sr_cut * sr_cut
         sr6_cut = sr2_cut * sr2_cut * sr2_cut
         sr12_cut = sr6_cut * sr6_cut
-        self.u_lj_cut = 4.0 * self.e_ij * (sr12_cut - sr6_cut)
-        self.du_lj_cut = -(24.0 * self.e_ij / self.r_cut) * (2.0 * sr12_cut - sr6_cut)
-        self.u_coul_cut = (self.q_ij * self.c_coul) / self.r_cut
-        self.du_coul_cut = -(self.q_ij * self.c_coul) / (self.r_cut**2)
+        self.u_lj_cut = (4.0 * self.e_ij * (sr12_cut - sr6_cut)).realize()
+        self.du_lj_cut = (-(24.0 * self.e_ij / self.r_cut) * (2.0 * sr12_cut - sr6_cut)).realize()
+        self.u_coul_cut = ((self.q_ij * self.c_coul) / self.r_cut).realize()
+        self.du_coul_cut = (-(self.q_ij * self.c_coul) / (self.r_cut * self.r_cut)).realize()
 
         # Upper triangular mask (excludes diagonal and double counting) in pure tinygrad
         idx = Tensor.arange(self.n_particles)
-        self.triu_mask = (idx.unsqueeze(1) < idx.unsqueeze(0)).float()
-        self.eye = Tensor.eye(self.n_particles)
+        self.triu_mask = (idx.unsqueeze(1) < idx.unsqueeze(0)).float().unsqueeze(0).realize()
+        self.eye = Tensor.eye(self.n_particles).unsqueeze(0).realize()
 
-        # Wall potential parameters in Z
+        # Wall potential parameters in Z as realized device buffers
         self.wall_sigma = float(wall_sigma)
         self.wall_epsilon_k = float(wall_epsilon_k)
         self.wall_type = wall_type
-        self.v_wall_inf = 1e6
+        self.v_wall_inf = Tensor([1e6], dtype=dtypes.float32).realize()
 
         # Lorentz-Berthelot collision diameter with wall
-        self.sigma_wf = 0.5 * (self.wall_sigma + self.sigmas)  # (N,)
-        self.steric_radius = 0.5 * self.sigma_wf  # (N,)
-        self.wall_prefactor = (2.0 * math.pi * self.wall_epsilon_k * (self.sigma_wf**3)) / 3.0  # (N,)
+        self.sigma_wf = (0.5 * (self.wall_sigma + self.sigmas)).realize()  # (N,)
+        self.steric_radius = (0.5 * self.sigma_wf).realize()  # (N,)
+        self.wall_prefactor = (((2.0 * math.pi * self.wall_epsilon_k) / 3.0) * (self.sigma_wf**3)).realize()  # (N,)
 
         # JIT-compiled energy evaluation
         self.eval_energy = TinyJit(self.__call__)
@@ -112,7 +116,6 @@ class MicroscopicEnergy:
         """
         is_batched = len(pos.shape) == 3
         pos_b = pos if is_batched else pos.unsqueeze(0)  # (B, N, 3)
-        B = pos_b.shape[0]
 
         # Vectorized pairwise displacement matrix (B, N, N, 3)
         diff = pos_b.unsqueeze(2) - pos_b.unsqueeze(1)
@@ -124,33 +127,27 @@ class MicroscopicEnergy:
 
         r_sq = dx * dx + dy * dy + dz * dz
         # Regularize diagonal self-interaction and overlapping particles to eliminate 0/0 NaN singularities
-        r = (r_sq + self.eye.unsqueeze(0) + 1e-4).sqrt()  # (B, N, N)
+        r = (r_sq + self.eye + 1e-4).sqrt()  # (B, N, N)
         dr = r - self.r_cut
 
         # 1. Lennard-Jones 12-6 pairwise Shifted-Force term via native ALU products
-        s_ij = self.s_ij.unsqueeze(0)  # (1, N, N)
-        e_ij = self.e_ij.unsqueeze(0)  # (1, N, N)
-        sr = s_ij / r
+        sr = self.s_ij / r
         sr2 = sr * sr
         sr6 = sr2 * sr2 * sr2
         sr12 = sr6 * sr6
-        u_lj_bare = 4.0 * e_ij * (sr12 - sr6)
-        u_lj_sf = u_lj_bare - self.u_lj_cut.unsqueeze(0) - self.du_lj_cut.unsqueeze(0) * dr
+        u_lj_bare = 4.0 * self.e_ij * (sr12 - sr6)
+        u_lj_sf = u_lj_bare - self.u_lj_cut - self.du_lj_cut * dr
         u_lj = u_lj_sf if shift else u_lj_bare
 
-        # 2. Coulomb pairwise electrostatic Shifted-Force term (bypassed for non-polar fluids)
-        if self.has_charges:
-            q_ij = self.q_ij.unsqueeze(0)  # (1, N, N)
-            u_coul_bare = (q_ij * self.c_coul) / r
-            u_coul_sf = u_coul_bare - self.u_coul_cut.unsqueeze(0) - self.du_coul_cut.unsqueeze(0) * dr
-            u_coul = u_coul_sf if shift else u_coul_bare
-            u_pair_ij = u_lj + u_coul
-        else:
-            u_pair_ij = u_lj
+        # 2. Coulomb pairwise electrostatic Shifted-Force term (unified ALU arithmetic, zero for non-polar)
+        u_coul_bare = (self.q_ij * self.c_coul) / r
+        u_coul_sf = u_coul_bare - self.u_coul_cut - self.du_coul_cut * dr
+        u_coul = u_coul_sf if shift else u_coul_bare
+        u_pair_ij = u_lj + u_coul
 
         # Spherical cutoff mask & upper triangular exclusion
         within_cutoff = (r <= self.r_cut).float()
-        mask = self.triu_mask.unsqueeze(0) * within_cutoff
+        mask = self.triu_mask * within_cutoff
 
         u_pair_mat = u_pair_ij * mask
         # Collapse contiguous (N, N) matrix into 1D (N*N) before summing to collapse reduction axes
