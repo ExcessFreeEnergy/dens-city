@@ -7,7 +7,7 @@ and exact Steele 9-3 / hard-core steric wall potentials in confined Z dimension.
 import math
 from typing import Optional, Tuple, Union, List
 import numpy as np
-from tinygrad import Tensor, dtypes, function
+from tinygrad import Tensor, TinyJit, dtypes, function
 from dens_city.materials import Material
 
 
@@ -99,6 +99,9 @@ class MicroscopicEnergy:
         self.sigma_wf = 0.5 * (self.wall_sigma + self.sigmas)  # (N,)
         self.steric_radius = 0.5 * self.sigma_wf  # (N,)
         self.wall_prefactor = (2.0 * math.pi * self.wall_epsilon_k * (self.sigma_wf**3)) / 3.0  # (N,)
+
+        # JIT-compiled energy evaluation
+        self.eval_energy = TinyJit(self.__call__)
 
     @function
     def compute_pair_energy(self, pos: Tensor, shift: bool = True) -> Tensor:

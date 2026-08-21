@@ -315,7 +315,7 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
             samples_np = samples_np.reshape(task.bg_samples, n_sites, 3)
 
         # Calculate potential energies of generated configurations for trajectory metadata
-        energies = energy_fn(samples_tensor, shift=True).numpy().tolist()
+        energies = energy_fn.eval_energy(samples_tensor).numpy().tolist()
 
         t_bg = time.perf_counter() - t_bg_start
 

@@ -274,23 +274,20 @@ class AffineCouplingLayer:
 
         # When swap=False: net takes dim_a, outputs dim_b * 2
         # When swap=True: net takes dim_b, outputs dim_a * 2
-        in_dim = self.dim_b if swap else self.dim_a
-        out_dim = self.dim_a if swap else self.dim_b
+        self.in_dim = self.dim_b if swap else self.dim_a
+        self.out_dim = self.dim_a if swap else self.dim_b
 
         self.net: list[Callable[[Tensor], Tensor]] = [
-            nn.Linear(in_dim, hidden_dim),
+            nn.Linear(self.in_dim, hidden_dim),
             Tensor.relu,
             nn.Linear(hidden_dim, hidden_dim),
             Tensor.relu,
-            nn.Linear(hidden_dim, out_dim * 2),
+            nn.Linear(hidden_dim, self.out_dim * 2),
         ]
 
     def _net(self, x: Tensor) -> Tuple[Tensor, Tensor]:
         out = x.sequential(self.net)
-        out_dim = out.shape[-1] // 2
-        s = out[..., :out_dim].tanh()
-        t = out[..., out_dim:]
-        return s, t
+        return out[..., : self.out_dim].tanh(), out[..., self.out_dim :]
 
     def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
         """
