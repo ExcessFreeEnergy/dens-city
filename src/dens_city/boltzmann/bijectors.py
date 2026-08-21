@@ -3,12 +3,12 @@ Differentiable Z-Matrix (Internal Coordinate <-> Cartesian) Bijector with Exact 
 Uses the Natural Extension Reference Frame (NeRF) orthonormal basis projection to guarantee exact invertibility.
 """
 
+import functools
 from typing import Optional, Tuple, List, Dict, Callable, Union
 import math
-from tinygrad import Tensor, dtypes, nn, function
+from tinygrad import Tensor, dtypes, nn
 
 
-@function
 def _tensor_atan2(y: Tensor, x: Tensor) -> Tensor:
     """
     Vectorized and differentiable 4-quadrant atan2 in tinygrad.
@@ -19,7 +19,6 @@ def _tensor_atan2(y: Tensor, x: Tensor) -> Tensor:
     return base_atan + offset
 
 
-@function
 def _cross(u: Tensor, v: Tensor) -> Tensor:
     """
     Vectorized 3D cross product u x v for trailing dimension of size 3.
@@ -30,7 +29,6 @@ def _cross(u: Tensor, v: Tensor) -> Tensor:
     return Tensor.stack(c0, c1, c2, dim=-1)
 
 
-@function
 def _nerf_step(
     p: Tensor,
     a: Tensor,
@@ -68,7 +66,6 @@ def _nerf_step(
     return p + bc_hat * vx + n_cross * vy + n_hat * vz
 
 
-@function
 def _nerf_inverse_step(
     p: Tensor,
     a: Tensor,
@@ -218,15 +215,16 @@ class ZMatrixBijector:
 
         if self.n_atoms >= 2:
             # Atom 1 along local X-axis: x1 = x0 + [b1, 0, 0]
-            b1 = bonds_b[:, 0]
-            dx1 = Tensor.stack(b1, Tensor.zeros(B, dtype=dtypes.float32), Tensor.zeros(B, dtype=dtypes.float32), dim=-1)
+            b1 = bonds_b[:, 0:1]
+            dx1 = b1.pad(((0, 0), (0, 2)))
             coords.append(x0 + dx1)
 
         if self.n_atoms >= 3:
             # Atom 2 in local XY-plane: x2 = x1 + [-b2*cos(th2), b2*sin(th2), 0]
-            b2 = bonds_b[:, 1]
-            th2 = angles_b[:, 0]
-            dx2 = Tensor.stack(-b2 * th2.cos(), b2 * th2.sin(), Tensor.zeros(B, dtype=dtypes.float32), dim=-1)
+            b2 = bonds_b[:, 1:2]
+            th2 = angles_b[:, 0:1]
+            dx2_xy = Tensor.cat(-b2 * th2.cos(), b2 * th2.sin(), dim=-1)
+            dx2 = dx2_xy.pad(((0, 0), (0, 1)))
             coords.append(coords[1] + dx2)
 
         for idx, (p_idx, a_idx, d_idx) in enumerate(self.z_indices):
@@ -420,7 +418,11 @@ class RealNVPFlow:
         for layer in self.layers:
             cur, ld = layer.forward(cur)
             log_dets.append(ld if is_batched else ld.unsqueeze(0))
-        total_log_det = sum(log_dets)
+        total_log_det = (
+            functools.reduce(Tensor.add, log_dets)
+            if log_dets
+            else Tensor.zeros(cur.shape[0], dtype=dtypes.float32)
+        )
         return cur, (total_log_det if is_batched else total_log_det.squeeze(0))
 
     def inverse(self, y: Tensor) -> Tuple[Tensor, Tensor]:
@@ -433,7 +435,11 @@ class RealNVPFlow:
         for layer in reversed(self.layers):
             cur, ld = layer.inverse(cur)
             log_dets.append(ld if is_batched else ld.unsqueeze(0))
-        total_log_det = sum(log_dets)
+        total_log_det = (
+            functools.reduce(Tensor.add, log_dets)
+            if log_dets
+            else Tensor.zeros(cur.shape[0], dtype=dtypes.float32)
+        )
         return cur, (total_log_det if is_batched else total_log_det.squeeze(0))
 
 

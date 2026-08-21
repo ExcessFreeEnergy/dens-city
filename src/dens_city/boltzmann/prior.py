@@ -5,9 +5,9 @@ with many-body particle configuration sampling in 3D slit pores.
 """
 
 import math
-from typing import Tuple, Union
+from typing import Tuple, Union, Optional
 import numpy as np
-from tinygrad import Tensor, dtypes, function
+from tinygrad import Tensor, dtypes
 
 
 class CDFTBaseDistribution:
@@ -23,30 +23,35 @@ class CDFTBaseDistribution:
         l_z: float,
         box_size_xy: Tuple[float, float] = (30.0, 30.0),
         n_particles: int = 1,
+        n_grid: Optional[int] = None,
     ):
-        if isinstance(rho_z, Tensor):
-            self.rho_np = np.asarray(rho_z.numpy(), dtype=np.float64).flatten()
-        else:
-            self.rho_np = np.asarray(rho_z, dtype=np.float64).flatten()
-
-        self.n_grid = len(self.rho_np)
+        if n_particles < 1:
+            raise ValueError(f"n_particles must be >= 1, got {n_particles}")
+        self.n_particles = n_particles
         self.l_z = float(l_z)
         self.lx, self.ly = float(box_size_xy[0]), float(box_size_xy[1])
         self.area = self.lx * self.ly
-        self.dz = self.l_z / self.n_grid
-        self.n_particles = int(n_particles)
 
-        # Coordinate grid centers and cell boundaries
-        self.z_edges = np.linspace(0.0, self.l_z, self.n_grid + 1)
-        self.z_centers = np.linspace(0.5 * self.dz, self.l_z - 0.5 * self.dz, self.n_grid)
+        if isinstance(rho_z, Tensor):
+            rho_np = rho_z.numpy().astype(np.float64)
+        else:
+            rho_np = np.asarray(rho_z, dtype=np.float64)
 
-        # Build Discrete Cumulative Distribution Function (CDF) at cell boundaries
-        cdf = np.zeros(self.n_grid + 1, dtype=np.float64)
-        cdf[1:] = np.cumsum(self.rho_np * self.dz)
-        self.total_mass = float(cdf[-1])
-        if self.total_mass <= 0.0:
-            raise ValueError("cDFT density profile mass integral must be strictly positive.")
-        self.cdf = cdf / self.total_mass
+        if len(rho_np) < 2:
+            raise ValueError(f"rho_z profile must contain at least 2 grid points, got {len(rho_np)}")
+
+        self.rho_np = np.maximum(rho_np, 1e-12)
+        self.n_grid = len(self.rho_np)
+        self.dz = self.l_z / float(self.n_grid)
+
+        # Precompute 1D cumulative distribution function (CDF) for inverse transform sampling
+        prob_mass = self.rho_np * self.dz
+        self.total_mass = float(np.sum(prob_mass))
+        if self.total_mass <= 1e-12:
+            raise ValueError("cDFT density profile has zero or negative integral mass.")
+
+        cdf = np.cumsum(prob_mass) / self.total_mass
+        self.cdf = np.concatenate([[0.0], cdf])
 
         # Precompute tinygrad tensors for vectorized differentiable log_prob and pure tensor sampling
         self.rho_tensor = Tensor(self.rho_np.astype(np.float32), dtype=dtypes.float32)
@@ -72,7 +77,6 @@ class CDFTBaseDistribution:
         pts = Tensor.stack(x, y, z, dim=-1)
         return pts if n_samples > 1 else pts.squeeze(0)
 
-    @function
     def log_prob(self, pos: Tensor) -> Tensor:
         r"""
         Computes exact base distribution log probability:

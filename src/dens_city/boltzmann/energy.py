@@ -7,7 +7,7 @@ and exact Steele 9-3 / hard-core steric wall potentials in confined Z dimension.
 import math
 from typing import Optional, Tuple, Union, List
 import numpy as np
-from tinygrad import Tensor, TinyJit, dtypes, function
+from tinygrad import Tensor, TinyJit, dtypes
 from dens_city.materials import Material
 
 
@@ -25,12 +25,11 @@ class MicroscopicEnergy:
         charges: Optional[Union[List[float], np.ndarray, Tensor]] = None,
         box_size: Tuple[float, float, float] = (30.0, 30.0, 40.0),
         r_cut: Optional[float] = None,
-        dielectric_constant: float = 1.0,
-        wall_sigma: float = 3.4,
-        wall_epsilon_k: float = 50.0,
+        wall_sigma: float = 3.405,
+        wall_epsilon_k: float = 119.8,
         wall_type: str = "stele93",
+        dielectric_constant: float = 1.0,
     ):
-        # Extract particle parameters
         if material is not None:
             if material.sites:
                 s_list = [s.sigma for s in material.sites]
@@ -70,6 +69,7 @@ class MicroscopicEnergy:
         # Coulomb prefactor C_coul = e^2 / (4 * pi * eps_0 * eps_r * k_B) in Kelvin * Å
         self.dielectric_constant = max(1e-6, float(dielectric_constant))
         self.c_coul = 167101.0 / self.dielectric_constant
+        self.has_charges = bool((self.charges.abs() > 1e-6).any().item())
 
         # Precompute Lorentz-Berthelot pairwise combining matrices (N, N)
         self.s_ij = 0.5 * (self.sigmas.unsqueeze(1) + self.sigmas.unsqueeze(0))
@@ -78,9 +78,11 @@ class MicroscopicEnergy:
 
         # Precompute cutoff potential shifts and force gradients at r = r_cut for Shifted-Force (SF)
         sr_cut = self.s_ij / self.r_cut
-        sr6_cut = sr_cut**6
-        self.u_lj_cut = 4.0 * self.e_ij * (sr6_cut * sr6_cut - sr6_cut)
-        self.du_lj_cut = -(24.0 * self.e_ij / self.r_cut) * (2.0 * sr6_cut * sr6_cut - sr6_cut)
+        sr2_cut = sr_cut * sr_cut
+        sr6_cut = sr2_cut * sr2_cut * sr2_cut
+        sr12_cut = sr6_cut * sr6_cut
+        self.u_lj_cut = 4.0 * self.e_ij * (sr12_cut - sr6_cut)
+        self.du_lj_cut = -(24.0 * self.e_ij / self.r_cut) * (2.0 * sr12_cut - sr6_cut)
         self.u_coul_cut = (self.q_ij * self.c_coul) / self.r_cut
         self.du_coul_cut = -(self.q_ij * self.c_coul) / (self.r_cut**2)
 
@@ -103,7 +105,6 @@ class MicroscopicEnergy:
         # JIT-compiled energy evaluation
         self.eval_energy = TinyJit(self.__call__)
 
-    @function
     def compute_pair_energy(self, pos: Tensor, shift: bool = True) -> Tensor:
         """
         Computes pairwise Lennard-Jones + Coulomb energy with Minimum Image Convention in X and Y,
@@ -125,31 +126,36 @@ class MicroscopicEnergy:
         r = (r_sq + self.eye.unsqueeze(0) + 1e-4).sqrt()  # (B, N, N)
         dr = r - self.r_cut
 
-        # 1. Lennard-Jones 12-6 pairwise Shifted-Force term
+        # 1. Lennard-Jones 12-6 pairwise Shifted-Force term via native ALU products
         s_ij = self.s_ij.unsqueeze(0)  # (1, N, N)
         e_ij = self.e_ij.unsqueeze(0)  # (1, N, N)
         sr = s_ij / r
-        sr6 = sr**6
-        u_lj_bare = 4.0 * e_ij * (sr6 * sr6 - sr6)
+        sr2 = sr * sr
+        sr6 = sr2 * sr2 * sr2
+        sr12 = sr6 * sr6
+        u_lj_bare = 4.0 * e_ij * (sr12 - sr6)
         u_lj_sf = u_lj_bare - self.u_lj_cut.unsqueeze(0) - self.du_lj_cut.unsqueeze(0) * dr
         u_lj = u_lj_sf if shift else u_lj_bare
 
-        # 2. Coulomb pairwise electrostatic Shifted-Force term
-        q_ij = self.q_ij.unsqueeze(0)  # (1, N, N)
-        u_coul_bare = (q_ij * self.c_coul) / r
-        u_coul_sf = u_coul_bare - self.u_coul_cut.unsqueeze(0) - self.du_coul_cut.unsqueeze(0) * dr
-        u_coul = u_coul_sf if shift else u_coul_bare
+        # 2. Coulomb pairwise electrostatic Shifted-Force term (bypassed for non-polar fluids)
+        if self.has_charges:
+            q_ij = self.q_ij.unsqueeze(0)  # (1, N, N)
+            u_coul_bare = (q_ij * self.c_coul) / r
+            u_coul_sf = u_coul_bare - self.u_coul_cut.unsqueeze(0) - self.du_coul_cut.unsqueeze(0) * dr
+            u_coul = u_coul_sf if shift else u_coul_bare
+            u_pair_ij = u_lj + u_coul
+        else:
+            u_pair_ij = u_lj
 
         # Spherical cutoff mask & upper triangular exclusion
         within_cutoff = (r <= self.r_cut).float()
         mask = self.triu_mask.unsqueeze(0) * within_cutoff
 
-        u_pair_mat = (u_lj + u_coul) * mask
+        u_pair_mat = u_pair_ij * mask
         u_pair = u_pair_mat.sum(axis=(-1, -2))  # (B,)
 
         return u_pair if is_batched else u_pair.squeeze(0)
 
-    @function
     def compute_wall_energy(self, pos: Tensor) -> Tensor:
         """
         Computes external confining slit wall potential energy in Z for all particles.
@@ -166,8 +172,14 @@ class MicroscopicEnergy:
         s_r = self.sigma_wf / z_r.maximum(self.steric_radius)
 
         if self.wall_type == "stele93":
-            v_l = self.wall_prefactor * ((2.0 / 15.0) * (s_l**9) - (s_l**3))
-            v_r = self.wall_prefactor * ((2.0 / 15.0) * (s_r**9) - (s_r**3))
+            s3_l = s_l * s_l * s_l
+            s9_l = s3_l * s3_l * s3_l
+            v_l = self.wall_prefactor * ((2.0 / 15.0) * s9_l - s3_l)
+
+            s3_r = s_r * s_r * s_r
+            s9_r = s3_r * s3_r * s3_r
+            v_r = self.wall_prefactor * ((2.0 / 15.0) * s9_r - s3_r)
+
             v_stele = (v_l + v_r).minimum(self.v_wall_inf)
             is_steric = (z_l <= self.steric_radius) | (z_r <= self.steric_radius)
             v_wall = is_steric.where(self.v_wall_inf, v_stele)
@@ -179,7 +191,6 @@ class MicroscopicEnergy:
         u_wall = v_wall.sum(axis=-1)  # (B,)
         return u_wall if is_batched else u_wall.squeeze(0)
 
-    @function
     def __call__(self, pos: Tensor, shift: bool = True) -> Tensor:
         """
         Computes total microscopic Hamiltonian U(pos) = U_pair(pos) + U_ext(pos).
