@@ -112,6 +112,7 @@ class MicroscopicEnergy:
         """
         is_batched = len(pos.shape) == 3
         pos_b = pos if is_batched else pos.unsqueeze(0)  # (B, N, 3)
+        B = pos_b.shape[0]
 
         # Vectorized pairwise displacement matrix (B, N, N, 3)
         diff = pos_b.unsqueeze(2) - pos_b.unsqueeze(1)
@@ -152,7 +153,8 @@ class MicroscopicEnergy:
         mask = self.triu_mask.unsqueeze(0) * within_cutoff
 
         u_pair_mat = u_pair_ij * mask
-        u_pair = u_pair_mat.sum(axis=(-1, -2))  # (B,)
+        # Collapse contiguous (N, N) matrix into 1D (N*N) before summing to collapse reduction axes
+        u_pair = u_pair_mat.flatten(1).sum(axis=-1)  # (B,)
 
         return u_pair if is_batched else u_pair.squeeze(0)
 

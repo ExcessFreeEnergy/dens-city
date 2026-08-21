@@ -240,7 +240,7 @@ class ZMatrixBijector:
             xi = _nerf_step(p, a, d, b_i, th_i, phi_i)
             coords.append(xi)
 
-        all_coords = Tensor.stack(coords, dim=1)  # (B, N, 3)
+        all_coords = Tensor.cat(*[c.unsqueeze(1) for c in coords], dim=1)  # (B, N, 3)
 
         if orientation is not None:
             pass

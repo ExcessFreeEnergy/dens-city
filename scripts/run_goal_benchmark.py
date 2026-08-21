@@ -25,7 +25,7 @@ def run_single_material(
     cdft_steps: int = 3,
     bg_steps: int = 3,
     bg_samples: int = 2,
-    timeout: float = 300.0,
+    timeout: float = 500.0,
 ) -> Dict[str, any]:
     log_file_path = log_dir / f"{material}.log"
     out_dir = Path("/tmp/runs_goal") / material
@@ -93,12 +93,12 @@ def main():
 
     materials = get_all_materials(data_dir)
     print("=" * 80)
-    print(f"  dens-city: BEAM=2 DEBUG=2 Benchmark for {len(materials)} Materials")
+    print(f"  dens-city: BEAM=2 DEBUG=2 Benchmark for {len(materials)} Materials (Timeout: 500s)")
     print(f"  Target Log Directory: {log_dir}")
     print(f"  Iterations: 3 cDFT steps, 3 BG steps, 2 BG samples")
     print("=" * 80)
 
-    n_workers = min(6, os.cpu_count() or 1)
+    n_workers = min(4, os.cpu_count() or 1)
     results = []
     t_start = time.perf_counter()
 
@@ -112,7 +112,7 @@ def main():
                 cdft_steps=3,
                 bg_steps=3,
                 bg_samples=2,
-                timeout=300.0,
+                timeout=500.0,
             ): mat
             for mat in materials
         }
