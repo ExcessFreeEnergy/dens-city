@@ -32,6 +32,142 @@ def _cross(u: Tensor, v: Tensor) -> Tensor:
     return Tensor.stack(c0, c1, c2, dim=-1)
 
 
+def compute_cartesian_dihedrals(
+    coords: Tensor,
+    quadruplets: Union[Tensor, List[Tuple[int, int, int, int]]],
+) -> Tensor:
+    """
+    Computes dihedral torsion angles phi in (-pi, pi] for specified 4-atom quadruplets
+    (a, b, c, d) from 3D Cartesian coordinates with mathematically safe regularized norms.
+    """
+    is_batched = len(coords.shape) == 3
+    coords_b = coords if is_batched else coords.unsqueeze(0)  # (B, N, 3)
+    B = coords_b.shape[0]
+
+    q = quadruplets if isinstance(quadruplets, Tensor) else Tensor(quadruplets, dtype=dtypes.int32)
+    if len(q.shape) == 1:
+        q = q.unsqueeze(0)
+    K = q.shape[0]
+    if K == 0:
+        res = Tensor.zeros((B, 0), dtype=dtypes.float32)
+        return res if is_batched else res.squeeze(0)
+
+    # Gather coordinates for quadruplets: r1, r2, r3, r4 of shape (B, K, 3)
+    idx0 = q[:, 0]
+    idx1 = q[:, 1]
+    idx2 = q[:, 2]
+    idx3 = q[:, 3]
+
+    r1 = coords_b[:, idx0, :]
+    r2 = coords_b[:, idx1, :]
+    r3 = coords_b[:, idx2, :]
+    r4 = coords_b[:, idx3, :]
+
+    v1 = r2 - r1
+    v2 = r3 - r2
+    v3 = r4 - r3
+
+    n1 = _cross(v1, v2)
+    n2 = _cross(v2, v3)
+
+    # Safe normalization: regularize squared magnitude with epsilon before sqrt / division
+    # to eliminate division-by-zero autograd crashes on collinear 180-degree bond angles
+    n1_norm = (n1 * n1).sum(axis=-1, keepdim=True).maximum(1e-8).sqrt()
+    n2_norm = (n2 * n2).sum(axis=-1, keepdim=True).maximum(1e-8).sqrt()
+    v2_norm = (v2 * v2).sum(axis=-1, keepdim=True).maximum(1e-8).sqrt()
+
+    n1_hat = n1 / n1_norm
+    n2_hat = n2 / n2_norm
+    v2_hat = v2 / v2_norm
+
+    m1 = _cross(n1_hat, v2_hat)
+
+    x = (n1_hat * n2_hat).sum(axis=-1)
+    y = (m1 * n2_hat).sum(axis=-1)
+
+    phi = _tensor_atan2(y, x)  # (B, K)
+    return phi if is_batched else phi.squeeze(0)
+
+
+def compute_cartesian_torsion_loss(
+    coords: Tensor,
+    quadruplets: Union[Tensor, List[Tuple[int, int, int, int]]],
+    periodicity: int = 3,
+) -> Tensor:
+    """
+    Evaluates exact 3-fold (or n-fold) Fourier rotamer potential directly from 3D Cartesian coordinates
+    without transcendental atan2 operations in autograd backward passes:
+    J_tor = mean(1 + cos(3 * phi)) = mean(1 + 4*cos^3(phi) - 3*cos(phi))
+    where cos(phi) = n1_hat . n2_hat.
+    """
+    is_batched = len(coords.shape) == 3
+    coords_b = coords if is_batched else coords.unsqueeze(0)  # (B, N, 3)
+
+    q = quadruplets if isinstance(quadruplets, Tensor) else Tensor(quadruplets, dtype=dtypes.int32)
+    if len(q.shape) == 1:
+        q = q.unsqueeze(0)
+    K = q.shape[0]
+    if K == 0:
+        return Tensor([0.0], dtype=dtypes.float32).squeeze(0)
+
+    idx0 = q[:, 0]
+    idx1 = q[:, 1]
+    idx2 = q[:, 2]
+    idx3 = q[:, 3]
+
+    r1 = coords_b[:, idx0, :]
+    r2 = coords_b[:, idx1, :]
+    r3 = coords_b[:, idx2, :]
+    r4 = coords_b[:, idx3, :]
+
+    v1 = r2 - r1
+    v2 = r3 - r2
+    v3 = r4 - r3
+
+    n1 = _cross(v1, v2)
+    n2 = _cross(v2, v3)
+
+    # Safe normalization: regularize squared magnitude with epsilon before sqrt / division
+    n1_norm = (n1 * n1).sum(axis=-1, keepdim=True).maximum(1e-6).sqrt()
+    n2_norm = (n2 * n2).sum(axis=-1, keepdim=True).maximum(1e-6).sqrt()
+
+    n1_hat = n1 / n1_norm
+    n2_hat = n2 / n2_norm
+
+    cos_phi = (n1_hat * n2_hat).sum(axis=-1).clip(-1.0 + 1e-6, 1.0 - 1e-6)
+
+    if periodicity == 3:
+        # Exact Chebyshev expansion: cos(3*phi) = 4*cos^3(phi) - 3*cos(phi)
+        cos_3phi = cos_phi * (4.0 * cos_phi * cos_phi - 3.0)
+        loss = 1.0 + cos_3phi
+    else:
+        v2_norm = (v2 * v2).sum(axis=-1, keepdim=True).maximum(1e-6).sqrt()
+        v2_hat = v2 / v2_norm
+        m1 = _cross(n1_hat, v2_hat)
+        sin_phi = (m1 * n2_hat).sum(axis=-1)
+        phi = _tensor_atan2(sin_phi, cos_phi)
+        loss = 1.0 + (phi * float(periodicity)).cos()
+
+    return loss.mean()
+
+
+def compute_torsion_rotamer_loss(
+    phi: Tensor,
+    periodicity: int = 3,
+) -> Tensor:
+    """
+    Evaluates 3-fold (or n-fold) Fourier rotamer potential on internal coordinate angles:
+    J_tor(phi) = mean(1 + cos(n * phi))
+    Global minima (J_tor = 0) at trans (180 deg) and gauche (+-60 deg).
+    Maximum penalty (J_tor = 2) at eclipsed/clashing angles (0 deg, +-120 deg).
+    """
+    if phi.numel() == 0:
+        return Tensor([0.0], dtype=dtypes.float32).squeeze(0)
+    p = float(periodicity)
+    loss = 1.0 + (phi * p).cos()
+    return loss.mean()
+
+
 def _nerf_step(
     p: Tensor,
     a: Tensor,
@@ -45,7 +181,7 @@ def _nerf_step(
     Orthonormal basis projection, cross products, and trigonometric displacement.
     """
     bc = p - a
-    bc_sq = (bc * bc).sum(axis=-1, keepdim=True).clip(1e-8, 1e8)
+    bc_sq = (bc * bc).sum(axis=-1, keepdim=True).maximum(1e-6)
     bc_hat = bc / bc_sq.sqrt()
 
     ab = a - d
@@ -53,7 +189,7 @@ def _nerf_step(
     n1 = ab[..., 2] * bc_hat[..., 0] - ab[..., 0] * bc_hat[..., 2]
     n2 = ab[..., 0] * bc_hat[..., 1] - ab[..., 1] * bc_hat[..., 0]
     n_vec = Tensor.stack(n0, n1, n2, dim=-1)
-    n_sq = (n_vec * n_vec).sum(axis=-1, keepdim=True).clip(1e-8, 1e8)
+    n_sq = (n_vec * n_vec).sum(axis=-1, keepdim=True).maximum(1e-6)
     n_hat = n_vec / n_sq.sqrt()
 
     c0 = n_hat[..., 1] * bc_hat[..., 2] - n_hat[..., 2] * bc_hat[..., 1]
@@ -79,7 +215,7 @@ def _nerf_inverse_step(
     Computes bond length, planar angle, and dihedral torsion angle.
     """
     bc = p - a
-    bc_sq = (bc * bc).sum(axis=-1, keepdim=True).clip(1e-8, 1e8)
+    bc_sq = (bc * bc).sum(axis=-1, keepdim=True).maximum(1e-6)
     bc_hat = bc / bc_sq.sqrt()
 
     ab = a - d
@@ -87,7 +223,7 @@ def _nerf_inverse_step(
     n1 = ab[..., 2] * bc_hat[..., 0] - ab[..., 0] * bc_hat[..., 2]
     n2 = ab[..., 0] * bc_hat[..., 1] - ab[..., 1] * bc_hat[..., 0]
     n_vec = Tensor.stack(n0, n1, n2, dim=-1)
-    n_sq = (n_vec * n_vec).sum(axis=-1, keepdim=True).clip(1e-8, 1e8)
+    n_sq = (n_vec * n_vec).sum(axis=-1, keepdim=True).maximum(1e-6)
     n_hat = n_vec / n_sq.sqrt()
 
     c0 = n_hat[..., 1] * bc_hat[..., 2] - n_hat[..., 2] * bc_hat[..., 1]
@@ -100,8 +236,8 @@ def _nerf_inverse_step(
     vy = (disp * n_cross).sum(axis=-1, keepdim=True)
     vz = (disp * n_hat).sum(axis=-1, keepdim=True)
 
-    b_i = (disp * disp).sum(axis=-1, keepdim=True).clip(1e-8, 1e8).sqrt()
-    cos_th_i = (-vx / b_i.maximum(1e-6)).clip(-1.0 + 1e-4, 1.0 - 1e-4)
+    b_i = (disp * disp).sum(axis=-1, keepdim=True).maximum(1e-6).sqrt()
+    cos_th_i = (-vx / b_i.maximum(1e-4)).clip(-1.0 + 1e-4, 1.0 - 1e-4)
     th_i = cos_th_i.acos()
     phi_i = _tensor_atan2(vz, vy)
 
@@ -144,14 +280,14 @@ class ZMatrixBijector:
         log_det = Tensor.zeros(B, dtype=dtypes.float32)
 
         if self.n_atoms >= 3 and bonds_b.shape[-1] >= 2:
-            # b2 contributes 2 ln b2
-            b_rest = bonds_b[:, 1:].abs().maximum(1e-4)
-            log_det = log_det + 2.0 * b_rest.log().sum(axis=-1)
+            # b2 contributes 2 ln |b| = ln(b^2)
+            b_rest = bonds_b[:, 1:]
+            log_det = log_det + (b_rest * b_rest).maximum(1e-6).log().sum(axis=-1)
 
         if self.n_atoms >= 3 and angles_b.shape[-1] >= 1:
-            # angles th2, th3, ... contribute ln sin(th)
-            sin_angles = (angles_b.sin().abs()).maximum(1e-4)
-            log_det = log_det + sin_angles.log().sum(axis=-1)
+            # angles th2, th3, ... contribute ln |sin(th)| = 0.5 ln(sin^2(th))
+            sin_sq = (angles_b.sin() * angles_b.sin()).maximum(1e-6)
+            log_det = log_det + 0.5 * sin_sq.log().sum(axis=-1)
 
         return log_det if is_batched else log_det.squeeze(0)
 
@@ -258,20 +394,19 @@ class ZMatrixBijector:
 
         if self.n_atoms >= 2:
             d01 = coords_b[:, 1] - coords_b[:, 0]
-            b1 = (d01 * d01).sum(axis=-1, keepdim=True).sqrt()
+            b1 = (d01 * d01).sum(axis=-1, keepdim=True).maximum(1e-6).sqrt()
             bonds_list.append(b1)
 
         if self.n_atoms >= 3:
             d12 = coords_b[:, 2] - coords_b[:, 1]
-            b2 = (d12 * d12).sum(axis=-1, keepdim=True).sqrt()
+            b2 = (d12 * d12).sum(axis=-1, keepdim=True).maximum(1e-6).sqrt()
             bonds_list.append(b2)
 
             v1 = coords_b[:, 0] - coords_b[:, 1]
             v2 = coords_b[:, 2] - coords_b[:, 1]
-            cos_th2 = (v1 * v2).sum(axis=-1, keepdim=True) / (
-                (v1 * v1).sum(axis=-1, keepdim=True).sqrt().maximum(1e-12)
-                * (v2 * v2).sum(axis=-1, keepdim=True).sqrt().maximum(1e-12)
-            )
+            v1_norm = (v1 * v1).sum(axis=-1, keepdim=True).maximum(1e-6).sqrt()
+            v2_norm = (v2 * v2).sum(axis=-1, keepdim=True).maximum(1e-6).sqrt()
+            cos_th2 = (v1 * v2).sum(axis=-1, keepdim=True) / (v1_norm * v2_norm)
             th2 = cos_th2.clip(-1.0 + 1e-4, 1.0 - 1e-4).acos()
             angles_list.append(th2)
 

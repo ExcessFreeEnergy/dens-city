@@ -52,6 +52,7 @@ class MaterialPipelineTask:
     bg_batch_size: int = 16
     bg_lr: float = 0.01
     bg_samples: int = 100
+    bg_w_tor: float = 0.0
     skip_bg: bool = False
     no_plot: bool = True
     r_cut: Optional[float] = None
@@ -292,6 +293,8 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
             prior=flow_prior,
             temperature_k=material.temperature_k,
             learning_rate=task.bg_lr,
+            w_torsion=task.bg_w_tor,
+            dihedral_quadruplets=material.dihedral_quadruplets,
         )
 
         bg_losses = generator.train(

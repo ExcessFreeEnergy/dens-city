@@ -195,6 +195,12 @@ def main() -> int:
         help="Number of 3D configurations to sample into .xyz trajectory (default: 100)",
     )
     parser.add_argument(
+        "--bg-w-tor",
+        type=float,
+        default=0.0,
+        help="Torsional rotamer loss biasing weight (default: 0.0, recommended 0.05 - 5.0 for long chains)",
+    )
+    parser.add_argument(
         "--skip-bg",
         action="store_true",
         help="Skip Boltzmann Generator phase and halt after cDFT screening",
@@ -243,6 +249,7 @@ def main() -> int:
             bg_steps=args.bg_steps,
             bg_lr=args.bg_lr,
             bg_samples=args.bg_samples,
+            bg_w_tor=args.bg_w_tor,
             skip_bg=args.skip_bg,
             no_plot=args.no_plot,
         )

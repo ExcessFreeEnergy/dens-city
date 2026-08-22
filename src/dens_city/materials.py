@@ -167,6 +167,8 @@ class Material:
     identifier: str
     dimension_mode: str  # "1D_SPHERICAL", "1D_ANGULAR", "3D_MOLECULAR"
     sites: List[AtomSite] = field(default_factory=list)
+    bonds: List[Tuple[int, int, str]] = field(default_factory=list)
+    dihedral_quadruplets: List[Tuple[int, int, int, int]] = field(default_factory=list)
     effective_sigma: float = 3.4
     effective_epsilon_k: float = 120.0
     temperature_k: float = 300.0
@@ -339,14 +341,22 @@ class MaterialLoader:
         # Parse .mol2 file
         lines = mol2_path.read_text().splitlines()
         sites: List[AtomSite] = []
+        bonds: List[Tuple[int, int, str]] = []
         in_atom = False
+        in_bond = False
 
         for line in lines:
             if line.startswith("@<TRIPOS>ATOM"):
                 in_atom = True
+                in_bond = False
+                continue
+            elif line.startswith("@<TRIPOS>BOND"):
+                in_atom = False
+                in_bond = True
                 continue
             elif line.startswith("@<TRIPOS>"):
                 in_atom = False
+                in_bond = False
                 continue
 
             if in_atom and line.strip():
@@ -377,9 +387,43 @@ class MaterialLoader:
                             mass=mass,
                         )
                     )
+            elif in_bond and line.strip():
+                parts = line.split()
+                if len(parts) >= 4:
+                    # bond_id, origin_atom_id, target_atom_id, bond_type
+                    # Convert 1-indexed atom IDs to 0-indexed site indices
+                    a1 = int(parts[1]) - 1
+                    a2 = int(parts[2]) - 1
+                    b_type = parts[3]
+                    bonds.append((a1, a2, b_type))
 
         if not sites:
             raise ValueError(f"No valid atom sites found in {mol2_path}")
+
+        # Extract explicit dihedral quadruplets (a, b, c, d) from bond graph connectivity
+        dihedral_quadruplets: List[Tuple[int, int, int, int]] = []
+        if bonds:
+            adj: Dict[int, List[int]] = {}
+            for a1, a2, _ in bonds:
+                if 0 <= a1 < len(sites) and 0 <= a2 < len(sites):
+                    adj.setdefault(a1, []).append(a2)
+                    adj.setdefault(a2, []).append(a1)
+
+            # Find all simple paths of length 3: a - b - c - d
+            seen_dihedrals = set()
+            for b in adj:
+                for a in adj[b]:
+                    for c in adj[b]:
+                        if c == a:
+                            continue
+                        for d in adj.get(c, []):
+                            if d == b or d == a:
+                                continue
+                            # Canonical ordering a < d to avoid (a,b,c,d) and (d,c,b,a) duplicate counting
+                            quad = (a, b, c, d) if a < d else (d, c, b, a)
+                            if quad not in seen_dihedrals:
+                                seen_dihedrals.add(quad)
+                                dihedral_quadruplets.append(quad)
 
         # Derive molecular Lennard-Jones parameters directly from atomic sites:
         if len(sites) == 1:
@@ -436,6 +480,8 @@ class MaterialLoader:
             identifier=mol2_path.stem,
             dimension_mode=dim_mode,
             sites=sites,
+            bonds=bonds,
+            dihedral_quadruplets=dihedral_quadruplets,
             effective_sigma=eff_sigma,
             effective_epsilon_k=eff_eps_k,
             temperature_k=temp,

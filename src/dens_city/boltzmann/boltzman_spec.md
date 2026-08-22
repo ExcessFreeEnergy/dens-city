@@ -82,7 +82,7 @@ flowchart TD
   - `regularize_energy(energy, e_high=None, e_max=None)`: Regularizes high-energy configurations using instance thresholds.
   - `eval_energy`: JIT-compiled function wrapper (`TinyJit(self.__call__)`).
 
-### 3.3 `bijectors.py` — Normalizing Flows & Invertible Bijectors
+### 3.3 `bijectors.py` — Normalizing Flows, Invertible Bijectors & Torsional Kinematics
 - **`AffineCouplingLayer`**:
   - Dyadic partitioning ($\text{dim}_a = \text{dim} // 2, \text{dim}_b = \text{dim} // 2$) with power-of-2 hidden dimensions.
   - Exact analytical forward, inverse, and Jacobian log-determinant $\sum s(x_A)$.
@@ -93,11 +93,18 @@ flowchart TD
   - 100% dyadic factorable matrix multiplications; eliminates serial Python unrolling loops.
 - **`CompositeFlow` & `ZMatrixBijector`**:
   - Differentiable mapping between internal coordinates (bonds, angles, torsions) and 3D Cartesian coordinates via the Natural Extension Reference Frame (NeRF) algorithm.
+- **`compute_cartesian_dihedrals(coords, quadruplets)` & `compute_torsion_rotamer_loss(phi, periodicity=3)`**:
+  - Vectorized 3D dihedral extraction for explicit `.mol2` bond graph quadruplets $(a, b, c, d)$.
+  - Autograd-safe: applies regularized safe norms (`.maximum(1e-8).sqrt()`) on normal vectors to eliminate division-by-zero singularities on collinear $180^\circ$ bond angles.
+  - Evaluates 3-fold Fourier rotamer potential $J_{\rm tor}(\phi) = \frac{1}{BK}\sum (1 + \cos(3\phi))$ with global minima at trans ($\pm 180^\circ$) and gauche ($\pm 60^\circ$).
 
-### 3.4 `generator.py` — Variational Boltzmann Generator
+### 3.4 `generator.py` — Variational Boltzmann Generator with Torsional Biasing
 - **`BoltzmannGenerator`**:
-  - `__init__(flow, energy_fn, prior=None, temperature_k=300.0, learning_rate=0.01, batch_size=64)`: Initializes optimizer, device origin pool, and realized temperature buffers.
-  - `compute_loss(z, origin=None)`: Evaluates Reverse-KL loss $\mathcal{L}(\theta) = \beta U(f_\theta(z)) - \log p_z(z) - \log |\det J|$.
+  - `__init__(flow, energy_fn, prior=None, temperature_k=300.0, learning_rate=0.01, batch_size=64, w_torsion=0.0, dihedral_quadruplets=None)`: Initializes optimizer, device origin pool, realized temperature/torsion buffers, and bond graph quadruplets.
+  - `compute_loss(z, origin=None)`: Evaluates Reverse-KL loss $\mathcal{L}(\theta) = \beta U(f_\theta(z)) - \log p_z(z) - \log |\det J| + w_{\rm tor} J_{\rm tor}$.
+    - **Dual-Path Execution**:
+      - `CompositeFlow`: Directly slices internal coordinate torsions $\phi$ with zero cross products and zero division-by-zero risk.
+      - `Base2CartesianFlow`: Evaluates safe regularized Cartesian dihedrals for explicit `.mol2` bond graph quadruplets.
   - `train(steps=100, batch_size=64, verbose=False)`: JIT-compiled optimization loop over flow parameters using `Adam` or `Muon`.
   - `sample(n_samples=1, return_all_pad=False)`: Draws equilibrium configurations and automatically slices dummy padding sites to return real molecular atoms $(B, N_{\rm real}, 3)$.
   - `log_prob(x)`: Evaluates exact generated density $\log q_\theta(\mathbf{x}) = \log p_z(f^{-1}(\mathbf{x})) + \log |\det J_{f^{-1}}(\mathbf{x})|$.

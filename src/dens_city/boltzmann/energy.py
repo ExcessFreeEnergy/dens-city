@@ -82,6 +82,7 @@ class MicroscopicEnergy:
         else:
             raise ValueError("Must provide either a Material instance or explicit (sigmas, epsilons).")
 
+        self.material = material
         self.n_real_particles = len(s_list)
         # Pad number of sites to the nearest power of 2 (1, 2, 4, 8, 16, 32, 64, ...) if requested
         if pad_to_power_of_2:

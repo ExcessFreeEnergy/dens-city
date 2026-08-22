@@ -4,11 +4,18 @@ via variational Reverse Kullback-Leibler (KL) divergence minimization in pure ti
 """
 
 import math
-from typing import Callable, Optional, List, Union
+from typing import Callable, Optional, List, Union, Tuple
 from tinygrad import Tensor, TinyJit, nn, dtypes, GlobalCounters, Context
 from tinygrad.helpers import getenv, trange
 
-from dens_city.boltzmann.bijectors import RealNVPFlow, CompositeFlow, Base2CartesianFlow
+from dens_city.boltzmann.bijectors import (
+    RealNVPFlow,
+    CompositeFlow,
+    Base2CartesianFlow,
+    compute_cartesian_dihedrals,
+    compute_cartesian_torsion_loss,
+    compute_torsion_rotamer_loss,
+)
 from dens_city.boltzmann.prior import CDFTBaseDistribution
 
 
@@ -27,6 +34,8 @@ class BoltzmannGenerator:
         temperature_k: float = 300.0,
         learning_rate: float = 0.01,
         batch_size: int = 64,
+        w_torsion: float = 0.0,
+        dihedral_quadruplets: Optional[Union[List[Tuple[int, int, int, int]], Tensor]] = None,
     ):
         self.flow = flow
         self.energy_fn = energy_fn
@@ -39,6 +48,21 @@ class BoltzmannGenerator:
         self.is_base2_cartesian = isinstance(flow, Base2CartesianFlow)
         self.is_composite = isinstance(flow, CompositeFlow)
         self.batch_size = int(batch_size)
+        self.w_torsion = float(w_torsion)
+        self.w_tor = Tensor([self.w_torsion], dtype=dtypes.float32).realize()
+
+        if dihedral_quadruplets is not None and len(dihedral_quadruplets) > 0:
+            if isinstance(dihedral_quadruplets, Tensor):
+                self.dihedral_quadruplets = dihedral_quadruplets.realize()
+            else:
+                self.dihedral_quadruplets = Tensor(dihedral_quadruplets, dtype=dtypes.int32).realize()
+        else:
+            mat = getattr(self.energy_fn, "material", None)
+            if mat is not None and getattr(mat, "dihedral_quadruplets", None):
+                self.dihedral_quadruplets = Tensor(mat.dihedral_quadruplets, dtype=dtypes.int32).realize()
+            else:
+                self.dihedral_quadruplets = None
+
         pool_dim = 3 if (self.is_composite or self.is_base2_cartesian) else self.dim
         if self.prior is not None:
             raw_pool = self.prior.sample(n_samples=max(4096, self.batch_size * 16))
@@ -79,9 +103,10 @@ class BoltzmannGenerator:
     def compute_loss(self, z: Tensor, origin: Optional[Tensor] = None) -> Tensor:
         r"""
         Evaluates the variational Reverse KL Divergence training loss:
-        \mathcal{L}(\theta) = \mathbb{E}_{z \sim p_z} \left[ \beta U(f_\theta(z)) - \log p_z(z) - \log |\det J_{f_\theta}(z)| \right]
+        \mathcal{L}(\theta) = \mathbb{E}_{z \sim p_z} \left[ \beta U(f_\theta(z)) - \log p_z(z) - \log |\det J_{f_\theta}(z)| + w_{\rm tor} J_{\rm tor} \right]
         """
         B = z.shape[0]
+        j_tor = None
 
         if self.is_base2_cartesian:
             z_flat = z.reshape(B, self.dim)
@@ -92,15 +117,32 @@ class BoltzmannGenerator:
                 log_pz = log_pz_internal + log_pz_origin
             else:
                 log_pz = log_pz_internal
+
+            if self.w_torsion > 0.0 and self.dihedral_quadruplets is not None and self.dihedral_quadruplets.shape[0] > 0:
+                j_tor = compute_cartesian_torsion_loss(x, self.dihedral_quadruplets)
+
         elif self.is_composite:
             z_flat = z.reshape(B, self.dim) if len(z.shape) > 2 else z
-            x, log_det = self.flow.forward(z_flat, origin=origin)
+            ic_flat, log_det_flow = self.flow.flow.forward(z_flat)
+            n_bonds = self.flow.n_bonds
+            n_angles = self.flow.n_angles
+            n_torsions = self.flow.n_torsions
+            bonds = ic_flat[:, :n_bonds]
+            angles = ic_flat[:, n_bonds : (n_bonds + n_angles)] if n_angles > 0 else None
+            torsions = ic_flat[:, (n_bonds + n_angles) : self.flow.dim] if n_torsions > 0 else None
+            x, log_det_zmat = self.flow.zmat.forward(bonds=bonds, angles=angles, torsions=torsions, origin=origin)
+            log_det = log_det_flow + log_det_zmat
+
             log_pz_internal = -0.5 * (z_flat * z_flat + self.log_2pi).sum(axis=-1)
             if self.prior is not None and origin is not None:
                 log_pz_origin = self.prior.log_prob(origin)
                 log_pz = log_pz_internal + log_pz_origin
             else:
                 log_pz = log_pz_internal
+
+            if self.w_torsion > 0.0 and torsions is not None and torsions.shape[-1] > 0:
+                j_tor = compute_torsion_rotamer_loss(torsions)
+
         else:
             z_flat = z.reshape(B, self.dim)
             x_flat, log_det = self.flow.forward(z_flat)
@@ -119,11 +161,16 @@ class BoltzmannGenerator:
                 else:
                     log_pz = -0.5 * (z_flat * z_flat + self.log_2pi).sum(axis=-1)
 
+            if self.w_torsion > 0.0 and self.dihedral_quadruplets is not None and self.dihedral_quadruplets.shape[0] > 0 and len(x.shape) == 3:
+                j_tor = compute_cartesian_torsion_loss(x, self.dihedral_quadruplets)
+
         # Evaluate exact microscopic potential energy
         u_exact = self.energy_fn(x)  # (B,)
 
-        # Variational KL Loss with realized beta buffer
+        # Variational KL Loss with realized beta buffer and optional torsional penalty
         loss_batch = self.beta * u_exact - log_pz - log_det
+        if j_tor is not None:
+            loss_batch = loss_batch + self.w_tor * j_tor
         return loss_batch.mean()
 
     def _train_step(self, origin_pool: Optional[Tensor] = None) -> Tensor:
