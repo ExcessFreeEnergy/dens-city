@@ -19,25 +19,26 @@ Usage:
 """
 
 import argparse
-import multiprocessing as mp
 import concurrent.futures
 import json
+import multiprocessing as mp
 import os
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 
 # Ensure src/ is on PYTHONPATH
 root_dir = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root_dir / "src"))
 
-from tinygrad.helpers import colored, getenv
+from tinygrad.helpers import colored
+
 from dens_city.materials import MaterialLoader
 from dens_city.pipeline import (
-    MaterialPipelineTask,
     MaterialPipelineResult,
+    MaterialPipelineTask,
     PipelineStatus,
     process_material_task,
 )
@@ -71,14 +72,18 @@ def discover_materials(data_dir: str, requested_materials: Optional[List[str]] =
     return discovered
 
 
-def print_banner(out_dir: str, num_materials: int, workers: int, temp_k: float, pressure_bar: Optional[float], skip_bg: bool) -> None:
+def print_banner(
+    out_dir: str, num_materials: int, workers: int, temp_k: float, pressure_bar: Optional[float], skip_bg: bool
+) -> None:
     print("=" * 80)
     print(colored("  dens-city: High-Throughput Isolated Batch Processor Pipeline", "cyan"))
     print("=" * 80)
     print(f"  Target Materials  : {num_materials} items")
     print(f"  Worker Processes  : {workers} isolated processes")
     print(f"  Thermodynamics    : T = {temp_k:.1f} K" + (f", P = {pressure_bar:.2f} bar" if pressure_bar else ""))
-    print(f"  Pipeline Mode     : {'cDFT Fast Screening (No BG)' if skip_bg else 'Full Coupled (cDFT + Boltzmann Generator)'}")
+    print(
+        f"  Pipeline Mode     : {'cDFT Fast Screening (No BG)' if skip_bg else 'Full Coupled (cDFT + Boltzmann Generator)'}"
+    )
     print(f"  Artifact Output   : {out_dir}")
     print("=" * 80)
     print(f"{'Material':<22} | {'Sites':<5} | {'cDFT (s)':<8} | {'BG (s)':<8} | {'P_wall (bar)':<12} | {'Status':<16}")
@@ -98,8 +103,14 @@ def print_result_row(res: MaterialPipelineResult) -> None:
     status_str = colored(res.status, col)
     cdft_t_str = f"{res.cdft_runtime_seconds:6.2f}" if res.cdft_runtime_seconds > 0 else "  --  "
     bg_t_str = f"{res.bg_runtime_seconds:6.2f}" if res.bg_runtime_seconds > 0 else "  --  "
-    p_wall_str = f"{res.wall_pressure_bar:10.2f}" if res.status in [PipelineStatus.SUCCESS.value, PipelineStatus.SUCCESS_CDFT_ONLY.value] else "    --    "
-    print(f"{res.material_name:<22} | {res.num_sites:<5} | {cdft_t_str:<8} | {bg_t_str:<8} | {p_wall_str:<12} | {status_str}")
+    p_wall_str = (
+        f"{res.wall_pressure_bar:10.2f}"
+        if res.status in [PipelineStatus.SUCCESS.value, PipelineStatus.SUCCESS_CDFT_ONLY.value]
+        else "    --    "
+    )
+    print(
+        f"{res.material_name:<22} | {res.num_sites:<5} | {cdft_t_str:<8} | {bg_t_str:<8} | {p_wall_str:<12} | {status_str}"
+    )
 
 
 def main() -> int:
@@ -276,10 +287,7 @@ def main() -> int:
     with open(jsonl_log_path, "w", encoding="utf-8") as jsonl_file:
         ctx = mp.get_context("spawn")
         with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers, mp_context=ctx) as executor:
-            future_to_task = {
-                executor.submit(process_material_task, task): task
-                for task in tasks
-            }
+            future_to_task = {executor.submit(process_material_task, task): task for task in tasks}
 
             for future in concurrent.futures.as_completed(future_to_task):
                 task = future_to_task[future]
@@ -310,9 +318,20 @@ def main() -> int:
     t_batch_total = time.perf_counter() - t_batch_start
 
     # Final summary statistics
-    n_success = sum(1 for r in results if r.status in [PipelineStatus.SUCCESS.value, PipelineStatus.SUCCESS_CDFT_ONLY.value])
+    n_success = sum(
+        1 for r in results if r.status in [PipelineStatus.SUCCESS.value, PipelineStatus.SUCCESS_CDFT_ONLY.value]
+    )
     n_skipped = sum(1 for r in results if r.status == PipelineStatus.SKIPPED_THERMO.value)
-    n_failed = sum(1 for r in results if r.status in [PipelineStatus.FAILED_TRAINING.value, PipelineStatus.FAILED_TIMEOUT.value, PipelineStatus.FAILED_ERROR.value])
+    n_failed = sum(
+        1
+        for r in results
+        if r.status
+        in [
+            PipelineStatus.FAILED_TRAINING.value,
+            PipelineStatus.FAILED_TIMEOUT.value,
+            PipelineStatus.FAILED_ERROR.value,
+        ]
+    )
 
     print("=" * 80)
     print(colored(f"Batch Processing Completed in {t_batch_total:.2f} seconds", "cyan"))

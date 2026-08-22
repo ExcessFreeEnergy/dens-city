@@ -4,22 +4,16 @@ Verifies end-to-end cDFT screening, Boltzmann Generator generative handoff,
 multi-frame XYZ trajectory export, state serialization, and process pool execution.
 """
 
-import os
-import json
-import tempfile
-import numpy as np
-import pytest
 from pathlib import Path
+
+import numpy as np
 
 from dens_city.pipeline import (
     MaterialPipelineTask,
-    MaterialPipelineResult,
     PipelineStatus,
     process_material_task,
     write_xyz_trajectory,
-    save_flow_weights,
 )
-from dens_city.materials import MaterialLoader
 
 
 def test_single_material_full_pipeline(tmp_path):
@@ -136,10 +130,13 @@ def test_write_xyz_trajectory(tmp_path):
     """
     out_file = str(tmp_path / "test.xyz")
     # 2 frames, 3 atoms
-    coords = np.array([
-        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-        [[0.1, 0.1, 0.1], [1.1, 0.1, 0.1], [0.1, 1.1, 0.1]],
-    ], dtype=np.float32)
+    coords = np.array(
+        [
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            [[0.1, 0.1, 0.1], [1.1, 0.1, 0.1], [0.1, 1.1, 0.1]],
+        ],
+        dtype=np.float32,
+    )
     names = ["C1", "H2", "O3"]
     energies = [-100.5, -98.2]
 
@@ -158,8 +155,8 @@ def test_concurrent_multiprocessing_batch(tmp_path):
     """
     Validates parallel execution of multiple materials using concurrent.futures.ProcessPoolExecutor.
     """
-    import multiprocessing as mp
     import concurrent.futures
+    import multiprocessing as mp
 
     materials = ["argon", "water", "methane"]
     tasks = [

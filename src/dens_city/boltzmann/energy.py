@@ -5,9 +5,11 @@ and exact Steele 9-3 / hard-core steric wall potentials in confined Z dimension.
 """
 
 import math
-from typing import Optional, Tuple, Union, List
+from typing import List, Optional, Tuple, Union
+
 import numpy as np
 from tinygrad import Tensor, TinyJit, dtypes
+
 from dens_city.materials import Material
 
 
@@ -34,7 +36,7 @@ def regularize_energy(
     excess = (energy - eh).maximum(0.0)
     excess_clamped = excess.minimum(em - eh)
     e_reg = eh + (excess_clamped + 1.0).log()
-    is_high = (energy >= eh)
+    is_high = energy >= eh
     return is_high.where(e_reg, energy)
 
 
@@ -151,7 +153,9 @@ class MicroscopicEnergy:
         # Lorentz-Berthelot collision diameter with wall (masked for dummy atoms)
         self.sigma_wf = (0.5 * (self.wall_sigma + self.sigmas)).realize()  # (N,)
         self.steric_radius = ((0.5 * self.sigma_wf) * self.is_real_atom).realize()  # (N,)
-        self.wall_prefactor = ((((2.0 * math.pi * self.wall_epsilon_k) / 3.0) * (self.sigma_wf**3)) * self.is_real_atom).realize()  # (N,)
+        self.wall_prefactor = (
+            (((2.0 * math.pi * self.wall_epsilon_k) / 3.0) * (self.sigma_wf**3)) * self.is_real_atom
+        ).realize()  # (N,)
 
         # Energy regularization parameters as realized device buffers
         self.e_high_val = float(e_high) if e_high is not None else None
@@ -172,7 +176,9 @@ class MicroscopicEnergy:
         applying exact Shifted-Force (SF) boundary continuity.
         Supports both (B, N, 3) and (B, N, 4) coordinates.
         """
-        is_batched = len(pos.shape) >= 2 and (len(pos.shape) == 3 or (len(pos.shape) == 2 and pos.shape[-1] not in (3, 4)))
+        is_batched = len(pos.shape) >= 2 and (
+            len(pos.shape) == 3 or (len(pos.shape) == 2 and pos.shape[-1] not in (3, 4))
+        )
         if len(pos.shape) == 2:
             if pos.shape[-1] in (3, 4):
                 pos_b = pos.unsqueeze(0)
@@ -230,7 +236,9 @@ class MicroscopicEnergy:
         """
         Computes external confining slit wall potential energy in Z for all particles.
         """
-        is_batched = len(pos.shape) >= 2 and (len(pos.shape) == 3 or (len(pos.shape) == 2 and pos.shape[-1] not in (3, 4)))
+        is_batched = len(pos.shape) >= 2 and (
+            len(pos.shape) == 3 or (len(pos.shape) == 2 and pos.shape[-1] not in (3, 4))
+        )
         if len(pos.shape) == 2:
             if pos.shape[-1] in (3, 4):
                 pos_b = pos.unsqueeze(0)
@@ -268,6 +276,11 @@ class MicroscopicEnergy:
             v_wall = is_steric.where(self.v_wall_inf, 0.0)
 
         u_wall = (v_wall * self.is_real_atom.unsqueeze(0)).sum(axis=-1)  # (B,)
+        if self.n_real_particles < self.n_particles:
+            # Subtle anchor to prevent dummy unconstrained coordinate divergence
+            dummy_mask = (1.0 - self.is_real_atom).unsqueeze(0)
+            u_dummy = (1e-4 * (pos_b[..., :3] * pos_b[..., :3]).sum(axis=-1) * dummy_mask).sum(axis=-1)
+            u_wall = u_wall + u_dummy
         return u_wall if is_batched else u_wall.squeeze(0)
 
     def regularize_energy(

@@ -6,6 +6,7 @@ Coulomb Green's functions, and exact steric confining wall potentials.
 
 import math
 from typing import Dict, Optional, Tuple
+
 from tinygrad import Tensor
 
 
@@ -60,7 +61,8 @@ class KernelBuilder:
         wv1_vals = [w / (4.0 * math.pi * R) for w in wv2_vals]
 
         # Reshape to (1, 1, K, 1) for tinygrad conv2d
-        to_tensor = lambda vals: Tensor(vals).reshape(1, 1, k_size, 1).contiguous()
+        def to_tensor(vals):
+            return Tensor(vals).reshape(1, 1, k_size, 1).contiguous()
 
         return {
             "w3": to_tensor(w3_vals),
@@ -102,14 +104,18 @@ class KernelBuilder:
 
                 # Antiderivative of 8\pi \epsilon [ \sigma^12 / u^11 - \sigma^6 / u^5 ]
                 # \int [ \sigma^12 / u^11 - \sigma^6 / u^5 ] du = -\sigma^12 / (10 u^10) + \sigma^6 / (4 u^4)
-                anti_v_rmin = 8.0 * math.pi * epsilon_k * (-(sigma**12) / (10.0 * (r_min**10)) + (sigma**6) / (4.0 * (r_min**4)))
+                anti_v_rmin = (
+                    8.0 * math.pi * epsilon_k * (-(sigma**12) / (10.0 * (r_min**10)) + (sigma**6) / (4.0 * (r_min**4)))
+                )
                 c1 = anti_v_rmin - v_rmin
 
                 v_val = 8.0 * math.pi * epsilon_k * (-(sigma**12) / (10.0 * (r**10)) + (sigma**6) / (4.0 * (r**4))) - c1
 
                 # Second antiderivative \int [ -\sigma^12 / (10 u^10) + \sigma^6 / (4 u^4) ] du
                 # = \sigma^12 / (90 u^9) - \sigma^6 / (12 u^3)
-                anti_w_rmin = 8.0 * math.pi * epsilon_k * ((sigma**12) / (90.0 * (r_min**9)) - (sigma**6) / (12.0 * (r_min**3)))
+                anti_w_rmin = (
+                    8.0 * math.pi * epsilon_k * ((sigma**12) / (90.0 * (r_min**9)) - (sigma**6) / (12.0 * (r_min**3)))
+                )
                 anti_w_r = 8.0 * math.pi * epsilon_k * ((sigma**12) / (90.0 * (r**9)) - (sigma**6) / (12.0 * (r**3)))
 
                 w_val = w_rmin - c1 * (r - r_min) + (anti_w_r - anti_w_rmin)
@@ -187,9 +193,7 @@ class KernelBuilder:
         return Tensor(v_vals).reshape(1, 1, n_grid, 1).contiguous()
 
     @staticmethod
-    def build_coulomb_1d_greens_matrix(
-        n_grid: int, dz: float, dielectric_constant: float = 1.0
-    ) -> Tensor:
+    def build_coulomb_1d_greens_matrix(n_grid: int, dz: float, dielectric_constant: float = 1.0) -> Tensor:
         r"""
         Constructs the exact 2-point 1D Poisson / Coulomb Green's function matrix G \in R^{N x N}
         for electrostatics in a confined slit pore [0, L_z] with grounded Dirichlet boundary conditions

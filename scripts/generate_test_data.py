@@ -7,6 +7,7 @@ FreeSolv where available, and generating canonical geometries for the remaining 
 
 import math
 import shutil
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -37,9 +38,7 @@ def format_mol2(name: str, atoms: list, bonds: list, comment: str = "") -> str:
     for i, at in enumerate(atoms, start=1):
         # atom: (name, x, y, z, atom_type, charge)
         at_name, x, y, z, at_type, q = at
-        lines.append(
-            f"{i:>7} {at_name:<6} {x:>12.4f} {y:>10.4f} {z:>10.4f} {at_type:<8} 1 MOL {q:>12.6f}"
-        )
+        lines.append(f"{i:>7} {at_name:<6} {x:>12.4f} {y:>10.4f} {z:>10.4f} {at_type:<8} 1 MOL {q:>12.6f}")
 
     lines.append("@<TRIPOS>BOND")
     for i, b in enumerate(bonds, start=1):
@@ -201,7 +200,7 @@ def build_polyethylene() -> str:
         x = i * 1.27
         y = 0.44 if (i % 2 == 0) else -0.44
         z = 0.0
-        c_name = f"C{i+1}"
+        c_name = f"C{i + 1}"
         q_c = -0.18 if (i == 0 or i == n_c - 1) else -0.12
         atoms.append((c_name, x, y, z, "c3", q_c))
         c_idx.append(len(atoms))
@@ -211,10 +210,10 @@ def build_polyethylene() -> str:
         h_z1 = 0.89
         h_z2 = -0.89
         q_h = 0.06
-        
-        atoms.append((f"H{i*2+1}", x, h_y, h_z1, "hc", q_h))
+
+        atoms.append((f"H{i * 2 + 1}", x, h_y, h_z1, "hc", q_h))
         h1_idx = len(atoms)
-        atoms.append((f"H{i*2+2}", x, h_y, h_z2, "hc", q_h))
+        atoms.append((f"H{i * 2 + 2}", x, h_y, h_z2, "hc", q_h))
         h2_idx = len(atoms)
 
         bonds.append((c_idx[-1], h1_idx, "1"))
@@ -225,7 +224,7 @@ def build_polyethylene() -> str:
             atoms.append(("H0", x - 0.89, y, 0.0, "hc", q_h))
             bonds.append((c_idx[-1], len(atoms), "1"))
         elif i == n_c - 1:
-            atoms.append((f"H{n_c*2+1}", x + 0.89, y, 0.0, "hc", q_h))
+            atoms.append((f"H{n_c * 2 + 1}", x + 0.89, y, 0.0, "hc", q_h))
             bonds.append((c_idx[-1], len(atoms), "1"))
 
         # Carbon-carbon backbone bond
@@ -240,7 +239,7 @@ def build_5cb() -> str:
     # Cyanobiphenyl rigid rod + pentyl flexible tail
     atoms = []
     bonds = []
-    
+
     # Cyano group N#C- at origin / -z
     atoms.append(("N1", 0.0, 0.0, -7.0, "n1", -0.550000))
     atoms.append(("C1", 0.0, 0.0, -5.85, "c1", 0.450000))
@@ -262,7 +261,7 @@ def build_5cb() -> str:
     r1_start = len(atoms) + 1
     for item in r1_coords:
         atoms.append(item)
-    bonds.append((2, r1_start, "1")) # C1 - C2
+    bonds.append((2, r1_start, "1"))  # C1 - C2
     bonds.append((r1_start, r1_start + 1, "ar"))
     bonds.append((r1_start + 1, r1_start + 2, "ar"))
     bonds.append((r1_start + 2, r1_start + 3, "ar"))
@@ -291,7 +290,7 @@ def build_5cb() -> str:
     ]
     for item in r2_coords:
         atoms.append(item)
-    bonds.append((r1_start + 3, r2_start, "1")) # C5 - C8 inter-ring bond
+    bonds.append((r1_start + 3, r2_start, "1"))  # C5 - C8 inter-ring bond
     bonds.append((r2_start, r2_start + 1, "ar"))
     bonds.append((r2_start + 1, r2_start + 2, "ar"))
     bonds.append((r2_start + 2, r2_start + 3, "ar"))
@@ -315,7 +314,7 @@ def build_5cb() -> str:
     tail_start = len(atoms) + 1
     for c in tail_c:
         atoms.append(c)
-    bonds.append((r2_start + 3, tail_start, "1")) # C11 - C14
+    bonds.append((r2_start + 3, tail_start, "1"))  # C11 - C14
     for i in range(4):
         bonds.append((tail_start + i, tail_start + i + 1, "1"))
 
@@ -376,9 +375,9 @@ def build_sds() -> str:
         x = 0.44 if (i % 2 == 0) else -0.44
         y = 0.0
         q_c = 0.10 if i == 0 else (-0.18 if i == 11 else -0.12)
-        atoms.append((f"C{i+1}", x, y, z, "c3", q_c))
+        atoms.append((f"C{i + 1}", x, y, z, "c3", q_c))
 
-    bonds.append((6, c_start, "1")) # O4 - C1
+    bonds.append((6, c_start, "1"))  # O4 - C1
     for i in range(11):
         bonds.append((c_start + i, c_start + i + 1, "1"))
 
@@ -387,9 +386,9 @@ def build_sds() -> str:
         z = 1.80 + i * 1.27
         x = 0.88 if (i % 2 == 0) else -0.88
         q_h = 0.06
-        atoms.append((f"H{i*2+1}", x, 0.89, z, "hc", q_h))
+        atoms.append((f"H{i * 2 + 1}", x, 0.89, z, "hc", q_h))
         h1 = len(atoms)
-        atoms.append((f"H{i*2+2}", x, -0.89, z, "hc", q_h))
+        atoms.append((f"H{i * 2 + 2}", x, -0.89, z, "hc", q_h))
         h2 = len(atoms)
         bonds.append((c_start + i, h1, "1"))
         bonds.append((c_start + i, h2, "1"))

@@ -13,7 +13,6 @@ Usage:
 """
 
 import argparse
-import os
 import shutil
 import subprocess
 import sys
@@ -62,7 +61,7 @@ def extract_mol2_archive(
         Number of .mol2 files extracted.
     """
     target_mol2_dir = dest_dir / "mol2files_gaff"
-    
+
     if target_mol2_dir.exists() and not force:
         existing_mol2 = list(target_mol2_dir.glob("*.mol2"))
         if existing_mol2:
@@ -96,7 +95,7 @@ def copy_database_metadata(freesolv_dir: Path, dest_dir: Path) -> None:
         "iupac_to_cid.json",
         "smiles_to_cid.json",
     ]
-    
+
     copied = 0
     for filename in metadata_files:
         src = freesolv_dir / filename
@@ -104,7 +103,7 @@ def copy_database_metadata(freesolv_dir: Path, dest_dir: Path) -> None:
         if src.exists():
             shutil.copy2(src, dst)
             copied += 1
-            
+
     if copied > 0:
         print(f"Copied {copied} FreeSolv metadata files to '{dest_dir}'.")
 
@@ -145,7 +144,7 @@ def main() -> None:
     dest_dir = Path(args.dest_dir) if args.dest_dir else (repo_root / "data")
     freesolv_dir = Path(args.freesolv_dir) if args.freesolv_dir else (repo_root / "FreeSolv")
 
-    print(f"=== dens-city FreeSolv Data Initializer ===")
+    print("=== dens-city FreeSolv Data Initializer ===")
     print(f"Repository Root: {repo_root}")
     print(f"FreeSolv Source: {freesolv_dir}")
     print(f"Data Destination: {dest_dir}")

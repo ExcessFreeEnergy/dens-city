@@ -9,7 +9,8 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -218,9 +219,7 @@ class Material:
         cy = sum(s.mass * s.y for s in self.sites) / total_m
         cz = sum(s.mass * s.z for s in self.sites) / total_m
 
-        rg_sq = sum(
-            s.mass * ((s.x - cx) ** 2 + (s.y - cy) ** 2 + (s.z - cz) ** 2) for s in self.sites
-        ) / total_m
+        rg_sq = sum(s.mass * ((s.x - cx) ** 2 + (s.y - cy) ** 2 + (s.z - cz) ** 2) for s in self.sites) / total_m
         return math.sqrt(max(0.0, rg_sq))
 
     def compute_bulk_mu(self, T: Optional[float] = None, rho: Optional[float] = None) -> float:

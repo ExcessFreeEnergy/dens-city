@@ -5,9 +5,10 @@ transverse spatial uniformity, and exact base probability log-likelihoods.
 """
 
 import math
+
 import numpy as np
-import pytest
 from tinygrad import Tensor
+
 from dens_city.boltzmann.prior import CDFTBaseDistribution
 from dens_city.cdft import TinyCDFT
 from dens_city.materials import MaterialLoader
@@ -107,8 +108,7 @@ def test_cdft_prior_log_prob_consistency():
     rho1 = np.interp(5.0, z_centers, rho_syn)
     rho2 = np.interp(15.0, z_centers, rho_syn)
     exact_lp = (
-        -math.log(area) + math.log(rho1) - math.log(total_mass)
-        - math.log(area) + math.log(rho2) - math.log(total_mass)
+        -math.log(area) + math.log(rho1) - math.log(total_mass) - math.log(area) + math.log(rho2) - math.log(total_mass)
     )
 
     assert math.isclose(lp.item(), exact_lp, rel_tol=1e-3), f"Log prob {lp.item()} != exact {exact_lp}"

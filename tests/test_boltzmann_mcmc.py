@@ -4,14 +4,12 @@ Verifies Metropolis acceptance statistics, outlier relaxation, zero-step invaria
 and seamless compatibility across Base2CartesianFlow and CompositeFlow architectures.
 """
 
-import math
 import numpy as np
-import pytest
-from tinygrad import Tensor, dtypes
-from dens_city.materials import MaterialLoader
+
 from dens_city.boltzmann.bijectors import Base2CartesianFlow, CompositeFlow
 from dens_city.boltzmann.energy import MicroscopicEnergy
 from dens_city.boltzmann.generator import BoltzmannGenerator
+from dens_city.materials import MaterialLoader
 
 
 def test_zero_mcmc_steps_invariance():

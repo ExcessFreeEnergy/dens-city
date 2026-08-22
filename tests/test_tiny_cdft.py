@@ -4,12 +4,11 @@ Verifies exact geometric measure integrals, Boltzmann boundary conditions, steri
 """
 
 import math
-import numpy as np
-import pytest
-from tinygrad import Tensor, TinyJit
 
-from dens_city.cdft import TinyCDFT
-from dens_city.kernels import KernelBuilder
+import numpy as np
+from tinygrad import Tensor
+
+from dens_city.cdft import KernelBuilder, TinyCDFT
 from dens_city.materials import MaterialLoader
 
 
@@ -28,9 +27,9 @@ def test_anti_aliased_fmt_and_wca_kernel_integrals():
     w0_int = float(fmt_kernels["w0"].numpy().sum() * dz)
 
     exact_v = (4.0 / 3.0) * math.pi * (R**3)  # Volume
-    exact_s = 4.0 * math.pi * (R**2)         # Surface Area
-    exact_r = R                               # Mean Radius
-    exact_chi = 1.0                           # Euler Characteristic
+    exact_s = 4.0 * math.pi * (R**2)  # Surface Area
+    exact_r = R  # Mean Radius
+    exact_chi = 1.0  # Euler Characteristic
 
     assert math.isclose(w3_int, exact_v, rel_tol=1e-3), f"w3 integral {w3_int} != {exact_v}"
     assert math.isclose(w2_int, exact_s, rel_tol=1e-3), f"w2 integral {w2_int} != {exact_s}"
@@ -42,6 +41,7 @@ def test_anti_aliased_fmt_and_wca_kernel_integrals():
     kernel_sum = float(att_kernel.numpy().sum()) * dz
 
     from dens_city.materials import compute_wca_dispersion_integral
+
     exact_wca_3d = compute_wca_dispersion_integral(sigma, epsilon_k)
 
     assert math.isclose(kernel_sum, exact_wca_3d, rel_tol=1e-3), f"WCA kernel sum {kernel_sum} != {exact_wca_3d}"
@@ -63,7 +63,7 @@ def test_boltzmann_initialization_and_continuous_autograd():
     assert np.all(np.isfinite(initial_rho)), "Initial density must have no NaNs"
 
     # Verify autograd backward pass produces non-zero finite gradients throughout
-    loss = solver.grand_potential().backward()
+    solver.grand_potential().backward()
     grad = solver.psi.grad.numpy()
     assert np.all(np.isfinite(grad)), "Gradients must be finite without NaNs"
     assert not np.all(grad == 0.0), "Gradients must not be all-zero"
@@ -134,12 +134,16 @@ def test_large_molecule_wall_steric_exclusion():
     wall_sigma = 3.4
     expected_steric_radius = 0.5 * (0.5 * (wall_sigma + colloid.effective_sigma))
 
-    v_ext = KernelBuilder.build_slit_wall_potential(
-        n_grid=128,
-        dz=0.5,
-        fluid_sigma=colloid.effective_sigma,
-        wall_sigma=wall_sigma,
-    ).numpy().flatten()
+    v_ext = (
+        KernelBuilder.build_slit_wall_potential(
+            n_grid=128,
+            dz=0.5,
+            fluid_sigma=colloid.effective_sigma,
+            wall_sigma=wall_sigma,
+        )
+        .numpy()
+        .flatten()
+    )
 
     # Domain within steric collision radius must diverge to 1e6
     z_coords = np.linspace(0.25, 128 * 0.5 - 0.25, 128)

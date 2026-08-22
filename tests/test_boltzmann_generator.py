@@ -5,13 +5,14 @@ in harmonic potential wells, and cDFT prior-informed flow training.
 """
 
 import math
+
 import numpy as np
-import pytest
 from tinygrad import Tensor
-from dens_city.boltzmann.bijectors import RealNVPFlow, CompositeFlow, Base2CartesianFlow
-from dens_city.boltzmann.prior import CDFTBaseDistribution
+
+from dens_city.boltzmann.bijectors import Base2CartesianFlow, CompositeFlow, RealNVPFlow
 from dens_city.boltzmann.energy import MicroscopicEnergy
 from dens_city.boltzmann.generator import BoltzmannGenerator
+from dens_city.boltzmann.prior import CDFTBaseDistribution
 from dens_city.materials import MaterialLoader
 
 

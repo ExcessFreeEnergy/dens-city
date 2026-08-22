@@ -13,10 +13,9 @@ Output:
 import argparse
 import csv
 import json
-import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TEST_DATA_DIR = REPO_ROOT / "test_data"
@@ -86,22 +85,21 @@ def parse_mol2_file(mol2_path: Path) -> Tuple[str, List[Dict[str, Any]]]:
                 atom_type = parts[5]
                 charge = float(parts[8]) if len(parts) >= 9 else 0.0
 
-                atoms.append({
-                    "site_name": site_name,
-                    "atom_type": atom_type,
-                    "x": x,
-                    "y": y,
-                    "z": z,
-                    "charge": charge,
-                })
+                atoms.append(
+                    {
+                        "site_name": site_name,
+                        "atom_type": atom_type,
+                        "x": x,
+                        "y": y,
+                        "z": z,
+                        "charge": charge,
+                    }
+                )
 
     return mol_name, atoms
 
 
-def match_lj_parameters(
-    atom_type: str,
-    ff_db: Dict[str, Dict[str, Any]]
-) -> Tuple[float, float]:
+def match_lj_parameters(atom_type: str, ff_db: Dict[str, Dict[str, Any]]) -> Tuple[float, float]:
     """
     Looks up LJ sigma (Å) and epsilon (kcal/mol) for a given atom type.
     Falls back to case-insensitive matching if direct lookup fails.
@@ -122,7 +120,10 @@ def match_lj_parameters(
         entry = ff_db[clean_type]
         return float(entry["sigma_angstrom"]), float(entry["epsilon_kcal_mol"])
 
-    print(f"Warning: Atom type '{atom_type}' not found in force field database. Using default (0.0, 0.0).", file=sys.stderr)
+    print(
+        f"Warning: Atom type '{atom_type}' not found in force field database. Using default (0.0, 0.0).",
+        file=sys.stderr,
+    )
     return 0.0, 0.0
 
 
@@ -138,11 +139,27 @@ def generate_cdft_solute_input(
 
     # Priority order for benchmark molecules
     benchmark_order = [
-        "water", "water_spce", "nitrogen", "methane", "carbon_dioxide", "argon",
-        "sodium_chloride", "calcium_chloride", "n_decane", "neopentane", "polyethylene",
-        "methanol", "ammonia", "hydrogen_fluoride", "benzene", "5cb",
-        "sodium_dodecyl_sulfate", "sulfur_hexafluoride", "acetone",
-        "colloidal_hard_sphere", "hydrogen"
+        "water",
+        "water_spce",
+        "nitrogen",
+        "methane",
+        "carbon_dioxide",
+        "argon",
+        "sodium_chloride",
+        "calcium_chloride",
+        "n_decane",
+        "neopentane",
+        "polyethylene",
+        "methanol",
+        "ammonia",
+        "hydrogen_fluoride",
+        "benzene",
+        "5cb",
+        "sodium_dodecyl_sulfate",
+        "sulfur_hexafluoride",
+        "acetone",
+        "colloidal_hard_sphere",
+        "hydrogen",
     ]
 
     discovered_files = []
@@ -170,29 +187,37 @@ def generate_cdft_solute_input(
         mol_id, atoms = parse_mol2_file(mol2_file)
         for atom in atoms:
             sigma_A, eps_kcal = match_lj_parameters(atom["atom_type"], ff_db)
-            records.append({
-                "molecule_id": mol_id,
-                "site_name": atom["site_name"],
-                "atom_type": atom["atom_type"],
-                "x": atom["x"],
-                "y": atom["y"],
-                "z": atom["z"],
-                "charge": atom["charge"],
-                "sigma_A": sigma_A,
-                "epsilon_kcal": eps_kcal,
-            })
+            records.append(
+                {
+                    "molecule_id": mol_id,
+                    "site_name": atom["site_name"],
+                    "atom_type": atom["atom_type"],
+                    "x": atom["x"],
+                    "y": atom["y"],
+                    "z": atom["z"],
+                    "charge": atom["charge"],
+                    "sigma_A": sigma_A,
+                    "epsilon_kcal": eps_kcal,
+                }
+            )
 
     output_txt.parent.mkdir(parents=True, exist_ok=True)
 
     # 1. Write formatted table in input_validation.txt
-    header_title = "# =========================================================================================================\n"
+    header_title = (
+        "# =========================================================================================================\n"
+    )
     header_title += "# dens-city: 3D Classical Density Functional Theory (cDFT) Solute Input Validation Chart\n"
     header_title += "# Math Formulation:\n"
-    header_title += "#   - Geometry (X, Y, Z): Centers of interaction sites relative to molecular frame (in Angstroms)\n"
+    header_title += (
+        "#   - Geometry (X, Y, Z): Centers of interaction sites relative to molecular frame (in Angstroms)\n"
+    )
     header_title += "#   - Electrostatics q: V_coulomb(r) = sum_i [ q_i / (4 * pi * eps_0 * |r - r_i|) ] (in elementary charges e)\n"
     header_title += "#   - LJ sigma: Collision diameter in Angstroms (steric repulsive hard core)\n"
     header_title += "#   - LJ epsilon: Well depth in kcal/mol (attractive dispersion stickiness)\n"
-    header_title += "# =========================================================================================================\n"
+    header_title += (
+        "# =========================================================================================================\n"
+    )
 
     table_header = f"{'Molecule ID':<24} {'Site Name':<10} {'Atom Type':<10} {'X (Å)':>10} {'Y (Å)':>10} {'Z (Å)':>10} {'Charge (q)':>12} {'LJ σ (Å)':>10} {'LJ ϵ (kcal/mol)':>16}\n"
     separator = "-" * len(table_header.strip()) + "\n"
@@ -218,16 +243,33 @@ def generate_cdft_solute_input(
     # 2. Write CSV version for automated ingestion
     with open(output_csv, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow([
-            "Molecule ID", "Site Name", "Atom Type", "X (Å)", "Y (Å)", "Z (Å)",
-            "Charge (q)", "LJ σ (Å)", "LJ ϵ (kcal/mol)"
-        ])
+        writer.writerow(
+            [
+                "Molecule ID",
+                "Site Name",
+                "Atom Type",
+                "X (Å)",
+                "Y (Å)",
+                "Z (Å)",
+                "Charge (q)",
+                "LJ σ (Å)",
+                "LJ ϵ (kcal/mol)",
+            ]
+        )
         for r in records:
-            writer.writerow([
-                r["molecule_id"], r["site_name"], r["atom_type"],
-                f"{r['x']:.4f}", f"{r['y']:.4f}", f"{r['z']:.4f}",
-                f"{r['charge']:.4f}", f"{r['sigma_A']:.4f}", f"{r['epsilon_kcal']:.4f}"
-            ])
+            writer.writerow(
+                [
+                    r["molecule_id"],
+                    r["site_name"],
+                    r["atom_type"],
+                    f"{r['x']:.4f}",
+                    f"{r['y']:.4f}",
+                    f"{r['z']:.4f}",
+                    f"{r['charge']:.4f}",
+                    f"{r['sigma_A']:.4f}",
+                    f"{r['epsilon_kcal']:.4f}",
+                ]
+            )
     print(f"Generated CSV solute input validation table: {output_csv}")
 
     return len(records)

@@ -26,13 +26,25 @@ $$\Omega[\psi] = \mathcal{F}_{\rm ideal}[\psi] + \mathcal{F}_{\rm FMT}^{\rm ex}[
 
 ---
 
-## 2. Tooling & Environment Rules
+## 2. Codebase Architecture & Subpackages
+
+The `dens-city` codebase is modularized under `src/dens_city/`:
+- **`dens_city.cdft`**: Classical Density Functional Theory engine, planar FMT convolution kernels, and variational solvers (`TinyCDFT`, `KernelBuilder`).
+- **`dens_city.boltzmann`**: Boltzmann Generator normalizing flows (`Base2CartesianFlow`, `CompositeFlow`), microscopic Hamiltonians (`MicroscopicEnergy`), spatial CDFT priors (`CDFTBaseDistribution`), and latent MCMC relaxation (`BoltzmannGenerator`).
+- **`dens_city.ui`**: Interface subsystem placeholder for future interactive visualization.
+- **`dens_city.materials`**: Tripos `.mol2` parser, force-field database, and Equation of State (EOS) root solvers.
+- **`dens_city.pipeline`**: High-throughput multi-material batch orchestration and parallel worker pools.
+
+---
+
+## 3. Tooling & Environment Rules
 
 > [!IMPORTANT]
 > **Tooling Rule**: Always use `uv` and the local virtual environment for Python environment management, package installation, and script/test execution.
-> - **Environment Activation**: Run `source .venv/bin/activate` or prefix commands with `uv run`.
-> - **Commands**: `uv venv`, `uv pip install`, `uv run pytest`, `uv run ...`.
-> - **Frameworks**: Standard dependencies include `tinygrad`, `numpy`, `scipy`, `pytest`, `ruff`. Do not use Conda or plain system `pip`.
+> - **Environment Synchronization**: Run `uv sync` to sync packages from `uv.lock`.
+> - **Commands**: `uv run pytest`, `uv run python scripts/...`, `uv run ruff check`, `uv run ruff format`.
+> - **Lockfile Management**: Run `uv lock` to update `uv.lock` when modifying `pyproject.toml`.
+> - **Frameworks**: Standard dependencies include `tinygrad`, `numpy`, `scipy`, `pytest`, `ruff`. Never use Conda or plain system `pip`.
 
 > [!CAUTION]
 > **Mandatory First-Principles Physics & Anti-Pattern Audit Rules**:
@@ -45,9 +57,12 @@ $$\Omega[\psi] = \mathcal{F}_{\rm ideal}[\psi] + \mathcal{F}_{\rm FMT}^{\rm ex}[
 
 ---
 
-## 3. CLI Usage & Verification
+## 4. CLI Usage & Verification
 
 ```bash
+# Sync dependencies
+uv sync
+
 # Run single material
 uv run python scripts/run_cdft.py --materials argon
 
@@ -59,4 +74,8 @@ uv run python scripts/run_cdft.py --materials all --steps 50 --no-plot
 
 # Run automated test suite
 uv run pytest tests/ -v
+
+# Run linting and code formatting
+uv run ruff check src/ tests/ scripts/
+uv run ruff format --check src/ tests/ scripts/
 ```

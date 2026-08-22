@@ -4,14 +4,16 @@ Verifies pure parser parameter derivation, self-consistent EOS root solving, and
 """
 
 import math
+
 import numpy as np
 import pytest
+
+from dens_city.cdft import TinyCDFT
 from dens_city.materials import (
     MaterialLoader,
-    solve_bulk_density_from_pressure,
     solve_bulk_density_from_chemical_potential,
+    solve_bulk_density_from_pressure,
 )
-from dens_city.cdft import TinyCDFT
 
 
 def test_list_all_available_materials():

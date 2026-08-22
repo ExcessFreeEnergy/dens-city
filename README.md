@@ -56,30 +56,37 @@ $$\nabla^2 \phi(\mathbf{r}) = -\frac{\rho_q(\mathbf{r})}{\varepsilon_0 \varepsil
 
 ## 4. Quickstart & CLI Usage
 
-Activate the virtual environment:
+Sync dependencies from `uv.lock`:
 ```bash
-source .venv/bin/activate
+uv sync
 
 # Single material simulation
-python scripts/run_cdft.py --materials argon
+uv run python scripts/run_cdft.py --materials argon
 
 # Multi-material sweep
-python scripts/run_cdft.py --materials argon water methane 5cb
+uv run python scripts/run_cdft.py --materials argon water methane 5cb
+
+# Run full batch pipeline with coupled Boltzmann Generator & latent MCMC
+uv run python scripts/run_batch_pipeline.py --materials argon water 5cb --bg-steps 40 --bg-mcmc-steps 5
 
 # Run all 20 benchmark fluids with JIT acceleration
-python scripts/run_cdft.py --materials all --steps 50
+uv run python scripts/run_cdft.py --materials all --steps 50
 
 # Specify thermodynamic pressure for Equation of State (EOS) root solve
-python scripts/run_cdft.py --materials benzene --pressure 1.01325
+uv run python scripts/run_cdft.py --materials benzene --pressure 1.01325
 ```
 
 ---
 
-## 5. Automated Tests
+## 5. Automated Tests & Quality
 
 ```bash
-source .venv/bin/activate
-python -m pytest tests/ -v
+# Run test suite
+uv run pytest tests/ -v
+
+# Run linting and code formatting
+uv run ruff check src/ tests/ scripts/
+uv run ruff format --check src/ tests/ scripts/
 ```
 
 ---

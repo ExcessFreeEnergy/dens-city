@@ -4,15 +4,15 @@ via variational Reverse Kullback-Leibler (KL) divergence minimization in pure ti
 """
 
 import math
-from typing import Callable, Optional, List, Union, Tuple, Dict
-from tinygrad import Tensor, TinyJit, nn, dtypes, GlobalCounters, Context
+from typing import Callable, Dict, List, Optional, Tuple, Union
+
+from tinygrad import GlobalCounters, Tensor, TinyJit, dtypes, nn
 from tinygrad.helpers import getenv, trange
 
 from dens_city.boltzmann.bijectors import (
-    RealNVPFlow,
-    CompositeFlow,
     Base2CartesianFlow,
-    compute_cartesian_dihedrals,
+    CompositeFlow,
+    RealNVPFlow,
     compute_cartesian_torsion_loss,
     compute_torsion_rotamer_loss,
 )
@@ -63,11 +63,14 @@ class BoltzmannGenerator:
             else:
                 self.dihedral_quadruplets = None
 
-        pool_dim = 3 if (self.is_composite or self.is_base2_cartesian) else self.dim
         if self.prior is not None:
             raw_pool = self.prior.sample(n_samples=max(4096, self.batch_size * 16))
             if self.is_base2_cartesian or self.is_composite:
-                self.origin_pool = raw_pool[:, 0, :].reshape(-1, 3).realize() if len(raw_pool.shape) == 3 else raw_pool.reshape(-1, 3).realize()
+                self.origin_pool = (
+                    raw_pool[:, 0, :].reshape(-1, 3).realize()
+                    if len(raw_pool.shape) == 3
+                    else raw_pool.reshape(-1, 3).realize()
+                )
             else:
                 self.origin_pool = raw_pool.reshape(-1, self.dim).realize()
         else:
@@ -118,7 +121,11 @@ class BoltzmannGenerator:
             else:
                 log_pz = log_pz_internal
 
-            if self.w_torsion > 0.0 and self.dihedral_quadruplets is not None and self.dihedral_quadruplets.shape[0] > 0:
+            if (
+                self.w_torsion > 0.0
+                and self.dihedral_quadruplets is not None
+                and self.dihedral_quadruplets.shape[0] > 0
+            ):
                 j_tor = compute_cartesian_torsion_loss(x, self.dihedral_quadruplets)
 
         elif self.is_composite:
@@ -161,7 +168,12 @@ class BoltzmannGenerator:
                 else:
                     log_pz = -0.5 * (z_flat * z_flat + self.log_2pi).sum(axis=-1)
 
-            if self.w_torsion > 0.0 and self.dihedral_quadruplets is not None and self.dihedral_quadruplets.shape[0] > 0 and len(x.shape) == 3:
+            if (
+                self.w_torsion > 0.0
+                and self.dihedral_quadruplets is not None
+                and self.dihedral_quadruplets.shape[0] > 0
+                and len(x.shape) == 3
+            ):
                 j_tor = compute_cartesian_torsion_loss(x, self.dihedral_quadruplets)
 
         # Evaluate exact microscopic potential energy
@@ -221,7 +233,11 @@ class BoltzmannGenerator:
             if self.prior is not None and (self.origin_pool is None or self.origin_pool.shape[0] < self.batch_size):
                 raw_pool = self.prior.sample(n_samples=max(4096, self.batch_size * 16))
                 if self.is_base2_cartesian or self.is_composite:
-                    self.origin_pool = raw_pool[:, 0, :].reshape(-1, 3).realize() if len(raw_pool.shape) == 3 else raw_pool.reshape(-1, 3).realize()
+                    self.origin_pool = (
+                        raw_pool[:, 0, :].reshape(-1, 3).realize()
+                        if len(raw_pool.shape) == 3
+                        else raw_pool.reshape(-1, 3).realize()
+                    )
                 else:
                     self.origin_pool = raw_pool.reshape(-1, self.dim).realize()
             self.train_step = TinyJit(self._train_step)
@@ -247,7 +263,9 @@ class BoltzmannGenerator:
             z = Tensor.randn(n_samples, self.dim)
             if self.prior is not None:
                 p_samp = self.prior.sample(n_samples=n_samples)
-                origin = p_samp[:, 0, :].reshape(n_samples, 3) if len(p_samp.shape) == 3 else p_samp.reshape(n_samples, 3)
+                origin = (
+                    p_samp[:, 0, :].reshape(n_samples, 3) if len(p_samp.shape) == 3 else p_samp.reshape(n_samples, 3)
+                )
             else:
                 origin = None
             return self._forward_flow(z, origin=origin)
@@ -255,7 +273,9 @@ class BoltzmannGenerator:
             z = Tensor.randn(n_samples, self.dim)
             if self.prior is not None:
                 p_samp = self.prior.sample(n_samples=n_samples)
-                origin = p_samp[:, 0, :].reshape(n_samples, 3) if len(p_samp.shape) == 3 else p_samp.reshape(n_samples, 3)
+                origin = (
+                    p_samp[:, 0, :].reshape(n_samples, 3) if len(p_samp.shape) == 3 else p_samp.reshape(n_samples, 3)
+                )
             else:
                 origin = None
             return self._forward_flow(z, origin=origin)
@@ -320,7 +340,9 @@ class BoltzmannGenerator:
             bonds = ic_flat[:, :n_bonds]
             angles = ic_flat[:, n_bonds : (n_bonds + n_angles)] if n_angles > 0 else None
             torsions = ic_flat[:, (n_bonds + n_angles) : self.flow.dim] if n_torsions > 0 else None
-            x_curr, log_det_zmat = self.flow.zmat.forward(bonds=bonds, angles=angles, torsions=torsions, origin=orig_curr)
+            x_curr, log_det_zmat = self.flow.zmat.forward(
+                bonds=bonds, angles=angles, torsions=torsions, origin=orig_curr
+            )
             log_det_curr = log_det_flow + log_det_zmat
             log_pz_curr = -0.5 * (z_flat * z_flat + self.log_2pi).sum(axis=-1)
             if self.prior is not None and orig_curr is not None:
@@ -367,7 +389,9 @@ class BoltzmannGenerator:
                 bonds_p = ic_flat_p[:, :n_bonds]
                 angles_p = ic_flat_p[:, n_bonds : (n_bonds + n_angles)] if n_angles > 0 else None
                 torsions_p = ic_flat_p[:, (n_bonds + n_angles) : self.flow.dim] if n_torsions > 0 else None
-                x_prop, log_det_zmat_p = self.flow.zmat.forward(bonds=bonds_p, angles=angles_p, torsions=torsions_p, origin=orig_curr)
+                x_prop, log_det_zmat_p = self.flow.zmat.forward(
+                    bonds=bonds_p, angles=angles_p, torsions=torsions_p, origin=orig_curr
+                )
                 log_det_prop = log_det_flow_p + log_det_zmat_p
                 log_pz_prop = -0.5 * (z_flat_p * z_flat_p + self.log_2pi).sum(axis=-1)
                 if self.prior is not None and orig_curr is not None:
@@ -396,7 +420,7 @@ class BoltzmannGenerator:
             delta_e = e_prop - e_curr
             accept_prob = (-delta_e).minimum(0.0).exp()
             rand_u = Tensor.rand(B)
-            accept_mask = (rand_u < accept_prob)
+            accept_mask = rand_u < accept_prob
 
             accepted_count += float(accept_mask.float().mean().item())
 
@@ -416,7 +440,14 @@ class BoltzmannGenerator:
         out = x_curr
         n_real = getattr(self.energy_fn, "n_real_particles", None)
         n_pad = getattr(self.energy_fn, "n_particles", None)
-        if not return_all_pad and n_real is not None and n_pad is not None and n_pad > n_real and len(out.shape) == 3 and n_real < out.shape[1]:
+        if (
+            not return_all_pad
+            and n_real is not None
+            and n_pad is not None
+            and n_pad > n_real
+            and len(out.shape) == 3
+            and n_real < out.shape[1]
+        ):
             out = out[:, :n_real, :]
 
         res = (out if n_samples > 1 else out.squeeze(0)).realize()
@@ -458,7 +489,14 @@ class BoltzmannGenerator:
         out = self._sample_batch(n_samples)
         n_real = getattr(self.energy_fn, "n_real_particles", None)
         n_pad = getattr(self.energy_fn, "n_particles", None)
-        if not return_all_pad and n_real is not None and n_pad is not None and n_pad > n_real and len(out.shape) == 3 and n_real < out.shape[1]:
+        if (
+            not return_all_pad
+            and n_real is not None
+            and n_pad is not None
+            and n_pad > n_real
+            and len(out.shape) == 3
+            and n_real < out.shape[1]
+        ):
             out = out[:, :n_real, :]
         return (out if n_samples > 1 else out.squeeze(0)).realize()
 
@@ -504,5 +542,3 @@ class BoltzmannGenerator:
 
             log_qx = log_pz + log_det_inv
             return (log_qx if is_batched else log_qx.squeeze(0)).realize()
-
-

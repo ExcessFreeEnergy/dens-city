@@ -5,19 +5,20 @@ mathematically safe collinear bond angle regularizations, and dual-path executio
 """
 
 import math
+
 import numpy as np
-import pytest
-from tinygrad import Tensor, dtypes
-from dens_city.materials import MaterialLoader
+from tinygrad import Tensor
+
 from dens_city.boltzmann.bijectors import (
+    Base2CartesianFlow,
+    CompositeFlow,
     compute_cartesian_dihedrals,
     compute_cartesian_torsion_loss,
     compute_torsion_rotamer_loss,
-    Base2CartesianFlow,
-    CompositeFlow,
 )
 from dens_city.boltzmann.energy import MicroscopicEnergy
 from dens_city.boltzmann.generator import BoltzmannGenerator
+from dens_city.materials import MaterialLoader
 
 
 def test_mol2_bond_graph_dihedral_quadruplet_extraction():
@@ -65,9 +66,7 @@ def test_rotamer_potential_analytical_minima_and_barriers():
     # 3. Eclipsed / clashing (0 deg, +-120 deg)
     phi_eclipsed = Tensor([0.0, 2.0 * math.pi / 3.0, -2.0 * math.pi / 3.0])
     loss_eclipsed = compute_torsion_rotamer_loss(phi_eclipsed, periodicity=3)
-    assert math.isclose(loss_eclipsed.item(), 2.0, abs_tol=1e-5), (
-        f"Eclipsed rotamer loss {loss_eclipsed.item()} != 2.0"
-    )
+    assert math.isclose(loss_eclipsed.item(), 2.0, abs_tol=1e-5), f"Eclipsed rotamer loss {loss_eclipsed.item()} != 2.0"
 
 
 def test_cartesian_dihedrals_trans_and_gauche_geometry():
@@ -76,12 +75,15 @@ def test_cartesian_dihedrals_trans_and_gauche_geometry():
     """
     # Trans conformation (staggered 180 deg) in local XY plane:
     # 0: (-1.5, 1.0, 0), 1: (-0.5, 0.0, 0), 2: (0.5, 0.0, 0), 3: (1.5, -1.0, 0)
-    p_trans = np.array([
-        [-1.5, 1.0, 0.0],
-        [-0.5, 0.0, 0.0],
-        [0.5, 0.0, 0.0],
-        [1.5, -1.0, 0.0],
-    ], dtype=np.float32)
+    p_trans = np.array(
+        [
+            [-1.5, 1.0, 0.0],
+            [-0.5, 0.0, 0.0],
+            [0.5, 0.0, 0.0],
+            [1.5, -1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
 
     quad = Tensor([[0, 1, 2, 3]])
     phi_calc = compute_cartesian_dihedrals(Tensor(p_trans), quad)
@@ -89,12 +91,15 @@ def test_cartesian_dihedrals_trans_and_gauche_geometry():
 
     # Gauche conformation (+60 deg): rotate atom 3 around X-axis from cis (+Y)
     th = math.pi / 3.0
-    p_gauche = np.array([
-        [-1.5, 1.0, 0.0],
-        [-0.5, 0.0, 0.0],
-        [0.5, 0.0, 0.0],
-        [1.5, math.cos(th), math.sin(th)],
-    ], dtype=np.float32)
+    p_gauche = np.array(
+        [
+            [-1.5, 1.0, 0.0],
+            [-0.5, 0.0, 0.0],
+            [0.5, 0.0, 0.0],
+            [1.5, math.cos(th), math.sin(th)],
+        ],
+        dtype=np.float32,
+    )
 
     phi_g = compute_cartesian_dihedrals(Tensor(p_gauche), quad)
     assert math.isclose(abs(phi_g.item()), th, abs_tol=1e-4)
@@ -113,12 +118,15 @@ def test_safe_norm_collinear_bond_angle_autograd():
     do not trigger division-by-zero or NaN gradient poisoning in autograd backward passes.
     """
     # Atoms 0, 1, 2 perfectly collinear along X-axis -> v1 x v2 = [0, 0, 0]
-    p_collinear = np.array([
-        [-1.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0],
-        [1.0, 0.0, 0.0],
-        [1.5, 1.0, 0.0],
-    ], dtype=np.float32)
+    p_collinear = np.array(
+        [
+            [-1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.5, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
 
     pos = Tensor(p_collinear)
     pos.requires_grad = True

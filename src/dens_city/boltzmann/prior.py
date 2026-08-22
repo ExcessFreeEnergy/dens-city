@@ -5,7 +5,8 @@ with many-body particle configuration sampling in 3D slit pores.
 """
 
 import math
-from typing import Tuple, Union, Optional
+from typing import Optional, Tuple, Union
+
 import numpy as np
 from tinygrad import Tensor, dtypes
 

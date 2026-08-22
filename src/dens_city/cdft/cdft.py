@@ -6,14 +6,14 @@ and exact Irving-Kirkwood mechanical virial observables.
 """
 
 import math
-from typing import Any, Dict, List, Optional, Tuple
-import numpy as np
+from typing import Any, Dict, Optional
 
-from tinygrad import Tensor, TinyJit, nn, GlobalCounters, Context, dtypes
+import numpy as np
+from tinygrad import GlobalCounters, Tensor, TinyJit, dtypes, nn
 from tinygrad.helpers import getenv, trange
 
-from dens_city.kernels import KernelBuilder
-from dens_city.materials import Material, MaterialLoader
+from dens_city.cdft.kernels import KernelBuilder
+from dens_city.materials import Material
 
 
 class TinyCDFT:
@@ -63,13 +63,16 @@ class TinyCDFT:
         # Confining slit external wall potential with exact physical boundary divergence
         # Lorentz-Berthelot collision diameter incorporates the fluid's effective size
         wall_sig = wall_sigma if wall_sigma is not None else 3.4
-        v_ext_raw = KernelBuilder.build_slit_wall_potential(
-            n_grid=self.n_grid,
-            dz=self.dz_val,
-            fluid_sigma=sigma,
-            wall_sigma=wall_sig,
-            wall_epsilon_k=wall_epsilon_k,
-        ) / self.temp_val  # in units of k_B * T
+        v_ext_raw = (
+            KernelBuilder.build_slit_wall_potential(
+                n_grid=self.n_grid,
+                dz=self.dz_val,
+                fluid_sigma=sigma,
+                wall_sigma=wall_sig,
+                wall_epsilon_k=wall_epsilon_k,
+            )
+            / self.temp_val
+        )  # in units of k_B * T
         self.v_ext = v_ext_raw.realize()
 
         # 2. Compute exact discrete excess chemical potential so grad(Omega) == 0 at rho = rho_bulk
@@ -90,9 +93,7 @@ class TinyCDFT:
         self.psi.requires_grad = True
 
         # 4. Setup optimizer and per-instance TinyJit compilation
-        opt_type = (
-            nn.optim.Muon if getenv("MUON") else nn.optim.SGD if getenv("SGD") else nn.optim.Adam
-        )
+        opt_type = nn.optim.Muon if getenv("MUON") else nn.optim.SGD if getenv("SGD") else nn.optim.Adam
         self.opt = opt_type([self.psi], lr=learning_rate)
         self.train_step = TinyJit(self._train_step)
 
@@ -103,9 +104,7 @@ class TinyCDFT:
         """
         return (self.psi).exp() * self.bulk_density
 
-    def compute_electrostatic_potential(
-        self, charge_density: Tensor, dielectric_constant: float = 1.0
-    ) -> Tensor:
+    def compute_electrostatic_potential(self, charge_density: Tensor, dielectric_constant: float = 1.0) -> Tensor:
         r"""
         Solves 1D Poisson boundary value problem using exact Dirichlet Green's matrix G:
         \phi(z) = G * \rho_q(z) where \phi(0) = \phi(L_z) = 0.
@@ -226,7 +225,9 @@ class TinyCDFT:
         bulk_cutoff_idx = (min_grad_idx + int(plateau_candidates[0])) if len(plateau_candidates) > 0 else mid
 
         # Integrate virial force density over the dynamically detected wall interaction domain
-        f_integral = -float(np.sum(rho_arr[min_grad_idx:bulk_cutoff_idx] * dv_dz[min_grad_idx:bulk_cutoff_idx]) * self.dz_val)
+        f_integral = -float(
+            np.sum(rho_arr[min_grad_idx:bulk_cutoff_idx] * dv_dz[min_grad_idx:bulk_cutoff_idx]) * self.dz_val
+        )
         p_virial_bar = f_integral * (1e30 * 1.380649e-23 * 1e-5)
 
         return p_virial_bar
@@ -257,7 +258,9 @@ class TinyCDFT:
             grid[row][col] = "█"
 
         # Bulk density baseline
-        bulk_rho = float(self.bulk_density.item()) if isinstance(self.bulk_density, Tensor) else float(self.bulk_density)
+        bulk_rho = (
+            float(self.bulk_density.item()) if isinstance(self.bulk_density, Tensor) else float(self.bulk_density)
+        )
         bulk_row = int((bulk_rho - r_min) / (r_max - r_min) * (height - 1))
         bulk_row = min(height - 1, max(0, height - 1 - bulk_row))
         for col in range(width):

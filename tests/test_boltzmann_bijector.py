@@ -5,10 +5,12 @@ rigid-bond volume invariance, batched execution, and autograd differentiability.
 """
 
 import math
+
 import numpy as np
 import pytest
 from tinygrad import Tensor, nn
-from dens_city.boltzmann.bijectors import ZMatrixBijector, AffineCouplingLayer, RealNVPFlow, CompositeFlow
+
+from dens_city.boltzmann.bijectors import AffineCouplingLayer, CompositeFlow, RealNVPFlow, ZMatrixBijector
 from dens_city.materials import MaterialLoader
 
 
@@ -56,9 +58,7 @@ def test_zmatrix_round_trip_invertibility(n_atoms: int):
 
     # 4. Check Jacobian consistency: log_det(IC->X) + log_det(X->IC) == 0
     total_log_det = log_det_fwd.item() + log_det_inv.item()
-    assert math.isclose(total_log_det, 0.0, abs_tol=1e-5), (
-        f"Forward + inverse log-det sum {total_log_det} != 0"
-    )
+    assert math.isclose(total_log_det, 0.0, abs_tol=1e-5), f"Forward + inverse log-det sum {total_log_det} != 0"
 
 
 def test_analytical_jacobian_log_determinant_formula():
@@ -80,10 +80,7 @@ def test_analytical_jacobian_log_determinant_formula():
     _, log_det = bijector.forward(bonds=bonds, angles=angles, torsions=torsions)
 
     # Analytical sum: i=2 is (bonds[1], angles[0]), i=3 is (bonds[2], angles[1]), i=4 is (bonds[3], angles[2])
-    exact_log_det = sum(
-        math.log((bonds_np[i - 1] ** 2) * math.sin(angles_np[i - 2]))
-        for i in range(2, n_atoms)
-    )
+    exact_log_det = sum(math.log((bonds_np[i - 1] ** 2) * math.sin(angles_np[i - 2])) for i in range(2, n_atoms))
 
     assert math.isclose(log_det.item(), exact_log_det, rel_tol=1e-5), (
         f"Log |det J| {log_det.item()} != analytical {exact_log_det}"
@@ -307,5 +304,3 @@ def test_composite_flow_autograd():
     for p in params:
         grad_np = p.grad.numpy()
         assert np.all(np.isfinite(grad_np)), "Gradients must be finite without NaNs"
-
-

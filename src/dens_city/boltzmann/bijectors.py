@@ -7,8 +7,9 @@ Supports:
 """
 
 import functools
-from typing import Optional, Tuple, List, Dict, Callable, Union
 import math
+from typing import Callable, Dict, List, Optional, Tuple, Union
+
 from tinygrad import Tensor, dtypes, nn
 
 
@@ -237,7 +238,7 @@ def _nerf_inverse_step(
     vz = (disp * n_hat).sum(axis=-1, keepdim=True)
 
     b_i = (disp * disp).sum(axis=-1, keepdim=True).maximum(1e-6).sqrt()
-    cos_th_i = (-vx / b_i.maximum(1e-4)).clip(-1.0 + 1e-4, 1.0 - 1e-4)
+    cos_th_i = (-vx / b_i.maximum(1e-4)).clip(-0.999, 0.999)
     th_i = cos_th_i.acos()
     phi_i = _tensor_atan2(vz, vy)
 
@@ -282,11 +283,11 @@ class ZMatrixBijector:
         if self.n_atoms >= 3 and bonds_b.shape[-1] >= 2:
             # b2 contributes 2 ln |b| = ln(b^2)
             b_rest = bonds_b[:, 1:]
-            log_det = log_det + (b_rest * b_rest).maximum(1e-6).log().sum(axis=-1)
+            log_det = log_det + (b_rest * b_rest).maximum(1e-12).log().sum(axis=-1)
 
         if self.n_atoms >= 3 and angles_b.shape[-1] >= 1:
             # angles th2, th3, ... contribute ln |sin(th)| = 0.5 ln(sin^2(th))
-            sin_sq = (angles_b.sin() * angles_b.sin()).maximum(1e-6)
+            sin_sq = (angles_b.sin() * angles_b.sin()).maximum(1e-12)
             log_det = log_det + 0.5 * sin_sq.log().sum(axis=-1)
 
         return log_det if is_batched else log_det.squeeze(0)
@@ -425,7 +426,9 @@ class ZMatrixBijector:
 
         bonds_out = Tensor.cat(*bonds_list, dim=-1) if bonds_list else Tensor.zeros((B, 0), dtype=dtypes.float32)
         angles_out = Tensor.cat(*angles_list, dim=-1) if angles_list else Tensor.zeros((B, 0), dtype=dtypes.float32)
-        torsions_out = Tensor.cat(*torsions_list, dim=-1) if torsions_list else Tensor.zeros((B, 0), dtype=dtypes.float32)
+        torsions_out = (
+            Tensor.cat(*torsions_list, dim=-1) if torsions_list else Tensor.zeros((B, 0), dtype=dtypes.float32)
+        )
         origin_out = coords_b[:, 0]
 
         log_det_inv = -self.log_jacobian_det(bonds_out, angles_out)
@@ -482,7 +485,7 @@ class AffineCouplingLayer:
         is_batched = len(x.shape) == 2
         x_b = x if is_batched else x.unsqueeze(0)
 
-        x1, x2 = x_b[..., :self.dim_a], x_b[..., self.dim_a:]
+        x1, x2 = x_b[..., : self.dim_a], x_b[..., self.dim_a :]
 
         if self.swap:
             s, t = self._net(x2)
@@ -508,7 +511,7 @@ class AffineCouplingLayer:
         is_batched = len(y.shape) == 2
         y_b = y if is_batched else y.unsqueeze(0)
 
-        y1, y2 = y_b[..., :self.dim_a], y_b[..., self.dim_a:]
+        y1, y2 = y_b[..., : self.dim_a], y_b[..., self.dim_a :]
 
         if self.swap:
             s, t = self._net(y2)
@@ -535,8 +538,7 @@ class RealNVPFlow:
         self.dim = dim
         self.n_layers = n_layers
         self.layers: list[AffineCouplingLayer] = [
-            AffineCouplingLayer(dim, hidden_dim=hidden_dim, swap=(i % 2 == 1))
-            for i in range(n_layers)
+            AffineCouplingLayer(dim, hidden_dim=hidden_dim, swap=(i % 2 == 1)) for i in range(n_layers)
         ]
 
     def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
@@ -550,9 +552,7 @@ class RealNVPFlow:
             cur, ld = layer.forward(cur)
             log_dets.append(ld if is_batched else ld.unsqueeze(0))
         total_log_det = (
-            functools.reduce(Tensor.add, log_dets)
-            if log_dets
-            else Tensor.zeros(cur.shape[0], dtype=dtypes.float32)
+            functools.reduce(Tensor.add, log_dets) if log_dets else Tensor.zeros(cur.shape[0], dtype=dtypes.float32)
         )
         return cur, (total_log_det if is_batched else total_log_det.squeeze(0))
 
@@ -567,9 +567,7 @@ class RealNVPFlow:
             cur, ld = layer.inverse(cur)
             log_dets.append(ld if is_batched else ld.unsqueeze(0))
         total_log_det = (
-            functools.reduce(Tensor.add, log_dets)
-            if log_dets
-            else Tensor.zeros(cur.shape[0], dtype=dtypes.float32)
+            functools.reduce(Tensor.add, log_dets) if log_dets else Tensor.zeros(cur.shape[0], dtype=dtypes.float32)
         )
         return cur, (total_log_det if is_batched else total_log_det.squeeze(0))
 
@@ -665,9 +663,7 @@ class CompositeFlow:
 
         self.zmat = ZMatrixBijector(n_atoms=n_atoms, z_indices=z_indices)
         self.flow = (
-            flow
-            if flow is not None
-            else RealNVPFlow(dim=max(1, self.dim), n_layers=n_layers, hidden_dim=hidden_dim)
+            flow if flow is not None else RealNVPFlow(dim=max(1, self.dim), n_layers=n_layers, hidden_dim=hidden_dim)
         )
 
     def forward(self, z: Tensor, origin: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
@@ -687,24 +683,16 @@ class CompositeFlow:
 
         ic_flat, log_det_flow = self.flow.forward(z_b)
 
-        bonds = ic_flat[:, :self.n_bonds]
-        angles = (
-            ic_flat[:, self.n_bonds : self.n_bonds + self.n_angles]
-            if self.n_angles > 0
-            else None
-        )
-        torsions = (
-            ic_flat[:, self.n_bonds + self.n_angles : self.dim]
-            if self.n_torsions > 0
-            else None
-        )
+        bonds = ic_flat[:, : self.n_bonds]
+        angles = ic_flat[:, self.n_bonds : self.n_bonds + self.n_angles] if self.n_angles > 0 else None
+        torsions = ic_flat[:, self.n_bonds + self.n_angles : self.dim] if self.n_torsions > 0 else None
 
-        coords, log_det_zmat = self.zmat.forward(
-            bonds=bonds, angles=angles, torsions=torsions, origin=origin
-        )
+        coords, log_det_zmat = self.zmat.forward(bonds=bonds, angles=angles, torsions=torsions, origin=origin)
 
         total_log_det = log_det_flow + log_det_zmat
-        return (coords if is_batched else coords.squeeze(0)), (total_log_det if is_batched else total_log_det.squeeze(0))
+        return (coords if is_batched else coords.squeeze(0)), (
+            total_log_det if is_batched else total_log_det.squeeze(0)
+        )
 
     def inverse(self, coords: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -732,5 +720,3 @@ class CompositeFlow:
 
         total_log_det_inv = log_det_zmat_inv + log_det_flow_inv
         return (z if is_batched else z.squeeze(0)), (total_log_det_inv if is_batched else total_log_det_inv.squeeze(0))
-
-

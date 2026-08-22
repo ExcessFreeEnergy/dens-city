@@ -4,24 +4,24 @@ Encapsulates single-material end-to-end execution (cDFT screening -> Spatial Pri
 with structured error classification and state serialization.
 """
 
-from dataclasses import dataclass, asdict, field
-from enum import Enum
-import os
-import sys
-import time
 import math
+import os
+import time
 import traceback
+from dataclasses import asdict, dataclass, field
+from enum import Enum
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Tuple
-import numpy as np
+from typing import Any, Dict, List, Optional
 
-from tinygrad import Tensor, nn, dtypes
-from dens_city.materials import MaterialLoader, Material
-from dens_city.cdft import TinyCDFT
-from dens_city.boltzmann.prior import CDFTBaseDistribution
+import numpy as np
+from tinygrad import nn
+
+from dens_city.boltzmann.bijectors import Base2CartesianFlow
 from dens_city.boltzmann.energy import MicroscopicEnergy
-from dens_city.boltzmann.bijectors import RealNVPFlow, CompositeFlow, Base2CartesianFlow
 from dens_city.boltzmann.generator import BoltzmannGenerator
+from dens_city.boltzmann.prior import CDFTBaseDistribution
+from dens_city.cdft import TinyCDFT
+from dens_city.materials import MaterialLoader
 
 
 class PipelineStatus(str, Enum):
@@ -38,6 +38,7 @@ class MaterialPipelineTask:
     """
     Specification of a single material processing task in the batch pipeline.
     """
+
     material_path_or_name: str
     out_dir: str
     temperature_k: float = 300.0
@@ -65,6 +66,7 @@ class MaterialPipelineResult:
     """
     Structured outcome and physical observables from a pipeline execution.
     """
+
     material_name: str
     status: str
     error_message: Optional[str] = None
@@ -104,7 +106,9 @@ def write_xyz_trajectory(
     lines = []
     for frame_idx in range(B):
         lines.append(str(N))
-        e_str = f" | Energy: {energies[frame_idx]:.4f} K" if (energies is not None and frame_idx < len(energies)) else ""
+        e_str = (
+            f" | Energy: {energies[frame_idx]:.4f} K" if (energies is not None and frame_idx < len(energies)) else ""
+        )
         lines.append(f"Frame {frame_idx} | Material: {material_name}{e_str}")
         for atom_idx in range(N):
             name = site_names[atom_idx] if atom_idx < len(site_names) else "X"
@@ -156,7 +160,11 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
     except Exception as e:
         t_tot = time.perf_counter() - t_start
         err_msg = f"Thermodynamic routing failed: {str(e)}"
-        status = PipelineStatus.SKIPPED_THERMO if "spinodal" in str(e).lower() or "density" in str(e).lower() else PipelineStatus.FAILED_ERROR
+        status = (
+            PipelineStatus.SKIPPED_THERMO
+            if "spinodal" in str(e).lower() or "density" in str(e).lower()
+            else PipelineStatus.FAILED_ERROR
+        )
         return MaterialPipelineResult(
             material_name=mat_basename,
             status=status.value,
@@ -183,7 +191,9 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
         rho_profile = cdft.get_density_profile()
         p_wall = cdft.get_wall_contact_pressure()
         gamma_ex = cdft.get_excess_adsorption()
-        cdft_loss = cdft_res.get("final_loss", 0.0) if isinstance(cdft_res, dict) else (cdft_res[-1] if cdft_res else 0.0)
+        cdft_loss = (
+            cdft_res.get("final_loss", 0.0) if isinstance(cdft_res, dict) else (cdft_res[-1] if cdft_res else 0.0)
+        )
 
         # Export cDFT Artifacts
         npy_path = os.path.join(mat_out_dir, "density_profile.npy")
@@ -192,7 +202,9 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
 
         csv_path = os.path.join(mat_out_dir, "density_profile.csv")
         z_grid = np.linspace(0.5 * cdft.dz_val, cdft.slit_width_a - 0.5 * cdft.dz_val, cdft.n_grid)
-        np.savetxt(csv_path, np.column_stack([z_grid, rho_profile]), delimiter=",", header="z_angstrom,rho_a3", comments="")
+        np.savetxt(
+            csv_path, np.column_stack([z_grid, rho_profile]), delimiter=",", header="z_angstrom,rho_a3", comments=""
+        )
         artifacts_created.append(csv_path)
 
         summary_path = os.path.join(mat_out_dir, "cdft_summary.txt")
@@ -258,14 +270,6 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
         box_xy = (30.0, 30.0)
         box_size_3d = (30.0, 30.0, slit_w)
 
-        # Construct spatial prior from cDFT density profile
-        prior = CDFTBaseDistribution(
-            rho_z=rho_profile,
-            l_z=slit_w,
-            box_size_xy=box_xy,
-            n_particles=n_sites,
-        )
-
         # Microscopic Hamiltonian with Shifted-Force boundary condition & Power-of-2 Padding
         energy_fn = MicroscopicEnergy(
             material=material,
@@ -322,12 +326,14 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
                 mcmc_step_size=task.bg_mcmc_step_size,
             )
             b_energies = energy_fn.eval_energy(b_samples_pad)
-            b_samples_real = b_samples_pad[:, :n_sites, :] if len(b_samples_pad.shape) == 3 else b_samples_pad[:n_sites, :]
+            b_samples_real = (
+                b_samples_pad[:, :n_sites, :] if len(b_samples_pad.shape) == 3 else b_samples_pad[:n_sites, :]
+            )
             all_samples.append(b_samples_real.numpy())
             all_energies.extend(b_energies.numpy().tolist())
 
-        samples_np = np.concatenate(all_samples, axis=0)[:task.bg_samples]
-        energies = all_energies[:task.bg_samples]
+        samples_np = np.concatenate(all_samples, axis=0)[: task.bg_samples]
+        energies = all_energies[: task.bg_samples]
 
         if len(samples_np.shape) == 2:
             # Reshape flat samples (B, N*3) -> (B, N, 3)

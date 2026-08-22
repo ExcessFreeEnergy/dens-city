@@ -5,15 +5,15 @@ with BEAM=2 DEBUG=2 for 3 iterations, generating 20 detailed compiler and execut
 in data/logs/<material>.log and noting BEAM recompilation / cache hit status.
 """
 
+import argparse
+import concurrent.futures
 import os
+import re
+import subprocess
 import sys
 import time
-import re
-import argparse
-import subprocess
-import concurrent.futures
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import Dict, List, Optional, Tuple
 
 # Ensure dens_city package is in PYTHONPATH
 src_path = Path(__file__).resolve().parent.parent / "src"
@@ -41,8 +41,7 @@ def get_sorted_materials(data_dir: Path, selected: Optional[List[str]] = None) -
     target_names = [m for m in selected if m in all_names] if selected else all_names
 
     mats_with_sites = [
-        (m, get_material_site_count(m), get_power_of_2_padded_size(get_material_site_count(m)))
-        for m in target_names
+        (m, get_material_site_count(m), get_power_of_2_padded_size(get_material_site_count(m))) for m in target_names
     ]
     # Sort strictly by power-of-2 bucket ascending, then by actual site count, then alphabetically
     return sorted(mats_with_sites, key=lambda item: (item[2], item[1], item[0]))
@@ -88,13 +87,20 @@ def run_single_material(
     cmd = [
         sys.executable,
         "scripts/run_batch_pipeline.py",
-        "--data-dir", str(data_dir),
-        "--materials", material,
-        "--workers", "1",
-        "--cdft-steps", str(cdft_steps),
-        "--bg-steps", str(bg_steps),
-        "--bg-samples", str(bg_samples),
-        "--out-dir", str(out_dir),
+        "--data-dir",
+        str(data_dir),
+        "--materials",
+        material,
+        "--workers",
+        "1",
+        "--cdft-steps",
+        str(cdft_steps),
+        "--bg-steps",
+        str(bg_steps),
+        "--bg-samples",
+        str(bg_samples),
+        "--out-dir",
+        str(out_dir),
         "--no-plot",
     ]
 
@@ -137,7 +143,9 @@ def run_single_material(
         with open(log_file_path, "a", encoding="utf-8") as log_f:
             log_f.write("\n" + "=" * 80 + "\n")
             log_f.write(f"  Compiler & BEAM Summary Note: {comp_info['beam_note']}\n")
-            log_f.write(f"  Material Sites: {site_count} (Padded: {pad_site_count}) | Status: {status} | Elapsed: {elapsed:.2f}s\n")
+            log_f.write(
+                f"  Material Sites: {site_count} (Padded: {pad_site_count}) | Status: {status} | Elapsed: {elapsed:.2f}s\n"
+            )
             log_f.write("=" * 80 + "\n")
 
     return {
@@ -155,7 +163,9 @@ def run_single_material(
 
 def main():
     parser = argparse.ArgumentParser(description="Power-of-2 Site-Grouped Goal Benchmark Runner for dens-city")
-    parser.add_argument("--workers", type=int, default=1, help="Number of concurrent worker processes (default: 1 for GPU BEAM safety)")
+    parser.add_argument(
+        "--workers", type=int, default=1, help="Number of concurrent worker processes (default: 1 for GPU BEAM safety)"
+    )
     parser.add_argument("--timeout", type=float, default=500.0, help="Per-material timeout in seconds (default: 500.0)")
     parser.add_argument("--materials", nargs="+", default=None, help="Specific materials to run (default: all)")
     args = parser.parse_args()
@@ -170,9 +180,11 @@ def main():
     print("=" * 110)
     print(f"  dens-city: BEAM=2 DEBUG=2 Power-of-2 Site-Grouped Benchmark for {len(sorted_materials)} Materials")
     print(f"  Configuration: Timeout={args.timeout}s, Workers={args.workers}, Output={log_dir}")
-    print(f"  Iterations: 3 cDFT steps, 3 BG steps, 2 BG samples")
+    print("  Iterations: 3 cDFT steps, 3 BG steps, 2 BG samples")
     print("=" * 110)
-    print(f"{'#':<3} | {'Bucket':<8} | {'Material':<24} | {'Sites (Pad)':<11} | {'Status':<12} | {'Time (s)':<8} | {'BEAM Compiler Note'}")
+    print(
+        f"{'#':<3} | {'Bucket':<8} | {'Material':<24} | {'Sites (Pad)':<11} | {'Status':<12} | {'Time (s)':<8} | {'BEAM Compiler Note'}"
+    )
     print("-" * 110)
 
     results = []
@@ -184,7 +196,7 @@ def main():
         for idx, (mat, sites, pad_sites) in enumerate(sorted_materials, 1):
             if current_bucket != pad_sites:
                 current_bucket = pad_sites
-                b_name = f"2^{int(pad_sites.bit_length()-1)}"
+                b_name = f"2^{int(pad_sites.bit_length() - 1)}"
 
             res = run_single_material(
                 mat,
@@ -199,7 +211,9 @@ def main():
             )
             results.append(res)
             site_str = f"{sites} ({pad_sites})"
-            print(f"[{idx:02d}] | {b_name:<8} | {mat:<24} | {site_str:<11} | {res['status']:<12} | {res['elapsed']:8.2f} | {res['beam_note']}")
+            print(
+                f"[{idx:02d}] | {b_name:<8} | {mat:<24} | {site_str:<11} | {res['status']:<12} | {res['elapsed']:8.2f} | {res['beam_note']}"
+            )
     else:
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
             future_to_mat = {
@@ -210,7 +224,9 @@ def main():
                     pad_sites,
                     log_dir,
                     data_dir,
-                    3, 3, 2,
+                    3,
+                    3,
+                    2,
                     args.timeout,
                 ): (mat, sites, pad_sites)
                 for mat, sites, pad_sites in sorted_materials
@@ -219,9 +235,11 @@ def main():
                 mat, sites, pad_sites = future_to_mat[future]
                 res = future.result()
                 results.append(res)
-                b_name = f"2^{int(pad_sites.bit_length()-1)}"
+                b_name = f"2^{int(pad_sites.bit_length() - 1)}"
                 site_str = f"{sites} ({pad_sites})"
-                print(f"[{idx:02d}] | {b_name:<8} | {mat:<24} | {site_str:<11} | {res['status']:<12} | {res['elapsed']:8.2f} | {res['beam_note']}")
+                print(
+                    f"[{idx:02d}] | {b_name:<8} | {mat:<24} | {site_str:<11} | {res['status']:<12} | {res['elapsed']:8.2f} | {res['beam_note']}"
+                )
 
     total_time = time.perf_counter() - t_start
     n_success = sum(1 for r in results if r["status"] == "SUCCESS")

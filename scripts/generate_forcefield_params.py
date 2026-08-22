@@ -128,7 +128,7 @@ def generate_json_and_csv() -> None:
     for atype, (r_min, eps_kcal, mass, at_num, desc) in sorted(ATOMTYPES_DB.items()):
         sig_A, sig_nm = compute_sigma(r_min)
         eps_kj, eps_K = compute_epsilon(eps_kcal)
-        
+
         json_data[atype] = {
             "atom_type": atype,
             "atomic_number": at_num,
@@ -143,7 +143,7 @@ def generate_json_and_csv() -> None:
         }
 
         csv_lines.append(
-            f"{atype},{at_num},{mass},{r_min:.4f},{sig_A:.5f},{sig_nm:.6f},{eps_kcal:.5f},{eps_kj:.5f},{eps_K:.2f},\"{desc}\""
+            f'{atype},{at_num},{mass},{r_min:.4f},{sig_A:.5f},{sig_nm:.6f},{eps_kcal:.5f},{eps_kj:.5f},{eps_K:.2f},"{desc}"'
         )
 
     json_path = TEST_DATA_DIR / "forcefield_parameters.json"

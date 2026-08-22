@@ -5,9 +5,10 @@ external wall steric barriers, Coulomb interactions, batch invariance, and autog
 """
 
 import math
+
 import numpy as np
-import pytest
 from tinygrad import Tensor
+
 from dens_city.boltzmann.energy import MicroscopicEnergy, regularize_energy
 from dens_city.materials import MaterialLoader
 
@@ -387,5 +388,3 @@ def test_energy_fn_regularization_toggle():
 
     u_none = fn_noreg(pos_clash, regularize=True).item()
     assert u_none == u_unregularized, f"When e_high=None, energy {u_none} must remain unregularized"
-
-
