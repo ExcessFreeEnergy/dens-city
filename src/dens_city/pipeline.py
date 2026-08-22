@@ -53,6 +53,8 @@ class MaterialPipelineTask:
     bg_lr: float = 0.01
     bg_samples: int = 100
     bg_w_tor: float = 0.0
+    bg_mcmc_steps: int = 0
+    bg_mcmc_step_size: float = 0.1
     skip_bg: bool = False
     no_plot: bool = True
     r_cut: Optional[float] = None
@@ -313,7 +315,12 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
         all_energies = []
         n_batches = math.ceil(task.bg_samples / task.bg_batch_size)
         for _ in range(n_batches):
-            b_samples_pad = generator.sample(n_samples=task.bg_batch_size, return_all_pad=True)
+            b_samples_pad = generator.sample(
+                n_samples=task.bg_batch_size,
+                return_all_pad=True,
+                mcmc_steps=task.bg_mcmc_steps,
+                mcmc_step_size=task.bg_mcmc_step_size,
+            )
             b_energies = energy_fn.eval_energy(b_samples_pad)
             b_samples_real = b_samples_pad[:, :n_sites, :] if len(b_samples_pad.shape) == 3 else b_samples_pad[:n_sites, :]
             all_samples.append(b_samples_real.numpy())

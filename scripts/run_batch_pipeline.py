@@ -201,6 +201,18 @@ def main() -> int:
         help="Torsional rotamer loss biasing weight (default: 0.0, recommended 0.05 - 5.0 for long chains)",
     )
     parser.add_argument(
+        "--bg-mcmc-steps",
+        type=int,
+        default=0,
+        help="Number of latent space Metropolis Monte Carlo relaxation steps per sample (default: 0)",
+    )
+    parser.add_argument(
+        "--bg-mcmc-step-size",
+        type=float,
+        default=0.1,
+        help="Step size for Gaussian perturbations in latent MCMC relaxation (default: 0.1)",
+    )
+    parser.add_argument(
         "--skip-bg",
         action="store_true",
         help="Skip Boltzmann Generator phase and halt after cDFT screening",
@@ -250,6 +262,8 @@ def main() -> int:
             bg_lr=args.bg_lr,
             bg_samples=args.bg_samples,
             bg_w_tor=args.bg_w_tor,
+            bg_mcmc_steps=args.bg_mcmc_steps,
+            bg_mcmc_step_size=args.bg_mcmc_step_size,
             skip_bg=args.skip_bg,
             no_plot=args.no_plot,
         )

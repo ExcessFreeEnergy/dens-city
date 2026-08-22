@@ -4,7 +4,7 @@ via variational Reverse Kullback-Leibler (KL) divergence minimization in pure ti
 """
 
 import math
-from typing import Callable, Optional, List, Union, Tuple
+from typing import Callable, Optional, List, Union, Tuple, Dict
 from tinygrad import Tensor, TinyJit, nn, dtypes, GlobalCounters, Context
 from tinygrad.helpers import getenv, trange
 
@@ -266,11 +266,194 @@ class BoltzmannGenerator:
                 z = Tensor.randn(n_samples, self.dim)
             return self._forward_flow(z)
 
-    def sample(self, n_samples: int = 1, return_all_pad: bool = False) -> Tensor:
+    def sample_relaxed(
+        self,
+        n_samples: int = 1,
+        mcmc_steps: int = 5,
+        mcmc_step_size: float = 0.1,
+        origin: Optional[Tensor] = None,
+        return_all_pad: bool = False,
+        return_stats: bool = False,
+    ) -> Union[Tensor, Tuple[Tensor, Dict[str, float]]]:
+        """
+        Relaxes generated configurations via Vectorized Latent Space Metropolis Monte Carlo.
+        Draws initial latent z ~ N(0, I) and performs K Metropolis moves:
+            z' = z + s * N(0, I)
+            p_acc = min(1, exp(-Delta E)) = exp(min(0, -Delta E))
+        where Delta E = E_eff(z') - E_eff(z) and E_eff(z) = beta * U(f(z)) - log p_z(z) - log |det J(z)|.
+        Protects against inf overflow on large downhill steps using (-delta_e).minimum(0.0).exp().
+        Operates without gradient computation or graph freezing.
+        """
+        Tensor.training = False
+        B = int(n_samples)
+        step_size = float(mcmc_step_size)
+
+        # 1. Initialize latent points and origins
+        if self.is_base2_cartesian or self.is_composite:
+            z_curr = Tensor.randn(B, self.dim)
+            if origin is not None:
+                orig_curr = origin.reshape(B, 3)
+            elif self.prior is not None:
+                p_samp = self.prior.sample(n_samples=B)
+                orig_curr = p_samp[:, 0, :].reshape(B, 3) if len(p_samp.shape) == 3 else p_samp.reshape(B, 3)
+            else:
+                orig_curr = None
+        else:
+            if self.prior is not None:
+                z_curr = self.prior.sample(n_samples=B).reshape(B, self.dim)
+            else:
+                z_curr = Tensor.randn(B, self.dim)
+            orig_curr = None
+
+        # 2. Initial state forward flow and energy evaluation
+        if self.is_base2_cartesian:
+            x_curr, log_det_curr = self.flow.forward(z_curr, origin=orig_curr)
+            log_pz_curr = -0.5 * (z_curr * z_curr + self.log_2pi).sum(axis=-1)
+            if self.prior is not None and orig_curr is not None:
+                log_pz_curr = log_pz_curr + self.prior.log_prob(orig_curr)
+        elif self.is_composite:
+            z_flat = z_curr.reshape(B, self.dim) if len(z_curr.shape) > 2 else z_curr
+            ic_flat, log_det_flow = self.flow.flow.forward(z_flat)
+            n_bonds = self.flow.n_bonds
+            n_angles = self.flow.n_angles
+            n_torsions = self.flow.n_torsions
+            bonds = ic_flat[:, :n_bonds]
+            angles = ic_flat[:, n_bonds : (n_bonds + n_angles)] if n_angles > 0 else None
+            torsions = ic_flat[:, (n_bonds + n_angles) : self.flow.dim] if n_torsions > 0 else None
+            x_curr, log_det_zmat = self.flow.zmat.forward(bonds=bonds, angles=angles, torsions=torsions, origin=orig_curr)
+            log_det_curr = log_det_flow + log_det_zmat
+            log_pz_curr = -0.5 * (z_flat * z_flat + self.log_2pi).sum(axis=-1)
+            if self.prior is not None and orig_curr is not None:
+                log_pz_curr = log_pz_curr + self.prior.log_prob(orig_curr)
+        else:
+            z_flat = z_curr.reshape(B, self.dim)
+            x_flat, log_det_curr = self.flow.forward(z_flat)
+            if self.dim % 3 == 0:
+                n_particles = self.dim // 3
+                x_curr = x_flat.reshape(B, n_particles, 3)
+                if self.prior is not None:
+                    log_pz_curr = self.prior.log_prob(z_curr.reshape(B, n_particles, 3))
+                else:
+                    log_pz_curr = -0.5 * (z_flat * z_flat + self.log_2pi).sum(axis=-1)
+            else:
+                x_curr = x_flat
+                if self.prior is not None:
+                    log_pz_curr = self.prior.log_prob(z_curr)
+                else:
+                    log_pz_curr = -0.5 * (z_flat * z_flat + self.log_2pi).sum(axis=-1)
+
+        u_curr = self.energy_fn(x_curr)
+        e_curr = self.beta * u_curr - log_pz_curr - log_det_curr
+
+        initial_u_mean = float(u_curr.mean().item())
+        accepted_count = 0.0
+
+        # 3. Vectorized Latent Space Metropolis Monte Carlo loop (unjitted for dynamic RNG)
+        for _ in range(mcmc_steps):
+            eta = Tensor.randn(B, self.dim)
+            z_prop = z_curr + step_size * eta
+
+            if self.is_base2_cartesian:
+                x_prop, log_det_prop = self.flow.forward(z_prop, origin=orig_curr)
+                log_pz_prop = -0.5 * (z_prop * z_prop + self.log_2pi).sum(axis=-1)
+                if self.prior is not None and orig_curr is not None:
+                    log_pz_prop = log_pz_prop + self.prior.log_prob(orig_curr)
+            elif self.is_composite:
+                z_flat_p = z_prop.reshape(B, self.dim) if len(z_prop.shape) > 2 else z_prop
+                ic_flat_p, log_det_flow_p = self.flow.flow.forward(z_flat_p)
+                n_bonds = self.flow.n_bonds
+                n_angles = self.flow.n_angles
+                n_torsions = self.flow.n_torsions
+                bonds_p = ic_flat_p[:, :n_bonds]
+                angles_p = ic_flat_p[:, n_bonds : (n_bonds + n_angles)] if n_angles > 0 else None
+                torsions_p = ic_flat_p[:, (n_bonds + n_angles) : self.flow.dim] if n_torsions > 0 else None
+                x_prop, log_det_zmat_p = self.flow.zmat.forward(bonds=bonds_p, angles=angles_p, torsions=torsions_p, origin=orig_curr)
+                log_det_prop = log_det_flow_p + log_det_zmat_p
+                log_pz_prop = -0.5 * (z_flat_p * z_flat_p + self.log_2pi).sum(axis=-1)
+                if self.prior is not None and orig_curr is not None:
+                    log_pz_prop = log_pz_prop + self.prior.log_prob(orig_curr)
+            else:
+                z_flat_p = z_prop.reshape(B, self.dim)
+                x_flat_p, log_det_prop = self.flow.forward(z_flat_p)
+                if self.dim % 3 == 0:
+                    n_particles = self.dim // 3
+                    x_prop = x_flat_p.reshape(B, n_particles, 3)
+                    if self.prior is not None:
+                        log_pz_prop = self.prior.log_prob(z_prop.reshape(B, n_particles, 3))
+                    else:
+                        log_pz_prop = -0.5 * (z_flat_p * z_flat_p + self.log_2pi).sum(axis=-1)
+                else:
+                    x_prop = x_flat_p
+                    if self.prior is not None:
+                        log_pz_prop = self.prior.log_prob(z_prop)
+                    else:
+                        log_pz_prop = -0.5 * (z_flat_p * z_flat_p + self.log_2pi).sum(axis=-1)
+
+            u_prop = self.energy_fn(x_prop)
+            e_prop = self.beta * u_prop - log_pz_prop - log_det_prop
+
+            # Vectorized Metropolis Acceptance Criterion with IEEE 754 overflow capping
+            delta_e = e_prop - e_curr
+            accept_prob = (-delta_e).minimum(0.0).exp()
+            rand_u = Tensor.rand(B)
+            accept_mask = (rand_u < accept_prob)
+
+            accepted_count += float(accept_mask.float().mean().item())
+
+            # Batch updates via where()
+            mask_z = accept_mask.reshape(B, *([1] * (len(z_curr.shape) - 1)))
+            z_curr = mask_z.where(z_prop, z_curr).realize()
+
+            mask_x = accept_mask.reshape(B, *([1] * (len(x_curr.shape) - 1)))
+            x_curr = mask_x.where(x_prop, x_curr).realize()
+
+            e_curr = accept_mask.where(e_prop, e_curr).realize()
+            u_curr = accept_mask.where(u_prop, u_curr).realize()
+
+        final_u_mean = float(u_curr.mean().item())
+        acceptance_rate = (accepted_count / max(1, mcmc_steps)) if mcmc_steps > 0 else 1.0
+
+        out = x_curr
+        n_real = getattr(self.energy_fn, "n_real_particles", None)
+        n_pad = getattr(self.energy_fn, "n_particles", None)
+        if not return_all_pad and n_real is not None and n_pad is not None and n_pad > n_real and len(out.shape) == 3 and n_real < out.shape[1]:
+            out = out[:, :n_real, :]
+
+        res = (out if n_samples > 1 else out.squeeze(0)).realize()
+        if return_stats:
+            stats = {
+                "initial_energy_mean": initial_u_mean,
+                "final_energy_mean": final_u_mean,
+                "acceptance_rate": acceptance_rate,
+                "mcmc_steps": mcmc_steps,
+                "mcmc_step_size": mcmc_step_size,
+            }
+            return res, stats
+        return res
+
+    def sample(
+        self,
+        n_samples: int = 1,
+        return_all_pad: bool = False,
+        mcmc_steps: int = 0,
+        mcmc_step_size: float = 0.1,
+        origin: Optional[Tensor] = None,
+    ) -> Tensor:
         """
         Draws equilibrium configurations from the trained Boltzmann generator.
         Automatically slices padded dummy sites to return real molecular atoms.
+        If mcmc_steps > 0, performs latent space Metropolis Monte Carlo relaxation.
         """
+        if mcmc_steps > 0:
+            return self.sample_relaxed(
+                n_samples=n_samples,
+                mcmc_steps=mcmc_steps,
+                mcmc_step_size=mcmc_step_size,
+                origin=origin,
+                return_all_pad=return_all_pad,
+                return_stats=False,
+            )
+
         Tensor.training = False
         out = self._sample_batch(n_samples)
         n_real = getattr(self.energy_fn, "n_real_particles", None)

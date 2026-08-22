@@ -106,8 +106,21 @@ flowchart TD
       - `CompositeFlow`: Directly slices internal coordinate torsions $\phi$ with zero cross products and zero division-by-zero risk.
       - `Base2CartesianFlow`: Evaluates safe regularized Cartesian dihedrals for explicit `.mol2` bond graph quadruplets.
   - `train(steps=100, batch_size=64, verbose=False)`: JIT-compiled optimization loop over flow parameters using `Adam` or `Muon`.
-  - `sample(n_samples=1, return_all_pad=False)`: Draws equilibrium configurations and automatically slices dummy padding sites to return real molecular atoms $(B, N_{\rm real}, 3)$.
+  - `sample(n_samples=1, return_all_pad=False, mcmc_steps=0, mcmc_step_size=0.1)`: Draws equilibrium configurations and automatically slices dummy padding sites to return real molecular atoms $(B, N_{\rm real}, 3)$. Dispatches to `sample_relaxed` when `mcmc_steps > 0`.
   - `log_prob(x)`: Evaluates exact generated density $\log q_\theta(\mathbf{x}) = \log p_z(f^{-1}(\mathbf{x})) + \log |\det J_{f^{-1}}(\mathbf{x})|$.
+
+### 3.5 Latent Space MCMC Relaxation Engine (`generator.sample_relaxed`)
+- **Motivation & Principle**:
+  While normalizing flows generate one-shot configurations rapidly, high-dimensional target distributions inevitably contain rare steric overlap outliers. Rather than running costly gradient descent in 3D configuration space, MCMC is performed directly in the Gaussian latent space $\mathcal{Z}$.
+- **Target Latent Distribution & Metropolis Criterion**:
+  The exact Boltzmann equilibrium distribution in latent space is $p_Z(\mathbf{z}) \propto \exp(-E_{\rm eff}(\mathbf{z}))$, where:
+  $$E_{\rm eff}(\mathbf{z}) = \beta U(f_\theta(\mathbf{z})) - \log p_0(\mathbf{z}) - \log \left| \det J_{f_\theta}(\mathbf{z}) \right|$$
+  Perturbations $\mathbf{z}' = \mathbf{z} + s \, \boldsymbol{\eta}$ ($\boldsymbol{\eta} \sim \mathcal{N}(\mathbf{0}, \mathbf{I})$) are accepted with exact Metropolis probability:
+  $$p_{\rm acc} = \min(1, \exp(-\Delta E)) = \exp\left(\min(0, -(E_{\rm eff}(\mathbf{z}') - E_{\rm eff}(\mathbf{z})))\right)$$
+- **Numerical Protections & Dyadic Architecture**:
+  - **IEEE 754 Exponent Capping**: Uses `(-delta_e).minimum(0.0).exp()` to eliminate `inf` overflow on massive energy relief steps ($\Delta E \ll 0$).
+  - **Dynamic Stochasticity**: Preserves unjitted outer Python Markov loops to avoid freezing pseudo-random number generator buffers.
+  - **Base-2 Batched Tensor Parallelism**: Vectorized across all $B$ configurations simultaneously via `.where()` conditional selection.
 
 ---
 
