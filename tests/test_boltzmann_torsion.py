@@ -18,7 +18,7 @@ from dens_city.boltzmann.bijectors import (
 )
 from dens_city.boltzmann.energy import MicroscopicEnergy
 from dens_city.boltzmann.generator import BoltzmannGenerator
-from dens_city.materials import MaterialLoader
+from dens_city.utils.materials import MaterialLoader
 
 
 def test_mol2_bond_graph_dihedral_quadruplet_extraction():

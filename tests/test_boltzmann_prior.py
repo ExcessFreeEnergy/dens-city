@@ -11,7 +11,7 @@ from tinygrad import Tensor
 
 from dens_city.boltzmann.prior import CDFTBaseDistribution
 from dens_city.cdft import TinyCDFT
-from dens_city.materials import MaterialLoader
+from dens_city.utils.materials import MaterialLoader
 
 
 def test_cdft_prior_histogram_r2_overlap():

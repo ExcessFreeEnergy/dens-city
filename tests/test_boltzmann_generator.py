@@ -13,7 +13,7 @@ from dens_city.boltzmann.bijectors import Base2CartesianFlow, CompositeFlow, Rea
 from dens_city.boltzmann.energy import MicroscopicEnergy
 from dens_city.boltzmann.generator import BoltzmannGenerator
 from dens_city.boltzmann.prior import CDFTBaseDistribution
-from dens_city.materials import MaterialLoader
+from dens_city.utils.materials import MaterialLoader
 
 
 def test_harmonic_well_analytical_gaussian_convergence():

@@ -9,7 +9,7 @@ import numpy as np
 from dens_city.boltzmann.bijectors import Base2CartesianFlow, CompositeFlow
 from dens_city.boltzmann.energy import MicroscopicEnergy
 from dens_city.boltzmann.generator import BoltzmannGenerator
-from dens_city.materials import MaterialLoader
+from dens_city.utils.materials import MaterialLoader
 
 
 def test_zero_mcmc_steps_invariance():

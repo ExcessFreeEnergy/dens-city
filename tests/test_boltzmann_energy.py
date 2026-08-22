@@ -10,7 +10,7 @@ import numpy as np
 from tinygrad import Tensor
 
 from dens_city.boltzmann.energy import MicroscopicEnergy, regularize_energy
-from dens_city.materials import MaterialLoader
+from dens_city.utils.materials import MaterialLoader
 
 
 def test_argon_dimer_ground_truth_minimum():

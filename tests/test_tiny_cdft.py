@@ -9,7 +9,7 @@ import numpy as np
 from tinygrad import Tensor
 
 from dens_city.cdft import KernelBuilder, TinyCDFT
-from dens_city.materials import MaterialLoader
+from dens_city.utils.materials import MaterialLoader, compute_wca_dispersion_integral
 
 
 def test_anti_aliased_fmt_and_wca_kernel_integrals():
@@ -39,8 +39,6 @@ def test_anti_aliased_fmt_and_wca_kernel_integrals():
     # 2. WCA attractive kernel cell integral
     att_kernel, _ = KernelBuilder.build_wca_attraction_kernel(sigma, epsilon_k, dz)
     kernel_sum = float(att_kernel.numpy().sum()) * dz
-
-    from dens_city.materials import compute_wca_dispersion_integral
 
     exact_wca_3d = compute_wca_dispersion_integral(sigma, epsilon_k)
 

@@ -4,8 +4,8 @@ Powered by pure tinygrad tensor operations, autograd variational optimization, a
 """
 
 from dens_city.cdft import KernelBuilder, TinyCDFT
-from dens_city.materials import Material, MaterialLoader
-from dens_city.pipeline import (
+from dens_city.utils.materials import Material, MaterialLoader
+from dens_city.utils.pipeline import (
     MaterialPipelineResult,
     MaterialPipelineTask,
     PipelineStatus,

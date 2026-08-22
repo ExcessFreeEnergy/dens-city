@@ -35,8 +35,8 @@ sys.path.insert(0, str(root_dir / "src"))
 
 from tinygrad.helpers import colored
 
-from dens_city.materials import MaterialLoader
-from dens_city.pipeline import (
+from dens_city.utils import (
+    MaterialLoader,
     MaterialPipelineResult,
     MaterialPipelineTask,
     PipelineStatus,

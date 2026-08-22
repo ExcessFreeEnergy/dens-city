@@ -11,7 +11,7 @@ import pytest
 from tinygrad import Tensor, nn
 
 from dens_city.boltzmann.bijectors import AffineCouplingLayer, CompositeFlow, RealNVPFlow, ZMatrixBijector
-from dens_city.materials import MaterialLoader
+from dens_city.utils.materials import MaterialLoader
 
 
 @pytest.mark.parametrize("n_atoms", [3, 4, 6, 8, 10])

@@ -5,15 +5,19 @@ BEAM-searchable kernels, exponential re-parameterization, physical steric maskin
 and exact Irving-Kirkwood mechanical virial observables.
 """
 
+from __future__ import annotations
+
 import math
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import numpy as np
 from tinygrad import GlobalCounters, Tensor, TinyJit, dtypes, nn
 from tinygrad.helpers import getenv, trange
 
 from dens_city.cdft.kernels import KernelBuilder
-from dens_city.materials import Material
+
+if TYPE_CHECKING:
+    from dens_city.utils.materials import Material
 
 
 class TinyCDFT:

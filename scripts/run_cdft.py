@@ -31,7 +31,7 @@ sys.path.insert(0, str(root_dir / "src"))
 from tinygrad.helpers import colored, getenv
 
 from dens_city.cdft import TinyCDFT
-from dens_city.materials import MaterialLoader
+from dens_city.utils.materials import MaterialLoader
 
 
 def parse_materials_arg(mat_args: List[str]) -> List[str]:

@@ -32,8 +32,7 @@ The `dens-city` codebase is modularized under `src/dens_city/`:
 - **`dens_city.cdft`**: Classical Density Functional Theory engine, planar FMT convolution kernels, and variational solvers (`TinyCDFT`, `KernelBuilder`).
 - **`dens_city.boltzmann`**: Boltzmann Generator normalizing flows (`Base2CartesianFlow`, `CompositeFlow`), microscopic Hamiltonians (`MicroscopicEnergy`), spatial CDFT priors (`CDFTBaseDistribution`), and latent MCMC relaxation (`BoltzmannGenerator`).
 - **`dens_city.ui`**: Interface subsystem placeholder for future interactive visualization.
-- **`dens_city.materials`**: Tripos `.mol2` parser, force-field database, and Equation of State (EOS) root solvers.
-- **`dens_city.pipeline`**: High-throughput multi-material batch orchestration and parallel worker pools.
+- **`dens_city.utils`**: Molecular data loader, Tripos `.mol2` parser, force-field database, EOS solvers, and high-throughput batch execution pipeline (`MaterialLoader`, `Material`, `MaterialPipelineTask`, `process_material_task`).
 
 ---
 

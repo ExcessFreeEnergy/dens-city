@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 TEST_DATA_DIR = REPO_ROOT / "test_data"
 FF_JSON_PATH = TEST_DATA_DIR / "forcefield_parameters.json"
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from dens_city.pipeline import (
+from dens_city.utils.pipeline import (
     MaterialPipelineTask,
     PipelineStatus,
     process_material_task,

@@ -4,13 +4,16 @@ Evaluates O(N^2) pairwise Lennard-Jones and Coulomb interactions with Minimum Im
 and exact Steele 9-3 / hard-core steric wall potentials in confined Z dimension.
 """
 
+from __future__ import annotations
+
 import math
-from typing import List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, List, Optional, Tuple, Union
 
 import numpy as np
 from tinygrad import Tensor, TinyJit, dtypes
 
-from dens_city.materials import Material
+if TYPE_CHECKING:
+    from dens_city.utils.materials import Material
 
 
 def regularize_energy(

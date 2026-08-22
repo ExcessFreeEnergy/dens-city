@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from dens_city.cdft import TinyCDFT
-from dens_city.materials import (
+from dens_city.utils.materials import (
     MaterialLoader,
     solve_bulk_density_from_chemical_potential,
     solve_bulk_density_from_pressure,
