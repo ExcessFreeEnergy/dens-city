@@ -555,7 +555,7 @@ class MoleculeViewer:
         pr.draw_text("State: ", 25, 92, 15, pr.LIGHTGRAY)
         pr.draw_text(st, 75, 92, 15, state_color)
 
-        controls_text = "[Left Drag] Orbit | [Scroll] Zoom | [R] Reset | [V] Mesh | [Space] Play"
+        controls_text = "[Left Drag] Orbit | [Scroll] Zoom | [R] Reset | [V] vdW Surface | [Space] Play"
         pr.draw_text(controls_text, 25, 120, 11, pr.GRAY)
 
         pr.draw_fps(self.width - 90, 15)
@@ -824,19 +824,20 @@ class MoleculeViewer:
 
         curr_x += bar_bg_w + 48
 
-        # 7. [VDW Mesh] Toggle Button
-        btn_vdw = pr.Rectangle(curr_x, btn_y, 95, btn_h)
+        # 7. [vdW Surface] Toggle Button
+        btn_vdw = pr.Rectangle(curr_x, btn_y, 160, btn_h)
         hover5 = pr.check_collision_point_rec(mouse_pos, btn_vdw)
         if self.show_vdw_surface:
             col5 = pr.Color(40, 90, 85, 255) if not hover5 else pr.Color(55, 120, 110, 255)
             border_col5 = pr.Color(60, 180, 150, 255)
+            vdw_label = "Disable vdW Surface"
         else:
             col5 = pr.Color(35, 40, 50, 255) if not hover5 else pr.Color(50, 60, 75, 255)
             border_col5 = pr.Color(60, 70, 85, 255)
+            vdw_label = "Enable vdW Surface"
 
         pr.draw_rectangle_rec(btn_vdw, col5)
         pr.draw_rectangle_lines_ex(btn_vdw, 1, border_col5)
-        vdw_label = "Mesh: ON" if self.show_vdw_surface else "Mesh: OFF"
         pr.draw_text(vdw_label, curr_x + 12, btn_y + 10, 13, pr.RAYWHITE)
 
         if hover5 and mouse_clicked:
