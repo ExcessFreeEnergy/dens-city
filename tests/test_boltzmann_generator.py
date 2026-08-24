@@ -200,6 +200,7 @@ def test_boltzmann_generator_with_power_of_2_padded_composite_flow():
         box_size=(30.0, 30.0, 30.0),
         r_cut=10.0,
         pad_to_power_of_2=True,
+        e_high=1e4,
     )
     assert energy_fn.n_particles == 4
     assert energy_fn.n_real_particles == 3

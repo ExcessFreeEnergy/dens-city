@@ -1,78 +1,185 @@
 """
 High-performance 3D molecular viewer implemented in Raylib (pyray).
-Renders atom sites with standard CPK color palette and covalent bond cylinders
-with smooth 60+ FPS orbital mouse rotation and zoom.
+Renders atom sites with realistic ball-and-stick proportions, multi-bond cylinder geometry
+(triple, double, single, aromatic), Phong specular highlights, and alpha-blended probability density clouds.
 """
 
 from __future__ import annotations
 
 import math
+import re
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import pyray as pr
 
 from dens_city.utils.materials import AtomSite, Material, MaterialLoader
 
-# Standard CPK elemental color table: (R, G, B, A)
-CPK_COLORS: Dict[str, Tuple[int, int, int, int]] = {
-    "H": (245, 245, 245, 255),
-    "C": (50, 50, 50, 255),
-    "N": (48, 80, 248, 255),
-    "O": (240, 30, 30, 255),
-    "F": (144, 224, 80, 255),
-    "CL": (31, 220, 31, 255),
-    "BR": (166, 41, 41, 255),
-    "I": (148, 0, 148, 255),
-    "S": (255, 200, 50, 255),
-    "P": (255, 128, 0, 255),
-    "AR": (128, 209, 227, 255),
-    "NA": (171, 92, 242, 255),
-    "CA": (60, 180, 60, 255),
-    "FE": (224, 102, 0, 255),
+# Element color palette: (R, G, B, A)
+# Nitrogen uses vibrant emerald green to match standard scientific / crystallographic references
+ELEMENT_COLORS: Dict[str, Tuple[int, int, int, int]] = {
+    "H": (240, 243, 246, 255),  # Crisp Silver / White
+    "C": (55, 62, 72, 255),  # Charcoal / Slate
+    "N": (34, 180, 115, 255),  # Emerald Green (matching reference)
+    "O": (235, 45, 45, 255),  # Ruby Red
+    "F": (120, 225, 140, 255),  # Light Aquamarine
+    "CL": (45, 210, 65, 255),  # Leaf Green
+    "BR": (165, 42, 42, 255),  # Crimson Brown
+    "I": (148, 0, 211, 255),  # Purple
+    "S": (245, 205, 35, 255),  # Golden Yellow
+    "P": (250, 130, 20, 255),  # Flame Orange
+    "AR": (100, 210, 240, 255),  # Cyan Ice
+    "NA": (170, 90, 245, 255),  # Neon Violet
+    "CA": (50, 160, 50, 255),  # Deep Green
+    "FE": (224, 102, 0, 255),  # Metallic Rust
 }
 
-# Standard covalent visual radius in Angstroms
+# Ball-and-stick visual radius in Angstroms (scaled to reveal covalent bonds clearly)
 ELEMENT_RADII: Dict[str, float] = {
-    "H": 0.35,
-    "C": 0.55,
-    "N": 0.52,
-    "O": 0.50,
-    "F": 0.48,
-    "CL": 0.65,
-    "BR": 0.72,
-    "I": 0.80,
-    "S": 0.68,
-    "P": 0.68,
-    "AR": 0.70,
-    "NA": 0.75,
-    "CA": 0.80,
+    "H": 0.18,
+    "C": 0.30,
+    "N": 0.28,
+    "O": 0.26,
+    "F": 0.25,
+    "CL": 0.34,
+    "BR": 0.38,
+    "I": 0.42,
+    "S": 0.35,
+    "P": 0.35,
+    "AR": 0.52,  # Substantial for monoatomic gases
+    "NA": 0.42,
+    "CA": 0.45,
 }
 
+# Embedded GLSL Blinn-Phong lighting vertex shader
+VS_PHONG = """#version 330
+in vec3 vertexPosition;
+in vec3 vertexNormal;
+in vec4 vertexColor;
+uniform mat4 mvp;
+uniform mat4 matModel;
+out vec3 fragPosition;
+out vec3 fragNormal;
+out vec4 fragColor;
+void main() {
+    fragPosition = vec3(matModel * vec4(vertexPosition, 1.0));
+    fragNormal = normalize(vec3(matModel * vec4(vertexNormal, 0.0)));
+    fragColor = vertexColor;
+    gl_Position = mvp * vec4(vertexPosition, 1.0);
+}
+"""
 
-def get_atom_element(atom_type: str) -> str:
-    """Extracts elemental symbol from Tripos atom type (e.g., 'C.3' -> 'C', 'Cl' -> 'CL')."""
-    raw = atom_type.split(".")[0].strip()
-    return raw.upper()
+# Embedded GLSL Blinn-Phong lighting fragment shader with dual-directional light & specular shine
+FS_PHONG = """#version 330
+in vec3 fragPosition;
+in vec3 fragNormal;
+in vec4 fragColor;
+uniform vec3 viewPos;
+out vec4 finalColor;
+void main() {
+    vec3 normal = normalize(fragNormal);
+
+    // Primary directional key light (upper right front)
+    vec3 lightDir1 = normalize(vec3(0.6, 1.0, 0.8));
+    float diff1 = max(dot(normal, lightDir1), 0.0);
+
+    // Secondary soft fill light (lower left back)
+    vec3 lightDir2 = normalize(vec3(-0.5, -0.3, -0.6));
+    float diff2 = max(dot(normal, lightDir2), 0.0) * 0.3;
+
+    // Ambient light
+    vec3 ambient = vec3(0.28);
+
+    // Blinn-Phong Specular Highlight
+    vec3 viewDir = normalize(viewPos - fragPosition);
+    vec3 halfDir = normalize(lightDir1 + viewDir);
+    float spec = pow(max(dot(normal, halfDir), 0.0), 32.0) * 0.45;
+
+    vec3 lightIntensity = ambient + vec3(diff1 * 0.72) + vec3(diff2) + vec3(spec);
+    vec3 rgb = fragColor.rgb * lightIntensity;
+    finalColor = vec4(rgb, fragColor.a);
+}
+"""
 
 
-def get_atom_color(atom_type: str) -> pr.Color:
-    """Returns the CPK Color for a given Tripos atom type."""
-    elem = get_atom_element(atom_type)
-    r, g, b, a = CPK_COLORS.get(elem, (180, 180, 180, 255))
+def get_atom_element(atom_type: str, site_name: str = "") -> str:
+    """
+    Robustly extracts the chemical element symbol from Tripos/GAFF atom types and site names.
+    Handles 'n1', 'N1', 'c3', 'C.3', 'ca', 'ha', 'hc', 'os', 's6', 'p5', 'cl', 'br', 'f', 'na', 'ca', 'ar', etc.
+    """
+    t = atom_type.strip()
+    s = site_name.strip()
+
+    # 1. Check 2-letter element symbols from site_name (e.g. Ca1 -> CA, Cl1 -> CL, Na1 -> NA, Ar1 -> AR)
+    for sym in ["CL", "BR", "NA", "CA", "FE", "AR", "SI", "AL", "MG", "LI", "ZN", "HE", "NE", "KR", "XE"]:
+        if s.upper().startswith(sym) and (len(s) == len(sym) or s[len(sym) :].isdigit() or s[len(sym)] in "_-."):
+            return sym
+        if t == sym.capitalize() or t == sym:
+            return sym
+
+    # 2. GAFF 2-character prefixes for standard organic elements:
+    t_lower = t.lower()
+    if t_lower in ("ca", "cp", "cq", "cc", "cd", "ce", "cf", "cg", "ch", "cx", "cy", "cz", "c.3", "c.2", "c.1", "c.ar"):
+        return "C"
+    if t_lower in ("na", "nb", "nc", "nd", "ne", "nf", "nh", "no", "n.am", "n.pl3", "n.4", "n.ar"):
+        return "N"
+    if t_lower in ("ha", "hc", "hn", "ho", "hp", "hs", "hw", "hx", "h.spc", "h.tip3p"):
+        return "H"
+    if t_lower in ("oa", "ob", "oc", "od", "oe", "oh", "os", "ow", "o.3", "o.2", "o.co2"):
+        return "O"
+    if t_lower in ("sa", "sb", "sc", "sd", "se", "sh", "ss", "sp", "sq", "sx", "sy", "s.3", "s.2", "s.o", "s.o2"):
+        return "S"
+    if t_lower in ("pa", "pb", "pc", "pd", "pe", "pf", "p.3"):
+        return "P"
+
+    # 3. GAFF single-letter + number / punctuation (c1, c2, c3, n1, n2, h1, o, s6, p5, f, cl, br, etc.)
+    if t_lower.startswith("cl"):
+        return "CL"
+    if t_lower.startswith("br"):
+        return "BR"
+    if t_lower.startswith("ar"):
+        return "AR"
+
+    first_char = t_lower[0] if t_lower else (s[0].lower() if s else "c")
+    if first_char in ("c", "n", "o", "h", "f", "p", "s", "i", "b", "k", "v", "w", "u"):
+        return first_char.upper()
+
+    letters = re.sub(r"[^a-zA-Z]", "", t if t else s)
+    return letters[:2].upper() if letters else "C"
+
+
+def get_atom_color(atom_type: str, site_name: str = "") -> pr.Color:
+    """Returns the CPK / publication Color for a given atom type or site name."""
+    elem = get_atom_element(atom_type, site_name)
+    r, g, b, a = ELEMENT_COLORS.get(elem, (170, 175, 185, 255))
     return pr.Color(r, g, b, a)
 
 
-def get_atom_radius(atom_type: str, sigma: float = 3.4) -> float:
-    """Returns visual ball radius in Angstroms."""
-    elem = get_atom_element(atom_type)
+def get_atom_radius(atom_type: str, site_name: str = "", sigma: float = 3.4) -> float:
+    """Returns visual ball-and-stick radius in Angstroms."""
+    elem = get_atom_element(atom_type, site_name)
     if elem in ELEMENT_RADII:
         return ELEMENT_RADII[elem]
-    return max(0.3, min(1.0, sigma * 0.25))
+    return max(0.20, min(0.60, sigma * 0.12))
+
+
+@dataclass
+class DensityCloud:
+    """
+    Volumetric 3D spatial probability density cloud for cDFT density or Boltzmann Generator priors.
+    """
+
+    points: List[Tuple[float, float, float]] = field(default_factory=list)
+    densities: List[float] = field(default_factory=list)
+    color_rgb: Tuple[int, int, int] = (60, 160, 255)
+    max_density: float = 1.0
+    alpha_scale: float = 0.5
 
 
 class MoleculeViewer:
     """
-    Raylib 3D molecular renderer with orbital camera controls.
+    Raylib 3D molecular renderer with multi-bond cylinder geometry,
+    specular lighting, orbital mouse controls, and probability cloud rendering.
     """
 
     def __init__(
@@ -91,18 +198,26 @@ class MoleculeViewer:
         self.title = title
 
         # Orbital Camera parameters
-        self.azimuth = 0.6
-        self.elevation = 0.4
-        self.distance = 15.0
+        self.azimuth = 0.75
+        self.elevation = 0.35
+        self.distance = 12.0
         self.target = pr.Vector3(0.0, 0.0, 0.0)
-        self.default_distance = 15.0
+        self.default_distance = 12.0
         self.default_target = pr.Vector3(0.0, 0.0, 0.0)
+
+        # Volumetric Probability Cloud
+        self.density_cloud: Optional[DensityCloud] = None
+        self.show_cloud: bool = True
 
         self._update_molecule_bounds()
 
     @property
     def current_material(self) -> Material:
         return self.materials[self.current_idx]
+
+    def set_probability_cloud(self, cloud: Optional[DensityCloud]) -> None:
+        """Attaches a volumetric probability density cloud to the 3D scene."""
+        self.density_cloud = cloud
 
     def _update_molecule_bounds(self) -> None:
         """Calculates centroid and auto-frames camera distance for current material."""
@@ -111,7 +226,7 @@ class MoleculeViewer:
 
         if not sites:
             self.target = pr.Vector3(0.0, 0.0, 0.0)
-            self.distance = 10.0
+            self.distance = 8.0
             self.default_target = self.target
             self.default_distance = self.distance
             return
@@ -131,8 +246,9 @@ class MoleculeViewer:
             if d > max_d:
                 max_d = d
 
-        span = max(max_d, mat.effective_sigma * 0.5)
-        self.distance = max(6.0, span * 2.8)
+        # Dynamic scale-invariant camera distance
+        span = max(max_d, mat.effective_sigma * 0.4)
+        self.distance = max(4.5, span * 2.6)
         self.default_distance = self.distance
 
     def next_material(self) -> None:
@@ -149,8 +265,8 @@ class MoleculeViewer:
 
     def reset_view(self) -> None:
         """Resets camera orientation and zoom to defaults."""
-        self.azimuth = 0.6
-        self.elevation = 0.4
+        self.azimuth = 0.75
+        self.elevation = 0.35
         self.distance = self.default_distance
         self.target = self.default_target
 
@@ -171,18 +287,16 @@ class MoleculeViewer:
         # 1. Left Mouse Button Hold & Drag -> Orbit
         if pr.is_mouse_button_down(pr.MOUSE_BUTTON_LEFT):
             delta = pr.get_mouse_delta()
-            sensitivity = 0.006
+            sensitivity = 0.005
             self.azimuth += delta.x * sensitivity
             self.elevation -= delta.y * sensitivity
-            # Clamp elevation to prevent camera flipping at poles
             max_elevation = math.pi / 2.0 - 0.05
             self.elevation = max(-max_elevation, min(max_elevation, self.elevation))
 
-        # 2. Right Mouse Button Hold & Drag -> Pan
+        # 2. Right / Middle Mouse Button -> Pan
         if pr.is_mouse_button_down(pr.MOUSE_BUTTON_RIGHT) or pr.is_mouse_button_down(pr.MOUSE_BUTTON_MIDDLE):
             delta = pr.get_mouse_delta()
-            pan_speed = self.distance * 0.0015
-            # Right vector perpendicular to camera forward in XZ
+            pan_speed = self.distance * 0.0012
             sin_az = math.sin(self.azimuth)
             cos_az = math.cos(self.azimuth)
             self.target.x -= (delta.x * cos_az) * pan_speed
@@ -193,7 +307,7 @@ class MoleculeViewer:
         wheel = pr.get_mouse_wheel_move()
         if wheel != 0:
             zoom_factor = 1.0 - wheel * 0.1
-            self.distance = max(1.5, min(250.0, self.distance * zoom_factor))
+            self.distance = max(1.2, min(250.0, self.distance * zoom_factor))
 
         # 4. Keyboard Navigation
         if pr.is_key_pressed(pr.KEY_RIGHT) or pr.is_key_pressed(pr.KEY_RIGHT_BRACKET):
@@ -202,38 +316,143 @@ class MoleculeViewer:
             self.prev_material()
         if pr.is_key_pressed(pr.KEY_R) or pr.is_key_pressed(pr.KEY_SPACE):
             self.reset_view()
+        if pr.is_key_pressed(pr.KEY_C):
+            self.show_cloud = not self.show_cloud
+
+    def _draw_cylinder_segment(
+        self,
+        p1: pr.Vector3,
+        p2: pr.Vector3,
+        radius: float,
+        color1: pr.Color,
+        color2: pr.Color,
+    ) -> None:
+        """Draws a cylinder split at the midpoint with dual elemental colors."""
+        mid = pr.Vector3(
+            0.5 * (p1.x + p2.x),
+            0.5 * (p1.y + p2.y),
+            0.5 * (p1.z + p2.z),
+        )
+        pr.draw_cylinder_ex(p1, mid, radius, radius, 10, color1)
+        pr.draw_cylinder_ex(mid, p2, radius, radius, 10, color2)
+
+    def draw_bond(
+        self,
+        s1: AtomSite,
+        s2: AtomSite,
+        bond_type: str,
+    ) -> None:
+        """
+        Renders accurate multi-bond cylinder geometry (triple, double, single, aromatic).
+        """
+        p1 = pr.Vector3(s1.x, s1.y, s1.z)
+        p2 = pr.Vector3(s2.x, s2.y, s2.z)
+
+        c1 = get_atom_color(s1.atom_type, s1.site_name)
+        c2 = get_atom_color(s2.atom_type, s2.site_name)
+
+        vx = p2.x - p1.x
+        vy = p2.y - p1.y
+        vz = p2.z - p1.z
+        length = math.sqrt(vx * vx + vy * vy + vz * vz)
+        if length < 1e-4:
+            return
+
+        ux, uy, uz = vx / length, vy / length, vz / length
+
+        # Compute perpendicular normal vector
+        if abs(uy) < 0.9:
+            ax, ay, az = 0.0, 1.0, 0.0
+        else:
+            ax, ay, az = 1.0, 0.0, 0.0
+
+        # Cross product u x a
+        nx = uy * az - uz * ay
+        ny = uz * ax - ux * az
+        nz = ux * ay - uy * ax
+        n_len = math.sqrt(nx * nx + ny * ny + nz * nz)
+        nx, ny, nz = nx / n_len, ny / n_len, nz / n_len
+
+        bt = str(bond_type).strip().lower()
+
+        if bt in ("3", "tr", "triple"):
+            # Triple Bond: 3 parallel cylinders
+            offset = 0.095
+            rad = 0.035
+            # Center cylinder
+            self._draw_cylinder_segment(p1, p2, rad, c1, c2)
+
+            # Offset cylinder +
+            p1_plus = pr.Vector3(p1.x + nx * offset, p1.y + ny * offset, p1.z + nz * offset)
+            p2_plus = pr.Vector3(p2.x + nx * offset, p2.y + ny * offset, p2.z + nz * offset)
+            self._draw_cylinder_segment(p1_plus, p2_plus, rad, c1, c2)
+
+            # Offset cylinder -
+            p1_minus = pr.Vector3(p1.x - nx * offset, p1.y - ny * offset, p1.z - nz * offset)
+            p2_minus = pr.Vector3(p2.x - nx * offset, p2.y - ny * offset, p2.z - nz * offset)
+            self._draw_cylinder_segment(p1_minus, p2_minus, rad, c1, c2)
+
+        elif bt in ("2", "db", "double", "ar", "aromatic"):
+            # Double / Aromatic Bond: 2 parallel cylinders
+            offset = 0.065
+            rad = 0.040
+            p1_plus = pr.Vector3(p1.x + nx * offset, p1.y + ny * offset, p1.z + nz * offset)
+            p2_plus = pr.Vector3(p2.x + nx * offset, p2.y + ny * offset, p2.z + nz * offset)
+            self._draw_cylinder_segment(p1_plus, p2_plus, rad, c1, c2)
+
+            p1_minus = pr.Vector3(p1.x - nx * offset, p1.y - ny * offset, p1.z - nz * offset)
+            p2_minus = pr.Vector3(p2.x - nx * offset, p2.y - ny * offset, p2.z - nz * offset)
+            self._draw_cylinder_segment(p1_minus, p2_minus, rad, c1, c2)
+
+        else:
+            # Single Bond: 1 central cylinder
+            rad = 0.060
+            self._draw_cylinder_segment(p1, p2, rad, c1, c2)
 
     def draw_molecule_3d(self) -> None:
-        """Renders 3D atom spheres and bond cylinders for the active material."""
+        """Renders 3D atom spheres and multi-bond cylinders for the active material."""
         mat = self.current_material
         sites: List[AtomSite] = mat.sites
         bonds = mat.bonds
 
-        # 1. Draw Bonds (Cylinders)
-        bond_color = pr.Color(160, 160, 160, 255)
-        bond_radius = 0.10
+        # 1. Draw Bonds (Cylinders with multi-bond geometry)
         for b in bonds:
             i, j = b[0], b[1]
+            b_type = b[2] if len(b) > 2 else "1"
             if 0 <= i < len(sites) and 0 <= j < len(sites):
-                s1 = sites[i]
-                s2 = sites[j]
-                p1 = pr.Vector3(s1.x, s1.y, s1.z)
-                p2 = pr.Vector3(s2.x, s2.y, s2.z)
-                pr.draw_cylinder_ex(p1, p2, bond_radius, bond_radius, 8, bond_color)
+                self.draw_bond(sites[i], sites[j], b_type)
 
-        # 2. Draw Atom Sites (Spheres)
+        # 2. Draw Atom Sites (Spheres with ball-and-stick scaling)
         for s in sites:
             pos = pr.Vector3(s.x, s.y, s.z)
-            radius = get_atom_radius(s.atom_type, s.sigma)
-            color = get_atom_color(s.atom_type)
+            radius = get_atom_radius(s.atom_type, s.site_name, s.sigma)
+            color = get_atom_color(s.atom_type, s.site_name)
             pr.draw_sphere(pos, radius, color)
 
+    def draw_probability_cloud_3d(self) -> None:
+        """Renders volumetric alpha-blended probability density cloud."""
+        if not self.density_cloud or not self.show_cloud:
+            return
+
+        pr.begin_blend_mode(pr.BLEND_ALPHA)
+        r, g, b = self.density_cloud.color_rgb
+        max_d = max(1e-6, self.density_cloud.max_density)
+
+        for pt, rho in zip(self.density_cloud.points, self.density_cloud.densities):
+            norm_rho = min(1.0, rho / max_d)
+            alpha = int(norm_rho * self.density_cloud.alpha_scale * 255)
+            if alpha > 5:
+                pos = pr.Vector3(pt[0], pt[1], pt[2])
+                pr.draw_sphere(pos, 0.08, pr.Color(r, g, b, alpha))
+
+        pr.end_blend_mode()
+
     def draw_hud(self) -> None:
-        """Renders minimal HUD text information."""
+        """Renders clean HUD information."""
         mat = self.current_material
-        bg_dark = pr.Color(20, 24, 30, 220)
-        pr.draw_rectangle(15, 15, 340, 130, bg_dark)
-        pr.draw_rectangle_lines(15, 15, 340, 130, pr.Color(60, 70, 85, 255))
+        bg_dark = pr.Color(16, 20, 26, 225)
+        pr.draw_rectangle(15, 15, 360, 135, bg_dark)
+        pr.draw_rectangle_lines(15, 15, 360, 135, pr.Color(50, 60, 75, 255))
 
         title_text = f"Material: {mat.name} ({self.current_idx + 1}/{len(self.materials)})"
         pr.draw_text(title_text, 25, 25, 18, pr.RAYWHITE)
@@ -244,9 +463,9 @@ class MoleculeViewer:
         sigma_text = f"Effective σ: {mat.effective_sigma:.2f} Å | ε/k_B: {mat.effective_epsilon_k:.1f} K"
         pr.draw_text(sigma_text, 25, 70, 14, pr.LIGHTGRAY)
 
-        controls_text = "[Left Drag] Rotate | [Scroll] Zoom"
+        controls_text = "[Left Drag] Rotate | [Scroll] Zoom | [Right Drag] Pan"
         pr.draw_text(controls_text, 25, 95, 12, pr.GRAY)
-        nav_text = "[←/→] Switch Material | [R] Reset"
+        nav_text = "[←/→] Switch Material | [R] Reset | [C] Cloud"
         pr.draw_text(nav_text, 25, 115, 12, pr.GRAY)
 
         pr.draw_fps(self.width - 90, 15)
@@ -257,6 +476,17 @@ class MoleculeViewer:
         pr.init_window(self.width, self.height, self.title)
         pr.set_target_fps(60)
 
+        # Load and compile Blinn-Phong lighting shader
+        shader_enabled = False
+        shader = None
+        view_pos_loc = -1
+        try:
+            shader = pr.load_shader_from_memory(VS_PHONG, FS_PHONG)
+            view_pos_loc = pr.get_shader_location(shader, "viewPos")
+            shader_enabled = True
+        except Exception:
+            shader_enabled = False
+
         camera = pr.Camera3D(
             self.get_camera_position(),
             self.target,
@@ -265,28 +495,47 @@ class MoleculeViewer:
             pr.CAMERA_PERSPECTIVE,
         )
 
-        bg_color = pr.Color(16, 18, 22, 255)
+        bg_color = pr.Color(18, 21, 28, 255)
 
         while not pr.window_should_close():
             self.handle_input()
 
-            # Update camera vectors
-            camera.position = self.get_camera_position()
+            cam_pos = self.get_camera_position()
+            camera.position = cam_pos
             camera.target = self.target
+
+            # Update shader camera position
+            if shader_enabled and shader is not None and view_pos_loc != -1:
+                cam_arr = pr.ffi.new("float[3]", [cam_pos.x, cam_pos.y, cam_pos.z])
+                pr.set_shader_value(shader, view_pos_loc, cam_arr, pr.SHADER_UNIFORM_VEC3)
 
             pr.begin_drawing()
             pr.clear_background(bg_color)
 
             pr.begin_mode_3d(camera)
-            # Subtle reference floor grid
+
+            # Floor reference grid
             pr.draw_grid(20, 1.0)
-            self.draw_molecule_3d()
+
+            # 1. Shaded Opaque Geometry (Bonds & Atoms)
+            if shader_enabled and shader is not None:
+                pr.begin_shader_mode(shader)
+                self.draw_molecule_3d()
+                pr.end_shader_mode()
+            else:
+                self.draw_molecule_3d()
+
+            # 2. Translucent Volumetric Probability Cloud
+            self.draw_probability_cloud_3d()
+
             pr.end_mode_3d()
 
             self.draw_hud()
 
             pr.end_drawing()
 
+        if shader_enabled and shader is not None:
+            pr.unload_shader(shader)
         pr.close_window()
 
 
