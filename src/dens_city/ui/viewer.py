@@ -1,16 +1,14 @@
 """
 High-performance 3D molecular viewer implemented in Raylib (pyray).
 Renders atom sites with realistic ball-and-stick proportions, camera-aligned multi-bond cylinder geometry
-(triple, double, single, aromatic), dynamic ground plane positioning, Phong specular highlights,
-and alpha-blended probability density clouds for arbitrary molecules up to 128+ sites.
+(triple, double, single, aromatic), and Phong specular highlights for arbitrary molecules up to 128+ sites.
 """
 
 from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import pyray as pr
 
@@ -181,37 +179,26 @@ def get_atom_radius(atom_type: str, site_name: str = "", sigma: float = 3.4) -> 
     return max(0.20, min(0.60, sigma * 0.12))
 
 
-@dataclass
-class DensityCloud:
-    """
-    Volumetric 3D spatial probability density cloud for cDFT density or Boltzmann Generator priors.
-    """
-
-    points: List[Tuple[float, float, float]] = field(default_factory=list)
-    densities: List[float] = field(default_factory=list)
-    color_rgb: Tuple[int, int, int] = (60, 160, 255)
-    max_density: float = 1.0
-    alpha_scale: float = 0.5
-
-
 class MoleculeViewer:
     """
     Raylib 3D molecular renderer with camera-aligned multi-bond cylinder geometry,
-    scale-invariant auto-framing, dynamic ground grid, specular lighting,
-    and alpha-blended probability density clouds.
+    scale-invariant auto-framing, and Phong specular highlights.
     """
 
     def __init__(
         self,
-        materials: List[Material],
+        material: Union[Material, List[Material]],
         width: int = 1280,
         height: int = 720,
         title: str = "dens-city 3D Molecular Viewer",
     ):
-        if not materials:
-            raise ValueError("Must provide at least one Material to MoleculeViewer.")
-        self.materials = materials
-        self.current_idx = 0
+        if isinstance(material, list):
+            if not material:
+                raise ValueError("Must provide at least one Material to MoleculeViewer.")
+            self.material = material[0]
+        else:
+            self.material = material
+
         self.width = width
         self.height = height
         self.title = title
@@ -224,32 +211,14 @@ class MoleculeViewer:
         self.default_distance = 15.0
         self.default_target = pr.Vector3(0.0, 0.0, 0.0)
 
-        # Dynamic Grid parameters
-        self.grid_y = -3.0
-        self.grid_slices = 30
-        self.grid_spacing = 1.0
-        self.show_grid = True
-
-        # Volumetric Probability Cloud
-        self.density_cloud: Optional[DensityCloud] = None
-        self.show_cloud: bool = True
-
         self._update_molecule_bounds()
-
-    @property
-    def current_material(self) -> Material:
-        return self.materials[self.current_idx]
-
-    def set_probability_cloud(self, cloud: Optional[DensityCloud]) -> None:
-        """Attaches a volumetric probability density cloud to the 3D scene."""
-        self.density_cloud = cloud
 
     def _update_molecule_bounds(self) -> None:
         """
-        Calculates centroid, bounding radius, dynamic ground grid altitude,
-        and auto-frames camera distance from perspective frustum limits (up to 128+ sites).
+        Calculates centroid, bounding radius, and auto-frames camera distance
+        from perspective frustum limits (up to 128+ sites).
         """
-        mat = self.current_material
+        mat = self.material
         sites = mat.sites
 
         if not sites:
@@ -257,9 +226,6 @@ class MoleculeViewer:
             self.distance = 8.0
             self.default_target = self.target
             self.default_distance = self.distance
-            self.grid_y = -2.0
-            self.grid_slices = 20
-            self.grid_spacing = 1.0
             return
 
         cx = sum(s.x for s in sites) / len(sites)
@@ -267,8 +233,6 @@ class MoleculeViewer:
         cz = sum(s.z for s in sites) / len(sites)
         self.target = pr.Vector3(cx, cy, cz)
         self.default_target = pr.Vector3(cx, cy, cz)
-
-        min_y = min(s.y for s in sites)
 
         max_d = 0.0
         for s in sites:
@@ -281,30 +245,11 @@ class MoleculeViewer:
 
         bounding_radius = max(max_d, mat.effective_sigma * 0.5, 1.0)
 
-        # 1. Perspective FOV frustum-based auto-framing:
-        # Distance guarantees the entire bounding sphere is contained in 45-degree vertical FOV
+        # Perspective FOV frustum-based auto-framing:
         fov_half_rad = math.radians(22.5)
         fit_dist = (bounding_radius / math.sin(fov_half_rad)) * 1.15
         self.distance = max(6.0, fit_dist)
         self.default_distance = self.distance
-
-        # 2. Dynamic Ground Grid: Positioned strictly beneath the lowest atom in the molecule
-        grid_margin = max(1.2, 0.15 * bounding_radius)
-        self.grid_y = min_y - grid_margin
-        self.grid_slices = max(24, min(120, int(math.ceil(bounding_radius * 2.2))))
-        self.grid_spacing = max(1.0, round(bounding_radius / 15.0))
-
-    def next_material(self) -> None:
-        """Switches to the next material in the list."""
-        if len(self.materials) > 1:
-            self.current_idx = (self.current_idx + 1) % len(self.materials)
-            self._update_molecule_bounds()
-
-    def prev_material(self) -> None:
-        """Switches to the previous material in the list."""
-        if len(self.materials) > 1:
-            self.current_idx = (self.current_idx - 1 + len(self.materials)) % len(self.materials)
-            self._update_molecule_bounds()
 
     def reset_view(self) -> None:
         """Resets camera orientation and zoom to defaults."""
@@ -352,17 +297,9 @@ class MoleculeViewer:
             zoom_factor = 1.0 - wheel * 0.1
             self.distance = max(0.5, min(1000.0, self.distance * zoom_factor))
 
-        # 4. Keyboard Navigation
-        if pr.is_key_pressed(pr.KEY_RIGHT) or pr.is_key_pressed(pr.KEY_RIGHT_BRACKET):
-            self.next_material()
-        if pr.is_key_pressed(pr.KEY_LEFT) or pr.is_key_pressed(pr.KEY_LEFT_BRACKET):
-            self.prev_material()
+        # 4. Keyboard Hotkeys
         if pr.is_key_pressed(pr.KEY_R) or pr.is_key_pressed(pr.KEY_SPACE):
             self.reset_view()
-        if pr.is_key_pressed(pr.KEY_G):
-            self.show_grid = not self.show_grid
-        if pr.is_key_pressed(pr.KEY_C):
-            self.show_cloud = not self.show_cloud
 
     def _draw_cylinder_segment(
         self,
@@ -477,7 +414,7 @@ class MoleculeViewer:
 
     def draw_molecule_3d(self, cam_pos: pr.Vector3) -> None:
         """Renders 3D atom spheres and multi-bond cylinders for the active material."""
-        mat = self.current_material
+        mat = self.material
         sites: List[AtomSite] = mat.sites
         bonds = mat.bonds
 
@@ -495,32 +432,14 @@ class MoleculeViewer:
             color = get_atom_color(s.atom_type, s.site_name)
             pr.draw_sphere(pos, radius, color)
 
-    def draw_probability_cloud_3d(self) -> None:
-        """Renders volumetric alpha-blended probability density cloud."""
-        if not self.density_cloud or not self.show_cloud:
-            return
-
-        pr.begin_blend_mode(pr.BLEND_ALPHA)
-        r, g, b = self.density_cloud.color_rgb
-        max_d = max(1e-6, self.density_cloud.max_density)
-
-        for pt, rho in zip(self.density_cloud.points, self.density_cloud.densities):
-            norm_rho = min(1.0, rho / max_d)
-            alpha = int(norm_rho * self.density_cloud.alpha_scale * 255)
-            if alpha > 5:
-                pos = pr.Vector3(pt[0], pt[1], pt[2])
-                pr.draw_sphere(pos, 0.08, pr.Color(r, g, b, alpha))
-
-        pr.end_blend_mode()
-
     def draw_hud(self) -> None:
-        """Renders clean HUD information."""
-        mat = self.current_material
-        bg_dark = pr.Color(16, 20, 26, 225)
-        pr.draw_rectangle(15, 15, 360, 135, bg_dark)
-        pr.draw_rectangle_lines(15, 15, 360, 135, pr.Color(50, 60, 75, 255))
+        """Renders clean, minimal HUD information."""
+        mat = self.material
+        bg_dark = pr.Color(16, 20, 26, 220)
+        pr.draw_rectangle(15, 15, 340, 110, bg_dark)
+        pr.draw_rectangle_lines(15, 15, 340, 110, pr.Color(50, 60, 75, 255))
 
-        title_text = f"Material: {mat.name} ({self.current_idx + 1}/{len(self.materials)})"
+        title_text = f"Material: {mat.name}"
         pr.draw_text(title_text, 25, 25, 18, pr.RAYWHITE)
 
         mode_text = f"Mode: {mat.dimension_mode} | Sites: {len(mat.sites)} | Bonds: {len(mat.bonds)}"
@@ -529,10 +448,8 @@ class MoleculeViewer:
         sigma_text = f"Effective σ: {mat.effective_sigma:.2f} Å | ε/k_B: {mat.effective_epsilon_k:.1f} K"
         pr.draw_text(sigma_text, 25, 70, 14, pr.LIGHTGRAY)
 
-        controls_text = "[Left Drag] Rotate | [Scroll] Zoom | [Right Drag] Pan"
+        controls_text = "[Left Drag] Rotate | [Scroll] Zoom | [Right Drag] Pan | [R] Reset"
         pr.draw_text(controls_text, 25, 95, 12, pr.GRAY)
-        nav_text = "[←/→] Switch Material | [R] Reset | [G] Grid | [C] Cloud"
-        pr.draw_text(nav_text, 25, 115, 12, pr.GRAY)
 
         pr.draw_fps(self.width - 90, 15)
 
@@ -580,23 +497,13 @@ class MoleculeViewer:
 
             pr.begin_mode_3d(camera)
 
-            # 1. Dynamic Floor Reference Grid (Cleanly positioned beneath the molecule)
-            if self.show_grid:
-                pr.rl_push_matrix()
-                pr.rl_translatef(self.target.x, self.grid_y, self.target.z)
-                pr.draw_grid(self.grid_slices, self.grid_spacing)
-                pr.rl_pop_matrix()
-
-            # 2. Shaded Opaque Geometry (Bonds & Atoms)
+            # Shaded Opaque Geometry (Bonds & Atoms)
             if shader_enabled and shader is not None:
                 pr.begin_shader_mode(shader)
                 self.draw_molecule_3d(cam_pos)
                 pr.end_shader_mode()
             else:
                 self.draw_molecule_3d(cam_pos)
-
-            # 3. Translucent Volumetric Probability Cloud
-            self.draw_probability_cloud_3d()
 
             pr.end_mode_3d()
 
@@ -615,25 +522,18 @@ def run_interactive_viewer(
     height: int = 720,
 ) -> None:
     """
-    Helper function to load requested materials and launch the 3D Raylib viewer.
+    Helper function to load the requested material and launch the 3D Raylib viewer.
     """
-    all_avail = MaterialLoader.list_available_materials()
     if not material_names or material_names == ["all"]:
-        to_load = all_avail
+        target_name = "argon"
     else:
-        to_load = material_names
+        target_name = material_names[0]
 
-    materials: List[Material] = []
-    for name in to_load:
-        try:
-            mat = MaterialLoader.load_material(name)
-            materials.append(mat)
-        except Exception as e:
-            print(f"Warning: Failed to load material '{name}': {e}")
+    try:
+        mat = MaterialLoader.load_material(target_name)
+    except Exception as e:
+        print(f"Warning: Failed to load material '{target_name}': {e}. Defaulting to 'argon'.")
+        mat = MaterialLoader.load_material("argon")
 
-    if not materials:
-        print("No valid materials loaded. Defaulting to 'argon'.")
-        materials = [MaterialLoader.load_material("argon")]
-
-    viewer = MoleculeViewer(materials=materials, width=width, height=height)
+    viewer = MoleculeViewer(material=mat, width=width, height=height)
     viewer.run()

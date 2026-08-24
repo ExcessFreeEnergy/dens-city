@@ -1,8 +1,7 @@
 """
 Unit and functional tests for the Raylib 3D Molecular Viewer in dens_city.ui.
 Verifies CPK/publication color mappings, GAFF/Tripos element parsing, orbital camera math,
-multi-bond geometry, scale-invariant auto-framing (up to 128+ sites), dynamic ground grid positioning,
-multi-material navigation, and probability clouds.
+multi-bond geometry, scale-invariant auto-framing (up to 128+ sites), and CLI argument parsing.
 """
 
 import math
@@ -10,7 +9,6 @@ import math
 from dens_city.ui.cli import parse_materials_arg
 from dens_city.ui.viewer import (
     ELEMENT_COLORS,
-    DensityCloud,
     MoleculeViewer,
     get_atom_color,
     get_atom_element,
@@ -68,60 +66,37 @@ def test_element_color_and_radius_mapping():
 def test_molecule_viewer_bounds_and_auto_framing():
     """
     Validates that MoleculeViewer accurately calculates centroid and distance
-    for monoatomic, small molecule, and polymer/liquid crystal materials.
+    for monoatomic, small molecule, and complex fluids.
     """
     argon = MaterialLoader.load_material("argon")
+    viewer_ar = MoleculeViewer(material=argon)
+    assert viewer_ar.material.name == "argon"
+    assert viewer_ar.target.x == 0.0
+    assert viewer_ar.target.y == 0.0
+    assert viewer_ar.target.z == 0.0
+    assert viewer_ar.distance >= 4.5
+
     water = MaterialLoader.load_material("water")
-    benzene = MaterialLoader.load_material("benzene")
+    viewer_w = MoleculeViewer(material=water)
+    assert viewer_w.material.name == "water"
+    assert viewer_w.distance > 0.0
+
     five_cb = MaterialLoader.load_material("5cb")
-
-    viewer = MoleculeViewer(materials=[argon, water, benzene, five_cb])
-    assert len(viewer.materials) == 4
-    assert viewer.current_material.name == "argon"
-
-    # Argon (1 atom at 0,0,0)
-    assert viewer.target.x == 0.0
-    assert viewer.target.y == 0.0
-    assert viewer.target.z == 0.0
-    assert viewer.distance >= 4.5
-
-    # Switch to Water (3 atoms)
-    viewer.next_material()
-    assert viewer.current_material.name == "water"
-    assert viewer.distance > 0.0
-
-    # Switch to Benzene (12 atoms)
-    viewer.next_material()
-    assert viewer.current_material.name == "benzene"
-
-    # Switch to 5CB (38 atoms)
-    viewer.next_material()
-    assert viewer.current_material.name == "5cb"
-    assert viewer.distance > 8.0  # Larger molecule requires larger framing distance
-
-    # Cycle back to Argon
-    viewer.next_material()
-    assert viewer.current_material.name == "argon"
-
-    # Test previous material navigation
-    viewer.prev_material()
-    assert viewer.current_material.name == "5cb"
+    viewer_5cb = MoleculeViewer(material=five_cb)
+    assert viewer_5cb.material.name == "5cb"
+    assert viewer_5cb.distance > 8.0
 
 
-def test_sodium_dodecyl_sulfate_bounds_and_ground_grid():
+def test_sodium_dodecyl_sulfate_bounds():
     """
     Validates that Sodium Dodecyl Sulfate (43 sites, elongated surfactant)
-    is properly centered, auto-framed without frustum clipping, and its ground grid
-    is positioned strictly below the lowest atom elevation.
+    is properly centered and auto-framed without frustum clipping.
     """
     sds = MaterialLoader.load_material("sodium_dodecyl_sulfate")
     assert len(sds.sites) == 43
     assert len(sds.bonds) == 41
 
-    viewer = MoleculeViewer(materials=[sds])
-
-    min_y = min(s.y for s in sds.sites)
-    assert viewer.grid_y < min_y, f"Grid altitude {viewer.grid_y} must be strictly below min_y {min_y}"
+    viewer = MoleculeViewer(material=sds)
     assert viewer.distance >= 25.0, f"Camera distance {viewer.distance} must scale for ~20 Å SDS span"
 
     # Sulfate head group has 3 S=O double bonds
@@ -131,7 +106,7 @@ def test_sodium_dodecyl_sulfate_bounds_and_ground_grid():
 
 def test_large_128_site_molecule_scaling():
     """
-    Validates scale-invariant auto-framing and grid sizing for large 128-site polymers/macromolecules.
+    Validates scale-invariant auto-framing for large 128-site polymers/macromolecules.
     """
     sites = []
     for i in range(128):
@@ -163,16 +138,12 @@ def test_large_128_site_molecule_scaling():
         temperature_k=300.0,
     )
 
-    viewer = MoleculeViewer(materials=[mat_128])
-    assert len(viewer.current_material.sites) == 128
+    viewer = MoleculeViewer(material=mat_128)
+    assert len(viewer.material.sites) == 128
     # Target must be at center of chain (z ~ 50.8 Å)
     assert math.isclose(viewer.target.z, 50.8, abs_tol=1.0)
     # Camera distance must scale to contain the full ~102 Å bounding sphere
     assert viewer.distance > 100.0, f"Expected camera distance > 100 Å, got {viewer.distance}"
-    # Ground grid must be beneath the lowest Y coordinate
-    min_y = min(s.y for s in sites)
-    assert viewer.grid_y < min_y
-    assert viewer.grid_slices >= 80
 
 
 def test_nitrogen_and_co2_multi_bond_detection():
@@ -193,28 +164,10 @@ def test_nitrogen_and_co2_multi_bond_detection():
     assert has_triple, "5CB must contain a triple bond in its nitrile group"
 
 
-def test_probability_density_cloud_structure():
-    """Validates DensityCloud instantiation and viewer attachment."""
-    water = MaterialLoader.load_material("water")
-    viewer = MoleculeViewer(materials=[water])
-
-    cloud = DensityCloud(
-        points=[(0.0, 0.0, 1.0), (0.0, 0.5, 1.2)],
-        densities=[0.02, 0.035],
-        color_rgb=(80, 180, 255),
-        max_density=0.035,
-        alpha_scale=0.6,
-    )
-    viewer.set_probability_cloud(cloud)
-    assert viewer.density_cloud is not None
-    assert len(viewer.density_cloud.points) == 2
-    assert viewer.density_cloud.max_density == 0.035
-
-
 def test_camera_spherical_coordinate_math():
     """Validates camera 3D position calculation from spherical azimuth/elevation."""
     water = MaterialLoader.load_material("water")
-    viewer = MoleculeViewer(materials=[water])
+    viewer = MoleculeViewer(material=water)
 
     viewer.distance = 10.0
     viewer.elevation = 0.0

@@ -7,7 +7,6 @@ from dens_city.ui.cli import main
 from dens_city.ui.viewer import (
     ELEMENT_COLORS,
     ELEMENT_RADII,
-    DensityCloud,
     MoleculeViewer,
     get_atom_color,
     get_atom_element,
@@ -17,7 +16,6 @@ from dens_city.ui.viewer import (
 
 __all__ = [
     "MoleculeViewer",
-    "DensityCloud",
     "run_interactive_viewer",
     "main",
     "ELEMENT_COLORS",
