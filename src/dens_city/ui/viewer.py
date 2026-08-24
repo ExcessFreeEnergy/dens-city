@@ -1,7 +1,8 @@
 """
 High-performance 3D molecular viewer implemented in Raylib (pyray).
-Renders atom sites with realistic ball-and-stick proportions, camera-aligned multi-bond cylinder geometry
-(triple, double, single, aromatic), and Phong specular highlights for arbitrary molecules up to 128+ sites.
+Integrates variational cDFT and Boltzmann Generator workflows with non-blocking execution,
+real-time 2D density profile overlay, MCMC relaxation visualizer, bottom control deck,
+and right-edge telemetry output panel.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import pyray as pr
 
+from dens_city.ui.worker import CDFTBGWorker
 from dens_city.utils.materials import AtomSite, Material, MaterialLoader
 
 # Element color palette: (R, G, B, A)
@@ -181,8 +183,9 @@ def get_atom_radius(atom_type: str, site_name: str = "", sigma: float = 3.4) -> 
 
 class MoleculeViewer:
     """
-    Raylib 3D molecular renderer with camera-aligned multi-bond cylinder geometry,
-    scale-invariant auto-framing, and Phong specular highlights.
+    Raylib 3D molecular renderer with non-blocking cDFT and Boltzmann Generator workflows,
+    real-time 2D density profile overlay, MCMC relaxation visualizer, bottom control deck,
+    and right-edge telemetry panel.
     """
 
     def __init__(
@@ -190,7 +193,7 @@ class MoleculeViewer:
         material: Union[Material, List[Material]],
         width: int = 1280,
         height: int = 720,
-        title: str = "dens-city 3D Molecular Viewer",
+        title: str = "dens-city 3D Molecular Engine",
     ):
         if isinstance(material, list):
             if not material:
@@ -211,6 +214,13 @@ class MoleculeViewer:
         self.default_distance = 15.0
         self.default_target = pr.Vector3(0.0, 0.0, 0.0)
 
+        # Worker thread & ZeroMQ bridge
+        self.worker = CDFTBGWorker(material=self.material, cdft_steps=100, bg_mcmc_steps=40)
+        self.telemetry = self.worker.telemetry
+
+        # 3D Coordinates (can be updated live during MCMC relaxation)
+        self.rendered_coords: List[Tuple[float, float, float]] = [(s.x, s.y, s.z) for s in self.material.sites]
+
         self._update_molecule_bounds()
 
     def _update_molecule_bounds(self) -> None:
@@ -228,17 +238,17 @@ class MoleculeViewer:
             self.default_distance = self.distance
             return
 
-        cx = sum(s.x for s in sites) / len(sites)
-        cy = sum(s.y for s in sites) / len(sites)
-        cz = sum(s.z for s in sites) / len(sites)
+        cx = sum(c[0] for c in self.rendered_coords) / len(self.rendered_coords)
+        cy = sum(c[1] for c in self.rendered_coords) / len(self.rendered_coords)
+        cz = sum(c[2] for c in self.rendered_coords) / len(self.rendered_coords)
         self.target = pr.Vector3(cx, cy, cz)
         self.default_target = pr.Vector3(cx, cy, cz)
 
         max_d = 0.0
-        for s in sites:
-            dx = s.x - cx
-            dy = s.y - cy
-            dz = s.z - cz
+        for c in self.rendered_coords:
+            dx = c[0] - cx
+            dy = c[1] - cy
+            dz = c[2] - cz
             d = math.sqrt(dx * dx + dy * dy + dz * dz)
             if d > max_d:
                 max_d = d
@@ -272,8 +282,11 @@ class MoleculeViewer:
 
     def handle_input(self) -> None:
         """Handles mouse drag, scroll zoom, and keyboard hotkeys."""
-        # 1. Left Mouse Button Hold & Drag -> Orbit
-        if pr.is_mouse_button_down(pr.MOUSE_BUTTON_LEFT):
+        # 1. Left Mouse Button Hold & Drag -> Orbit (ignore if clicking in bottom UI deck)
+        mouse_pos = pr.get_mouse_position()
+        in_bottom_deck = mouse_pos.y >= (self.height - 80) and mouse_pos.x >= 20 and mouse_pos.x <= (self.width - 20)
+
+        if pr.is_mouse_button_down(pr.MOUSE_BUTTON_LEFT) and not in_bottom_deck:
             delta = pr.get_mouse_delta()
             sensitivity = 0.005
             self.azimuth += delta.x * sensitivity
@@ -298,8 +311,17 @@ class MoleculeViewer:
             self.distance = max(0.5, min(1000.0, self.distance * zoom_factor))
 
         # 4. Keyboard Hotkeys
-        if pr.is_key_pressed(pr.KEY_R) or pr.is_key_pressed(pr.KEY_SPACE):
+        if pr.is_key_pressed(pr.KEY_R):
             self.reset_view()
+        if pr.is_key_pressed(pr.KEY_SPACE):
+            # Play / Pause toggling
+            if self.worker.is_running:
+                self.worker.cancel()
+            else:
+                if self.telemetry.state in ("WAITING_CDFT", "RUNNING_CDFT"):
+                    self.worker.solve_cdft()
+                elif self.telemetry.state in ("CDFT_CONVERGED", "RUNNING_BG"):
+                    self.worker.solve_bg()
 
     def _draw_cylinder_segment(
         self,
@@ -322,16 +344,16 @@ class MoleculeViewer:
         self,
         s1: AtomSite,
         s2: AtomSite,
+        p1_tuple: Tuple[float, float, float],
+        p2_tuple: Tuple[float, float, float],
         bond_type: str,
         cam_pos: pr.Vector3,
     ) -> None:
         """
-        Renders accurate multi-bond cylinder geometry (triple, double, single, aromatic).
-        Multi-bond offsets are oriented perpendicular to the camera line-of-sight to ensure
-        all parallel bond cylinders remain visible from any rotation angle without self-occlusion.
+        Renders camera-aligned multi-bond cylinders (triple, double, single, aromatic).
         """
-        p1 = pr.Vector3(s1.x, s1.y, s1.z)
-        p2 = pr.Vector3(s2.x, s2.y, s2.z)
+        p1 = pr.Vector3(p1_tuple[0], p1_tuple[1], p1_tuple[2])
+        p2 = pr.Vector3(p2_tuple[0], p2_tuple[1], p2_tuple[2])
 
         c1 = get_atom_color(s1.atom_type, s1.site_name)
         c2 = get_atom_color(s2.atom_type, s2.site_name)
@@ -345,7 +367,6 @@ class MoleculeViewer:
 
         ux, uy, uz = vx / length, vy / length, vz / length
 
-        # Compute line-of-sight view vector from bond midpoint to camera
         mid_x = 0.5 * (p1.x + p2.x)
         mid_y = 0.5 * (p1.y + p2.y)
         mid_z = 0.5 * (p1.z + p2.z)
@@ -359,7 +380,6 @@ class MoleculeViewer:
         else:
             cvx, cvy, cvz = 0.0, 1.0, 0.0
 
-        # Cross product of bond axis u and view ray cv gives camera-facing perpendicular normal
         nx = uy * cvz - uz * cvy
         ny = uz * cvx - ux * cvz
         nz = ux * cvy - uy * cvx
@@ -368,7 +388,6 @@ class MoleculeViewer:
         if n_len > 1e-3:
             nx, ny, nz = nx / n_len, ny / n_len, nz / n_len
         else:
-            # Fallback if looking directly down the bond axis
             ax, ay, az = (0.0, 1.0, 0.0) if abs(uy) < 0.9 else (1.0, 0.0, 0.0)
             nx = uy * az - uz * ay
             ny = uz * ax - ux * az
@@ -379,36 +398,27 @@ class MoleculeViewer:
         bt = str(bond_type).strip().lower()
 
         if bt in ("3", "tr", "triple"):
-            # Triple Bond: 3 parallel cylinders
             offset = 0.095
             rad = 0.035
-            # Center cylinder
             self._draw_cylinder_segment(p1, p2, rad, c1, c2)
-
-            # Offset cylinder +
             p1_plus = pr.Vector3(p1.x + nx * offset, p1.y + ny * offset, p1.z + nz * offset)
             p2_plus = pr.Vector3(p2.x + nx * offset, p2.y + ny * offset, p2.z + nz * offset)
             self._draw_cylinder_segment(p1_plus, p2_plus, rad, c1, c2)
-
-            # Offset cylinder -
             p1_minus = pr.Vector3(p1.x - nx * offset, p1.y - ny * offset, p1.z - nz * offset)
             p2_minus = pr.Vector3(p2.x - nx * offset, p2.y - ny * offset, p2.z - nz * offset)
             self._draw_cylinder_segment(p1_minus, p2_minus, rad, c1, c2)
 
         elif bt in ("2", "db", "double", "ar", "aromatic"):
-            # Double / Aromatic Bond: 2 parallel cylinders
             offset = 0.065
             rad = 0.040
             p1_plus = pr.Vector3(p1.x + nx * offset, p1.y + ny * offset, p1.z + nz * offset)
             p2_plus = pr.Vector3(p2.x + nx * offset, p2.y + ny * offset, p2.z + nz * offset)
             self._draw_cylinder_segment(p1_plus, p2_plus, rad, c1, c2)
-
             p1_minus = pr.Vector3(p1.x - nx * offset, p1.y - ny * offset, p1.z - nz * offset)
             p2_minus = pr.Vector3(p2.x - nx * offset, p2.y - ny * offset, p2.z - nz * offset)
             self._draw_cylinder_segment(p1_minus, p2_minus, rad, c1, c2)
 
         else:
-            # Single Bond: 1 central cylinder
             rad = 0.060
             self._draw_cylinder_segment(p1, p2, rad, c1, c2)
 
@@ -417,27 +427,46 @@ class MoleculeViewer:
         mat = self.material
         sites: List[AtomSite] = mat.sites
         bonds = mat.bonds
+        coords = self.rendered_coords
 
         # 1. Draw Bonds (Cylinders with camera-aligned multi-bond geometry)
         for b in bonds:
             i, j = b[0], b[1]
             b_type = b[2] if len(b) > 2 else "1"
-            if 0 <= i < len(sites) and 0 <= j < len(sites):
-                self.draw_bond(sites[i], sites[j], b_type, cam_pos)
+            if 0 <= i < len(sites) and 0 <= j < len(sites) and i < len(coords) and j < len(coords):
+                self.draw_bond(sites[i], sites[j], coords[i], coords[j], b_type, cam_pos)
 
         # 2. Draw Atom Sites (Spheres with ball-and-stick scaling)
-        for s in sites:
-            pos = pr.Vector3(s.x, s.y, s.z)
-            radius = get_atom_radius(s.atom_type, s.site_name, s.sigma)
-            color = get_atom_color(s.atom_type, s.site_name)
-            pr.draw_sphere(pos, radius, color)
+        for idx, s in enumerate(sites):
+            if idx < len(coords):
+                c = coords[idx]
+                pos = pr.Vector3(c[0], c[1], c[2])
+                radius = get_atom_radius(s.atom_type, s.site_name, s.sigma)
+                color = get_atom_color(s.atom_type, s.site_name)
+                pr.draw_sphere(pos, radius, color)
+
+    def draw_bg_spatial_prior_overlay(self) -> None:
+        """Renders pulsing faint spatial prior spheres around atoms during MCMC relaxation."""
+        if self.telemetry.state not in ("RUNNING_BG", "COMPLETE"):
+            return
+
+        pr.begin_blend_mode(pr.BLEND_ALPHA)
+        pulse = math.sin(pr.get_time() * 4.0)
+        alpha = int(25 + 15 * pulse) if self.telemetry.state == "RUNNING_BG" else 30
+        prior_color = pr.Color(80, 160, 255, alpha)
+
+        for c in self.rendered_coords:
+            pos = pr.Vector3(c[0], c[1], c[2])
+            pr.draw_sphere(pos, 0.45, prior_color)
+
+        pr.end_blend_mode()
 
     def draw_hud(self) -> None:
-        """Renders clean, minimal HUD information."""
+        """Renders top-left HUD with State badge and camera controls."""
         mat = self.material
-        bg_dark = pr.Color(16, 20, 26, 220)
-        pr.draw_rectangle(15, 15, 340, 110, bg_dark)
-        pr.draw_rectangle_lines(15, 15, 340, 110, pr.Color(50, 60, 75, 255))
+        bg_dark = pr.Color(16, 20, 26, 225)
+        pr.draw_rectangle(15, 15, 370, 140, bg_dark)
+        pr.draw_rectangle_lines(15, 15, 370, 140, pr.Color(50, 60, 75, 255))
 
         title_text = f"Material: {mat.name}"
         pr.draw_text(title_text, 25, 25, 18, pr.RAYWHITE)
@@ -448,13 +477,260 @@ class MoleculeViewer:
         sigma_text = f"Effective σ: {mat.effective_sigma:.2f} Å | ε/k_B: {mat.effective_epsilon_k:.1f} K"
         pr.draw_text(sigma_text, 25, 70, 14, pr.LIGHTGRAY)
 
-        controls_text = "[Left Drag] Rotate | [Scroll] Zoom | [Right Drag] Pan | [R] Reset"
-        pr.draw_text(controls_text, 25, 95, 12, pr.GRAY)
+        # Pipeline Status Badge
+        st = self.telemetry.state
+        state_color = pr.Color(245, 205, 35, 255)  # WAITING
+        if st == "RUNNING_CDFT":
+            state_color = pr.Color(80, 200, 255, 255)
+        elif st == "CDFT_CONVERGED":
+            state_color = pr.Color(60, 220, 100, 255)
+        elif st == "RUNNING_BG":
+            state_color = pr.Color(200, 100, 255, 255)
+        elif st == "COMPLETE":
+            state_color = pr.Color(40, 240, 80, 255)
+
+        pr.draw_text("State: ", 25, 92, 15, pr.LIGHTGRAY)
+        pr.draw_text(st, 75, 92, 15, state_color)
+
+        controls_text = "[Left Drag] Rotate | [Scroll] Zoom | [R] Reset | [Space] Play/Pause"
+        pr.draw_text(controls_text, 25, 120, 11, pr.GRAY)
 
         pr.draw_fps(self.width - 90, 15)
 
+    def draw_cdft_density_overlay(self) -> None:
+        """Renders real-time 2D line graph of spatial density profile rho(z) in bottom-left."""
+        if not self.telemetry.rho_z or len(self.telemetry.rho_z) < 2:
+            return
+
+        box_x, box_y, box_w, box_h = 20, self.height - 245, 320, 155
+        bg_dark = pr.Color(14, 18, 24, 230)
+        pr.draw_rectangle(box_x, box_y, box_w, box_h, bg_dark)
+        pr.draw_rectangle_lines(box_x, box_y, box_w, box_h, pr.Color(45, 55, 70, 255))
+
+        title = "cDFT Density Profile ρ(z)"
+        pr.draw_text(title, box_x + 10, box_y + 8, 13, pr.RAYWHITE)
+
+        # Plot area
+        plot_x = box_x + 35
+        plot_y = box_y + 30
+        plot_w = box_w - 50
+        plot_h = box_h - 55
+
+        # Draw axes
+        pr.draw_line(plot_x, plot_y, plot_x, plot_y + plot_h, pr.DARKGRAY)
+        pr.draw_line(plot_x, plot_y + plot_h, plot_x + plot_w, plot_y + plot_h, pr.DARKGRAY)
+
+        rho_arr = self.telemetry.rho_z
+        max_rho = max(max(rho_arr), self.material.bulk_density_a3 * 1.5, 1e-4)
+
+        # Draw horizontal bulk density dashed line
+        bulk_rho = self.material.bulk_density_a3
+        bulk_y = int(plot_y + plot_h - (bulk_rho / max_rho) * plot_h)
+        if plot_y <= bulk_y <= (plot_y + plot_h):
+            pr.draw_line(plot_x, bulk_y, plot_x + plot_w, bulk_y, pr.Color(80, 100, 120, 200))
+            pr.draw_text("ρ_bulk", plot_x + plot_w - 40, bulk_y - 12, 10, pr.Color(120, 140, 160, 255))
+
+        # Plot points & curve
+        n_pts = len(rho_arr)
+        prev_px, prev_py = -1, -1
+        line_color = pr.Color(50, 220, 160, 255)
+
+        for idx, rho_val in enumerate(rho_arr):
+            px = int(plot_x + (idx / (n_pts - 1)) * plot_w)
+            py = int(plot_y + plot_h - (min(max_rho, max(0.0, rho_val)) / max_rho) * plot_h)
+
+            if prev_px != -1:
+                pr.draw_line(prev_px, prev_py, px, py, line_color)
+            prev_px, prev_py = px, py
+
+        # Peak annotation
+        peak_text = f"Peak: {max(rho_arr):.4f} Å⁻³"
+        pr.draw_text(peak_text, box_x + 10, box_y + box_h - 18, 11, pr.LIGHTGRAY)
+        p_text = f"P_wall: {self.telemetry.wall_pressure_bar:.1f} bar"
+        pr.draw_text(p_text, box_x + box_w - 120, box_y + box_h - 18, 11, pr.Color(100, 200, 255, 255))
+
+    def draw_telemetry_panel(self) -> None:
+        """Renders right-edge monospace telemetry panel once computations start."""
+        t = self.telemetry
+        panel_w = 345
+        panel_h = 265
+        panel_x = self.width - panel_w - 20
+        panel_y = 50
+
+        bg_dark = pr.Color(14, 18, 24, 235)
+        pr.draw_rectangle(panel_x, panel_y, panel_w, panel_h, bg_dark)
+        pr.draw_rectangle_lines(panel_x, panel_y, panel_w, panel_h, pr.Color(50, 65, 80, 255))
+
+        pr.draw_text("TELEMETRY OUTPUT", panel_x + 15, panel_y + 12, 14, pr.RAYWHITE)
+        pr.draw_line(panel_x + 15, panel_y + 32, panel_x + panel_w - 15, panel_y + 32, pr.Color(40, 50, 65, 255))
+
+        y = panel_y + 40
+        line_spacing = 22
+
+        # 1. Thermodynamics
+        pr.draw_text("Thermodynamics:", panel_x + 15, y, 12, pr.Color(110, 180, 255, 255))
+        y += line_spacing - 4
+        free_en_text = f"  Excess Free Energy (Ω) : {t.excess_free_energy:8.2f} k_BT"
+        pr.draw_text(free_en_text, panel_x + 15, y, 12, pr.LIGHTGRAY)
+        y += line_spacing - 4
+        p_wall_text = f"  Wall Pressure (P_wall) : {t.wall_pressure_bar:8.2f} bar"
+        pr.draw_text(p_wall_text, panel_x + 15, y, 12, pr.LIGHTGRAY)
+
+        y += line_spacing
+        # 2. Structural Health
+        pr.draw_text("Structural Health:", panel_x + 15, y, 12, pr.Color(110, 180, 255, 255))
+        y += line_spacing - 4
+        clash_text = f"  Steric Clashes         : {t.steric_clashes}"
+        clash_col = pr.Color(50, 220, 120, 255) if t.steric_clashes == 0 else pr.Color(240, 160, 40, 255)
+        pr.draw_text(clash_text, panel_x + 15, y, 12, clash_col)
+        y += line_spacing - 4
+        acc_text = f"  Torsional Acceptance   : {t.torsional_acceptance_pct:5.1f} %"
+        pr.draw_text(acc_text, panel_x + 15, y, 12, pr.LIGHTGRAY)
+
+        y += line_spacing
+        # 3. Geometry
+        pr.draw_text("Geometry:", panel_x + 15, y, 12, pr.Color(110, 180, 255, 255))
+        y += line_spacing - 4
+        rg_text = f"  Radius of Gyration (Rg): {t.radius_of_gyration:6.2f} Å"
+        pr.draw_text(rg_text, panel_x + 15, y, 12, pr.LIGHTGRAY)
+        y += line_spacing - 4
+        ree_text = f"  End-to-End Dist (Ree)  : {t.end_to_end_dist:6.2f} Å"
+        pr.draw_text(ree_text, panel_x + 15, y, 12, pr.LIGHTGRAY)
+
+        y += line_spacing + 2
+        pr.draw_line(panel_x + 15, y - 4, panel_x + panel_w - 15, y - 4, pr.Color(40, 50, 65, 255))
+        # 4. Material Viability
+        viab_col = (
+            pr.Color(50, 220, 100, 255)
+            if t.is_wetting and t.coating_viability != "PENDING"
+            else pr.Color(230, 60, 60, 255)
+            if t.coating_viability != "PENDING"
+            else pr.GRAY
+        )
+        viab_text = f"Coating Viability: {t.coating_viability}"
+        pr.draw_text(viab_text, panel_x + 15, y, 13, viab_col)
+
+    def draw_control_deck(self) -> None:
+        """Renders minimalist, semi-transparent bottom execution control deck."""
+        deck_x = 20
+        deck_y = self.height - 75
+        deck_w = self.width - 40
+        deck_h = 58
+
+        bg_deck = pr.Color(14, 18, 24, 230)
+        pr.draw_rectangle(deck_x, deck_y, deck_w, deck_h, bg_deck)
+        pr.draw_rectangle_lines(deck_x, deck_y, deck_w, deck_h, pr.Color(45, 55, 70, 255))
+
+        mouse_pos = pr.get_mouse_position()
+        mouse_clicked = pr.is_mouse_button_pressed(pr.MOUSE_BUTTON_LEFT)
+
+        curr_x = deck_x + 15
+        btn_y = deck_y + 12
+        btn_h = 34
+
+        is_running_cdft = self.telemetry.state == "RUNNING_CDFT"
+        is_running_bg = self.telemetry.state == "RUNNING_BG"
+        cdft_converged = self.telemetry.state in ("CDFT_CONVERGED", "RUNNING_BG", "COMPLETE")
+
+        # 1. [Step cDFT] Button
+        btn_step_cdft = pr.Rectangle(curr_x, btn_y, 95, btn_h)
+        hover1 = pr.check_collision_point_rec(mouse_pos, btn_step_cdft)
+        col1 = pr.Color(40, 50, 65, 255) if not hover1 else pr.Color(55, 70, 90, 255)
+        pr.draw_rectangle_rec(btn_step_cdft, col1)
+        pr.draw_rectangle_lines_ex(btn_step_cdft, 1, pr.Color(70, 85, 105, 255))
+        pr.draw_text("Step cDFT", curr_x + 14, btn_y + 10, 13, pr.RAYWHITE)
+
+        if hover1 and mouse_clicked and not self.worker.is_running:
+            self.worker.step_cdft()
+
+        curr_x += 105
+
+        # 2. [Solve cDFT] / [Cancel] Button
+        btn_solve_cdft = pr.Rectangle(curr_x, btn_y, 105, btn_h)
+        hover2 = pr.check_collision_point_rec(mouse_pos, btn_solve_cdft)
+        if is_running_cdft:
+            col2 = pr.Color(180, 45, 45, 255) if not hover2 else pr.Color(210, 60, 60, 255)
+            label2 = "Cancel"
+        else:
+            col2 = pr.Color(30, 80, 130, 255) if not hover2 else pr.Color(40, 105, 170, 255)
+            label2 = "Solve cDFT"
+
+        pr.draw_rectangle_rec(btn_solve_cdft, col2)
+        pr.draw_rectangle_lines_ex(btn_solve_cdft, 1, pr.Color(80, 130, 180, 255))
+        pr.draw_text(label2, curr_x + (28 if is_running_cdft else 15), btn_y + 10, 13, pr.RAYWHITE)
+
+        if hover2 and mouse_clicked:
+            if is_running_cdft:
+                self.worker.cancel()
+            elif not self.worker.is_running:
+                self.worker.solve_cdft()
+
+        curr_x += 120
+
+        # 3. Horizontal cDFT Progress Bar
+        bar_w = 200
+        bar_h = 16
+        bar_y = btn_y + 9
+        pr.draw_rectangle(curr_x, bar_y, bar_w, bar_h, pr.Color(25, 30, 40, 255))
+        pr.draw_rectangle_lines(curr_x, bar_y, bar_w, bar_h, pr.Color(50, 60, 75, 255))
+
+        prog = max(0.0, min(1.0, self.telemetry.cdft_progress))
+        fill_w = int(bar_w * prog)
+        fill_col = pr.Color(40, 180, 120, 255) if prog >= 1.0 else pr.Color(50, 150, 240, 255)
+        pr.draw_rectangle(curr_x, bar_y, fill_w, bar_h, fill_col)
+
+        pct_text = f"{int(prog * 100)}%"
+        pr.draw_text(pct_text, curr_x + bar_w + 8, btn_y + 10, 12, pr.LIGHTGRAY)
+
+        curr_x += bar_w + 55
+
+        # 4. [Step MCMC] Button (Grayed out until cDFT 100%)
+        btn_step_mcmc = pr.Rectangle(curr_x, btn_y, 100, btn_h)
+        hover3 = pr.check_collision_point_rec(mouse_pos, btn_step_mcmc)
+        if cdft_converged:
+            col3 = pr.Color(50, 45, 75, 255) if not hover3 else pr.Color(70, 60, 105, 255)
+            text_col3 = pr.RAYWHITE
+        else:
+            col3 = pr.Color(25, 28, 35, 255)
+            text_col3 = pr.DARKGRAY
+
+        pr.draw_rectangle_rec(btn_step_mcmc, col3)
+        pr.draw_rectangle_lines_ex(btn_step_mcmc, 1, pr.Color(50, 60, 75, 255))
+        pr.draw_text("Step MCMC", curr_x + 12, btn_y + 10, 13, text_col3)
+
+        if hover3 and mouse_clicked and cdft_converged and not self.worker.is_running:
+            self.worker.solve_bg()
+
+        curr_x += 110
+
+        # 5. [Fully Solve BG] / [Cancel] Button (Grayed out until cDFT 100%)
+        btn_solve_bg = pr.Rectangle(curr_x, btn_y, 130, btn_h)
+        hover4 = pr.check_collision_point_rec(mouse_pos, btn_solve_bg)
+        if is_running_bg:
+            col4 = pr.Color(180, 45, 45, 255) if not hover4 else pr.Color(210, 60, 60, 255)
+            label4 = "Cancel"
+            text_col4 = pr.RAYWHITE
+        elif cdft_converged:
+            col4 = pr.Color(85, 45, 135, 255) if not hover4 else pr.Color(115, 60, 180, 255)
+            label4 = "Fully Solve BG"
+            text_col4 = pr.RAYWHITE
+        else:
+            col4 = pr.Color(25, 28, 35, 255)
+            label4 = "Fully Solve BG"
+            text_col4 = pr.DARKGRAY
+
+        pr.draw_rectangle_rec(btn_solve_bg, col4)
+        pr.draw_rectangle_lines_ex(btn_solve_bg, 1, pr.Color(60, 65, 80, 255))
+        pr.draw_text(label4, curr_x + (42 if is_running_bg else 18), btn_y + 10, 13, text_col4)
+
+        if hover4 and mouse_clicked and cdft_converged:
+            if is_running_bg:
+                self.worker.cancel()
+            elif not self.worker.is_running:
+                self.worker.solve_bg()
+
     def run(self) -> None:
-        """Main window loop."""
+        """Main window loop with non-blocking ZeroMQ polling and 60 FPS rendering."""
         pr.set_config_flags(pr.FLAG_MSAA_4X_HINT | pr.FLAG_WINDOW_RESIZABLE)
         pr.init_window(self.width, self.height, self.title)
         pr.set_target_fps(60)
@@ -478,9 +754,14 @@ class MoleculeViewer:
             pr.CAMERA_PERSPECTIVE,
         )
 
-        bg_color = pr.Color(18, 21, 28, 255)
+        bg_color = pr.Color(16, 19, 25, 255)
 
         while not pr.window_should_close():
+            # 1. Non-blockingly poll ZeroMQ SUB socket & queue for background worker updates
+            self.telemetry = self.worker.poll_telemetry()
+            if self.telemetry.current_coords:
+                self.rendered_coords = self.telemetry.current_coords
+
             self.handle_input()
 
             cam_pos = self.get_camera_position()
@@ -495,6 +776,7 @@ class MoleculeViewer:
             pr.begin_drawing()
             pr.clear_background(bg_color)
 
+            # 3D Viewport
             pr.begin_mode_3d(camera)
 
             # Shaded Opaque Geometry (Bonds & Atoms)
@@ -505,12 +787,21 @@ class MoleculeViewer:
             else:
                 self.draw_molecule_3d(cam_pos)
 
+            # BG Pulsing Spatial Prior Spheres
+            self.draw_bg_spatial_prior_overlay()
+
             pr.end_mode_3d()
 
+            # 2D Overlays & HUD Elements
             self.draw_hud()
+            self.draw_cdft_density_overlay()
+            self.draw_telemetry_panel()
+            self.draw_control_deck()
 
             pr.end_drawing()
 
+        # Clean shutdown
+        self.worker.close()
         if shader_enabled and shader is not None:
             pr.unload_shader(shader)
         pr.close_window()

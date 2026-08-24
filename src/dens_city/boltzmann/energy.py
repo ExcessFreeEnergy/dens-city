@@ -211,7 +211,7 @@ class MicroscopicEnergy:
         dr = r - self.r_cut
 
         # 1. Lennard-Jones 12-6 pairwise Shifted-Force term via native ALU products
-        sr = self.s_ij / r
+        sr = (self.s_ij / r).minimum(10.0)
         sr2 = sr * sr
         sr6 = sr2 * sr2 * sr2
         sr12 = sr6 * sr6
