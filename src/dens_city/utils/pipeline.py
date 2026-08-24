@@ -5,15 +5,17 @@ with structured error classification and state serialization.
 """
 
 import math
+import multiprocessing
 import os
 import queue
 import threading
 import time
 import traceback
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from tinygrad import nn
@@ -468,69 +470,224 @@ class AsyncArtifactWriter:
         self._thread.join()
 
 
-def process_batched_materials(
-    batch_tasks: List[MaterialPipelineTask],
-    batch_size: int = 512,
+def _load_single_material_worker_unpack(args: Tuple) -> Tuple[int, Optional[Material], Optional[str]]:
+    """
+    Unpacks task arguments and executes MaterialLoader.load_material in an isolated
+    ProcessPool worker process, bypassing Python GIL for fast parallel regex and EOS solves.
+    """
+    task_idx, mat_path_or_name, temp_k, density, p_bar, mu_kbt = args
+    try:
+        mat = MaterialLoader.load_material(
+            material_name_or_path=mat_path_or_name,
+            temperature_k=temp_k,
+            bulk_density_a3=density,
+            pressure_bar=p_bar,
+            chemical_potential_kbt=mu_kbt,
+        )
+        return task_idx, mat, None
+    except Exception as e:
+        return task_idx, None, str(e)
+
+
+@dataclass
+class PreparedMolecularBatch:
+    """
+    Encapsulates a device-ready batch where all CPU-side parsing, EOS root-finding,
+    padding, and tensor allocation have already been assembled in parallel.
+    """
+
+    tasks: List[MaterialPipelineTask]
+    batch_size: int
+    loaded_materials: List[Material]
+    task_indices: List[int]
+    results_map: Dict[int, MaterialPipelineResult]
+    mol_batch: Optional[MolecularBatch] = None
+    batched_cdft: Optional[BatchedTinyCDFT] = None
+    energy_fn: Optional[MicroscopicEnergy] = None
+    t_assembly_start: float = field(default_factory=time.perf_counter)
+
+
+class AsyncBatchPrefetcher:
+    """
+    Double-buffered background batch loader and prefetcher.
+    Spawns a ProcessPoolExecutor to parse .mol2 files and solve EOS concurrently across CPU cores,
+    while running a background threading.Thread that constructs device tensors and enqueues
+    PreparedMolecularBatch objects into a bounded queue (maxsize=2).
+    """
+
+    def __init__(
+        self,
+        task_chunks: List[List[MaterialPipelineTask]],
+        batch_size: int = 512,
+        max_workers: Optional[int] = None,
+        prefetch_depth: int = 2,
+    ):
+        self.task_chunks = task_chunks
+        self.batch_size = batch_size
+        self.max_workers = max_workers or min(32, os.cpu_count() or 4)
+        self.queue: queue.Queue = queue.Queue(maxsize=prefetch_depth)
+        self._shutdown_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> "AsyncBatchPrefetcher":
+        self._thread = threading.Thread(target=self._worker_loop, daemon=True, name="AsyncBatchPrefetcher")
+        self._thread.start()
+        return self
+
+    def _worker_loop(self) -> None:
+        try:
+            mp_ctx = multiprocessing.get_context("spawn")
+            with ProcessPoolExecutor(max_workers=self.max_workers, mp_context=mp_ctx) as executor:
+                for chunk in self.task_chunks:
+                    if self._shutdown_event.is_set():
+                        break
+
+                    prepared = self._assemble_batch(chunk, executor)
+                    while not self._shutdown_event.is_set():
+                        try:
+                            self.queue.put(prepared, timeout=0.1)
+                            break
+                        except queue.Full:
+                            continue
+        except Exception:
+            traceback.print_exc()
+        finally:
+            while not self._shutdown_event.is_set():
+                try:
+                    self.queue.put(None, timeout=0.1)
+                    break
+                except queue.Full:
+                    continue
+
+    def _assemble_batch(
+        self,
+        chunk: List[MaterialPipelineTask],
+        executor: ProcessPoolExecutor,
+    ) -> PreparedMolecularBatch:
+        t_start = time.perf_counter()
+        results_map: Dict[int, MaterialPipelineResult] = {}
+        loaded_materials: List[Material] = []
+        task_indices: List[int] = []
+
+        worker_args = [
+            (
+                idx,
+                task.material_path_or_name,
+                task.temperature_k,
+                task.bulk_density_a3,
+                task.pressure_bar,
+                task.chemical_potential_kbt,
+            )
+            for idx, task in enumerate(chunk)
+        ]
+
+        results = list(executor.map(_load_single_material_worker_unpack, worker_args))
+
+        for idx, mat, err in results:
+            task = chunk[idx]
+            mat_input = task.material_path_or_name
+            mat_basename = Path(mat_input).stem if os.path.exists(mat_input) or "/" in mat_input else str(mat_input)
+            mat_out_dir = os.path.join(task.out_dir, mat_basename)
+            os.makedirs(mat_out_dir, exist_ok=True)
+
+            if mat is not None:
+                loaded_materials.append(mat)
+                task_indices.append(idx)
+            else:
+                status = (
+                    PipelineStatus.SKIPPED_THERMO
+                    if "spinodal" in str(err).lower() or "density" in str(err).lower()
+                    else PipelineStatus.FAILED_ERROR
+                )
+                results_map[idx] = MaterialPipelineResult(
+                    material_name=mat_basename,
+                    status=status.value,
+                    error_message=f"Thermodynamic routing failed: {str(err)}",
+                    runtime_seconds=time.perf_counter() - t_start,
+                    artifact_dir=mat_out_dir,
+                )
+
+        if not loaded_materials:
+            return PreparedMolecularBatch(
+                tasks=chunk,
+                batch_size=self.batch_size,
+                loaded_materials=[],
+                task_indices=[],
+                results_map=results_map,
+                t_assembly_start=t_start,
+            )
+
+        return PreparedMolecularBatch(
+            tasks=chunk,
+            batch_size=self.batch_size,
+            loaded_materials=loaded_materials,
+            task_indices=task_indices,
+            results_map=results_map,
+            t_assembly_start=t_start,
+        )
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> PreparedMolecularBatch:
+        item = self.queue.get()
+        if item is None:
+            raise StopIteration
+        return item
+
+    def close(self) -> None:
+        self._shutdown_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+
+
+def execute_prepared_batch(
+    prepared_batch: PreparedMolecularBatch,
     async_writer: Optional[AsyncArtifactWriter] = None,
 ) -> List[MaterialPipelineResult]:
     """
-    Ingests up to B=32 material tasks, stacks them into a single MolecularBatch tensor
-    (filling remaining batch slots with zeroed dummy molecules), executes cDFT screening
-    and batched Boltzmann Generator training & sampling in parallel, and dispatches
-    artifacts asynchronously to eliminate blocking I/O overhead.
+    Executes purely on-device operations for a pre-assembled batch:
+    cDFT JIT minimization -> Boltzmann Generator JIT training -> 3D conformation sampling.
     """
-    t_start = time.perf_counter()
-    loaded_materials: List[Material] = []
-    task_indices: List[int] = []
-    results_map: Dict[int, MaterialPipelineResult] = {}
-
-    for idx, task in enumerate(batch_tasks):
-        mat_input = task.material_path_or_name
-        mat_basename = Path(mat_input).stem if os.path.exists(mat_input) or "/" in mat_input else str(mat_input)
-        mat_out_dir = os.path.join(task.out_dir, mat_basename)
-        os.makedirs(mat_out_dir, exist_ok=True)
-
-        try:
-            mat = MaterialLoader.load_material(
-                material_name_or_path=task.material_path_or_name,
-                temperature_k=task.temperature_k,
-                bulk_density_a3=task.bulk_density_a3,
-                pressure_bar=task.pressure_bar,
-                chemical_potential_kbt=task.chemical_potential_kbt,
-            )
-            loaded_materials.append(mat)
-            task_indices.append(idx)
-        except Exception as e:
-            status = (
-                PipelineStatus.SKIPPED_THERMO
-                if "spinodal" in str(e).lower() or "density" in str(e).lower()
-                else PipelineStatus.FAILED_ERROR
-            )
-            results_map[idx] = MaterialPipelineResult(
-                material_name=mat_basename,
-                status=status.value,
-                error_message=f"Thermodynamic routing failed: {str(e)}",
-                runtime_seconds=time.perf_counter() - t_start,
-                artifact_dir=mat_out_dir,
-            )
+    t_start = prepared_batch.t_assembly_start
+    batch_tasks = prepared_batch.tasks
+    loaded_materials = prepared_batch.loaded_materials
+    task_indices = prepared_batch.task_indices
+    results_map = dict(prepared_batch.results_map)
+    batch_size = prepared_batch.batch_size
 
     if not loaded_materials:
         return [results_map[i] for i in range(len(batch_tasks))]
 
-    # 1. Stack loaded materials into a fixed (B=32, 128) MolecularBatch
-    mol_batch = MolecularBatch.create_batch(
-        materials=loaded_materials,
-        batch_size=batch_size,
-        target_n_particles=128,
+    # Instantiate device tensors on the executing thread (avoids SQLite thread-local cache issues)
+    mol_batch = (
+        prepared_batch.mol_batch
+        if prepared_batch.mol_batch is not None
+        else MolecularBatch.create_batch(
+            materials=loaded_materials,
+            batch_size=batch_size,
+            target_n_particles=128,
+        )
     )
 
-    # 2. Batched cDFT Screening Phase (Solve all 32 density profiles simultaneously in 1 JIT graph)
-    t_c0 = time.perf_counter()
-    batched_cdft = BatchedTinyCDFT(
-        batch=mol_batch,
-        n_grid=128,
-        learning_rate=batch_tasks[0].cdft_lr if batch_tasks else 0.02,
+    batched_cdft = (
+        prepared_batch.batched_cdft
+        if prepared_batch.batched_cdft is not None
+        else BatchedTinyCDFT(
+            batch=mol_batch,
+            n_grid=128,
+            learning_rate=batch_tasks[0].cdft_lr if batch_tasks else 0.02,
+        )
     )
+
+    energy_fn = (
+        prepared_batch.energy_fn
+        if prepared_batch.energy_fn is not None
+        else MicroscopicEnergy(material=mol_batch, pad_to_128=True)
+    )
+
+    # 1. Batched cDFT Screening Phase
+    t_c0 = time.perf_counter()
     cdft_losses = batched_cdft.solve(steps=batch_tasks[0].cdft_steps if batch_tasks else 50, verbose=False)
     t_cdft_total = time.perf_counter() - t_c0
     t_cdft_per_mat = t_cdft_total / max(1, len(loaded_materials))
@@ -590,13 +747,11 @@ def process_batched_materials(
             )
         return [results_map[i] for i in range(len(batch_tasks))]
 
-    # 3. Batched Boltzmann Generator Phase
+    # 2. Batched Boltzmann Generator Phase
     t_bg_start = time.perf_counter()
     bg_steps = batch_tasks[0].bg_steps if batch_tasks else 30
     bg_samples = batch_tasks[0].bg_samples if batch_tasks else 32
 
-    # Batched Hamiltonian evaluating all B=32 molecules simultaneously along Axis 0
-    energy_fn = MicroscopicEnergy(material=mol_batch, pad_to_128=True)
     flow = Base2CartesianFlow(n_atoms=128, n_layers=4, hidden_dim=64)
     generator = BoltzmannGenerator(
         flow=flow,
@@ -608,17 +763,16 @@ def process_batched_materials(
     bg_losses = generator.train(steps=bg_steps, batch_size=batch_size, verbose=False)
     bg_loss = bg_losses[-1] if bg_losses else 0.0
 
-    # Sample batch configurations: (B, 128, 3)
     n_samp_batches = max(1, math.ceil(bg_samples / batch_size))
     all_batch_samples = []
     for _ in range(n_samp_batches):
         samp = generator.sample(n_samples=batch_size, return_all_pad=True)
         all_batch_samples.append(samp.numpy())
 
-    stacked_samples = np.concatenate(all_batch_samples, axis=0)  # (N_samp, 128, 3)
+    stacked_samples = np.concatenate(all_batch_samples, axis=0)
     t_bg = time.perf_counter() - t_bg_start
 
-    # 4. Extract Per-Material Trajectories and Dispatch Async Writes
+    # 3. Extract Per-Material Trajectories and Dispatch Async Writes
     state_dict = nn.state.get_state_dict(flow)
     np_weights = {k: v.numpy() for k, v in state_dict.items()}
 
@@ -628,7 +782,6 @@ def process_batched_materials(
         mat_out_dir = os.path.join(task.out_dir, mat.name)
         site_names = [s.site_name for s in mat.sites] if mat.sites else [mat.name]
 
-        # Extract sampled coordinates for this specific molecule: (N_frames, N_real, 3)
         mat_coords = stacked_samples[:bg_samples, : mat.num_sites, :]
 
         if async_writer:
@@ -662,3 +815,73 @@ def process_batched_materials(
         )
 
     return [results_map[i] for i in range(len(batch_tasks))]
+
+
+def process_batched_materials(
+    batch_tasks: List[MaterialPipelineTask],
+    batch_size: int = 512,
+    async_writer: Optional[AsyncArtifactWriter] = None,
+) -> List[MaterialPipelineResult]:
+    """Convenience synchronous wrapper that prepares and executes a single batch chunk."""
+    t_start = time.perf_counter()
+    loaded_materials: List[Material] = []
+    task_indices: List[int] = []
+    results_map: Dict[int, MaterialPipelineResult] = {}
+
+    for idx, task in enumerate(batch_tasks):
+        mat_input = task.material_path_or_name
+        mat_basename = Path(mat_input).stem if os.path.exists(mat_input) or "/" in mat_input else str(mat_input)
+        mat_out_dir = os.path.join(task.out_dir, mat_basename)
+        os.makedirs(mat_out_dir, exist_ok=True)
+
+        try:
+            mat = MaterialLoader.load_material(
+                material_name_or_path=task.material_path_or_name,
+                temperature_k=task.temperature_k,
+                bulk_density_a3=task.bulk_density_a3,
+                pressure_bar=task.pressure_bar,
+                chemical_potential_kbt=task.chemical_potential_kbt,
+            )
+            loaded_materials.append(mat)
+            task_indices.append(idx)
+        except Exception as e:
+            status = (
+                PipelineStatus.SKIPPED_THERMO
+                if "spinodal" in str(e).lower() or "density" in str(e).lower()
+                else PipelineStatus.FAILED_ERROR
+            )
+            results_map[idx] = MaterialPipelineResult(
+                material_name=mat_basename,
+                status=status.value,
+                error_message=f"Thermodynamic routing failed: {str(e)}",
+                runtime_seconds=time.perf_counter() - t_start,
+                artifact_dir=mat_out_dir,
+            )
+
+    if not loaded_materials:
+        return [results_map[i] for i in range(len(batch_tasks))]
+
+    mol_batch = MolecularBatch.create_batch(
+        materials=loaded_materials,
+        batch_size=batch_size,
+        target_n_particles=128,
+    )
+    batched_cdft = BatchedTinyCDFT(
+        batch=mol_batch,
+        n_grid=128,
+        learning_rate=batch_tasks[0].cdft_lr if batch_tasks else 0.02,
+    )
+    energy_fn = MicroscopicEnergy(material=mol_batch, pad_to_128=True)
+
+    prepared = PreparedMolecularBatch(
+        tasks=batch_tasks,
+        batch_size=batch_size,
+        loaded_materials=loaded_materials,
+        task_indices=task_indices,
+        results_map=results_map,
+        mol_batch=mol_batch,
+        batched_cdft=batched_cdft,
+        energy_fn=energy_fn,
+        t_assembly_start=t_start,
+    )
+    return execute_prepared_batch(prepared, async_writer=async_writer)

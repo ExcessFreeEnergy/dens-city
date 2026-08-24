@@ -37,10 +37,11 @@ from tinygrad.helpers import colored
 from dens_city.utils.materials import MaterialLoader
 from dens_city.utils.pipeline import (
     AsyncArtifactWriter,
+    AsyncBatchPrefetcher,
     MaterialPipelineResult,
     MaterialPipelineTask,
     PipelineStatus,
-    process_batched_materials,
+    execute_prepared_batch,
     process_material_task,
 )
 
@@ -416,13 +417,17 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     task_chunks = [tasks[i : i + args.batch_size] for i in range(0, len(tasks), args.batch_size)]
     async_writer = AsyncArtifactWriter()
+    prefetcher = AsyncBatchPrefetcher(
+        task_chunks=task_chunks,
+        batch_size=args.batch_size,
+        prefetch_depth=2,
+    ).start()
 
     try:
         with open(jsonl_log_path, "w", encoding="utf-8") as jsonl_file:
-            for chunk in task_chunks:
-                chunk_results = process_batched_materials(
-                    batch_tasks=chunk,
-                    batch_size=args.batch_size,
+            for prepared_batch in prefetcher:
+                chunk_results = execute_prepared_batch(
+                    prepared_batch=prepared_batch,
                     async_writer=async_writer,
                 )
                 for res in chunk_results:
@@ -431,6 +436,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     jsonl_file.write(json.dumps(res.to_dict()) + "\n")
                     jsonl_file.flush()
     finally:
+        prefetcher.close()
         async_writer.flush()
         async_writer.close()
 
