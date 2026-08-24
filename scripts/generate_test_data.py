@@ -1,21 +1,29 @@
 #!/usr/bin/env python3
 """
-Populates the test_data/ directory with standard Tripos .mol2 structure files
-for the 20 fundamental benchmark materials in dens-city, copying directly from
+Populates the data/test_data/ directory with standard Tripos .mol2 structure files
+for the 32 fundamental benchmark materials in dens-city, copying directly from
 FreeSolv where available, and generating canonical geometries for the remaining fluids.
+Also generates standard Amber gaff.dat, forcefield_parameters.json, and forcefield_parameters.csv.
 """
 
 import math
 import shutil
 import sys
+import tarfile
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-TEST_DATA_DIR = REPO_ROOT / "test_data"
-FREESOLV_DIR = REPO_ROOT / "data" / "mol2files_gaff"
-# Fallback to FreeSolv submodule if data/ not populated
-if not FREESOLV_DIR.exists():
-    FREESOLV_DIR = REPO_ROOT / "FreeSolv"
+# Add scripts directory to path for imports
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from generate_forcefield_params import generate_json_and_csv
+
+REPO_ROOT = SCRIPT_DIR.parent
+DATA_DIR = REPO_ROOT / "data"
+TEST_DATA_DIR = DATA_DIR / "test_data"
+FREESOLV_SUBMODULE_DIR = REPO_ROOT / "FreeSolv"
+MOL2_GAFF_DIR = DATA_DIR / "mol2files_gaff"
 
 
 def format_mol2(name: str, atoms: list, bonds: list, comment: str = "") -> str:
@@ -53,8 +61,7 @@ def format_mol2(name: str, atoms: list, bonds: list, comment: str = "") -> str:
 
 
 def build_water() -> str:
-    # SPC/E geometry: r(OH) = 1.0000 A, theta = 109.47 deg (or 0.9572 A, 104.52 deg)
-    # Using experimental / SPC/E standard
+    # SPC/E geometry: r(OH) = 1.0000 A, theta = 109.47 deg
     r_oh = 1.0000
     half_angle = math.radians(109.47 / 2.0)
     hx = r_oh * math.sin(half_angle)
@@ -236,7 +243,6 @@ def build_polyethylene() -> str:
 
 def build_5cb() -> str:
     # 5CB (4-Cyano-4'-pentylbiphenyl): C18H19N
-    # Cyanobiphenyl rigid rod + pentyl flexible tail
     atoms = []
     bonds = []
 
@@ -399,9 +405,10 @@ def build_sds() -> str:
     return format_mol2("sds", atoms, bonds, "Sodium dodecyl sulfate (SDS) anionic surfactant")
 
 
-# Mapping of the 20 benchmark materials
-# Dict: name -> (source_type, source_val, filename)
+# Complete 32 benchmark materials (20 baseline + 12 high-variance FreeSolv additions)
+# Tuple: (Display Name, source_type, source_val, output_filename)
 MATERIALS = [
+    # 1-20 Original Benchmark Suite
     ("Water", "generate", build_water, "water.mol2"),
     ("Nitrogen", "generate", build_nitrogen, "nitrogen.mol2"),
     ("Methane", "freesolv", "mobley_9055303.mol2", "methane.mol2"),
@@ -422,28 +429,108 @@ MATERIALS = [
     ("Acetone", "freesolv", "mobley_3867265.mol2", "acetone.mol2"),
     ("Large colloidal hard sphere", "generate", build_colloidal_hard_sphere, "colloidal_hard_sphere.mol2"),
     ("Hydrogen", "generate", build_hydrogen, "hydrogen.mol2"),
+    # 21-32 High-Variance FreeSolv Additions (Reaching full 32 batch)
+    ("Ethanol", "freesolv", "mobley_2310185.mol2", "ethanol.mol2"),
+    ("Acetic acid", "freesolv", "mobley_3034976.mol2", "acetic_acid.mol2"),
+    ("Ethyl acetate", "freesolv", "mobley_6973347.mol2", "ethyl_acetate.mol2"),
+    ("Diethyl ether", "freesolv", "mobley_1144156.mol2", "diethyl_ether.mol2"),
+    ("Pyridine", "freesolv", "mobley_296847.mol2", "pyridine.mol2"),
+    ("Chlorobenzene", "freesolv", "mobley_7608462.mol2", "chlorobenzene.mol2"),
+    ("Chloroform", "freesolv", "mobley_2996632.mol2", "chloroform.mol2"),
+    ("Acetonitrile", "freesolv", "mobley_7532833.mol2", "acetonitrile.mol2"),
+    ("Phenol", "freesolv", "mobley_20524.mol2", "phenol.mol2"),
+    ("Aniline", "freesolv", "mobley_4883284.mol2", "aniline.mol2"),
+    ("Cyclohexane", "freesolv", "mobley_2689721.mol2", "cyclohexane.mol2"),
+    ("Ethanethiol", "freesolv", "mobley_1800170.mol2", "ethanethiol.mol2"),
 ]
 
 
-def generate_all() -> None:
-    TEST_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"Populating test data in: {TEST_DATA_DIR}")
+def verify_freesolv_setup() -> Path:
+    """
+    Verifies that the FreeSolv submodule / GAFF database is available.
+    Extracts mol2files_gaff.tar.gz into data/mol2files_gaff if not already present.
+    """
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+    # 1. Check if data/mol2files_gaff exists and has .mol2 files
+    if MOL2_GAFF_DIR.exists() and any(MOL2_GAFF_DIR.glob("*.mol2")):
+        return MOL2_GAFF_DIR
+
+    # 2. Check for FreeSolv submodule or tarball
+    tar_paths = [
+        FREESOLV_SUBMODULE_DIR / "mol2files_gaff.tar.gz",
+        DATA_DIR / "mol2files_gaff.tar.gz",
+    ]
+
+    for tar_p in tar_paths:
+        if tar_p.exists():
+            print(f"Extracting FreeSolv GAFF database from {tar_p} into {MOL2_GAFF_DIR}...")
+            MOL2_GAFF_DIR.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(tar_p, "r:gz") as tar:
+                tar.extractall(path=DATA_DIR)
+            return MOL2_GAFF_DIR
+
+    # 3. Check if FreeSolv submodule itself exists
+    if FREESOLV_SUBMODULE_DIR.exists() and (FREESOLV_SUBMODULE_DIR / "database.pickle").exists():
+        return FREESOLV_SUBMODULE_DIR
+
+    raise FileNotFoundError(
+        "FreeSolv database not found!\n"
+        "Please initialize the FreeSolv submodule by running:\n"
+        "  git submodule update --init --recursive\n"
+        f"or place mol2files_gaff.tar.gz into {FREESOLV_SUBMODULE_DIR}."
+    )
+
+
+def generate_all() -> None:
+    """Populates data/test_data with all 32 benchmark materials and force field parameters."""
+    print("================================================================================")
+    print("  dens-city: Test Data & Benchmark Molecular Dataset Generator")
+    print("================================================================================")
+
+    # Step 1: Verify FreeSolv availability
+    freesolv_src_dir = verify_freesolv_setup()
+    print(f"  FreeSolv Source     : {freesolv_src_dir}")
+
+    # Step 2: Ensure data/ and data/test_data/ exist
+    TEST_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"  Target Test Data Dir: {TEST_DATA_DIR}")
+    print(f"  Target Molecules    : {len(MATERIALS)} items (Full 32 Parallel Batch)")
+    print("--------------------------------------------------------------------------------")
+
+    # Step 3: Populate/copy all 32 .mol2 files
     for idx, (name, src_type, src_val, out_filename) in enumerate(MATERIALS, 1):
         out_path = TEST_DATA_DIR / out_filename
         if src_type == "freesolv":
-            src_path = FREESOLV_DIR / src_val
+            src_path = freesolv_src_dir / src_val
+            # Fallback search if nested in mol2files_gaff
+            if not src_path.exists() and (freesolv_src_dir / "mol2files_gaff" / src_val).exists():
+                src_path = freesolv_src_dir / "mol2files_gaff" / src_val
+
             if src_path.exists():
                 shutil.copy2(src_path, out_path)
-                print(f"[{idx:02d}/20] {name:<35} <- FreeSolv ({src_val}) -> {out_filename}")
+                print(f"[{idx:02d}/32] {name:<35} <- FreeSolv ({src_val}) -> {out_filename}")
             else:
                 print(f"Warning: FreeSolv file {src_path} not found for {name}", file=sys.stderr)
         else:
             mol2_content = src_val()
             out_path.write_text(mol2_content)
-            print(f"[{idx:02d}/20] {name:<35} <- Generated canonical model -> {out_filename}")
+            print(f"[{idx:02d}/32] {name:<35} <- Generated canonical model -> {out_filename}")
 
-    print("\nAll 20 test datasets created successfully.")
+    # Step 4: Generate force field parameters and GAFF database in data/test_data/
+    print("--------------------------------------------------------------------------------")
+    print("  Generating Force Field Parameters & GAFF Database in data/test_data/...")
+    generate_json_and_csv()
+
+    # Step 5: Verify all 32 datasets exist
+    mol2_files = list(TEST_DATA_DIR.glob("*.mol2"))
+    print("--------------------------------------------------------------------------------")
+    print(f"  Verification: Found {len(mol2_files)} / 32 .mol2 files in {TEST_DATA_DIR}")
+    if len(mol2_files) == 32:
+        print("  Status: COMPLETE (32/32 benchmark datasets successfully populated)")
+    else:
+        print(f"  Warning: Expected 32 files, but found {len(mol2_files)} files!", file=sys.stderr)
+    print("================================================================================")
 
 
 if __name__ == "__main__":

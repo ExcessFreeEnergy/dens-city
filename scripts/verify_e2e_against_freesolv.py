@@ -16,6 +16,7 @@ from typing import Any, Dict, List
 
 # Direct mapping between dens-city test_data materials and FreeSolv Mobley IDs
 FREESOLV_MAPPINGS = {
+    # Original 7 FreeSolv mappings
     "methane": "mobley_9055303",
     "n_decane": "mobley_2197088",
     "neopentane": "mobley_1261349",
@@ -23,6 +24,19 @@ FREESOLV_MAPPINGS = {
     "ammonia": "mobley_5631798",
     "benzene": "mobley_3053621",
     "acetone": "mobley_3867265",
+    # 12 New FreeSolv additions (total 19 FreeSolv-matched molecules)
+    "ethanol": "mobley_2310185",
+    "acetic_acid": "mobley_3034976",
+    "ethyl_acetate": "mobley_6973347",
+    "diethyl_ether": "mobley_1144156",
+    "pyridine": "mobley_296847",
+    "chlorobenzene": "mobley_7608462",
+    "chloroform": "mobley_2996632",
+    "acetonitrile": "mobley_7532833",
+    "phenol": "mobley_20524",
+    "aniline": "mobley_4883284",
+    "cyclohexane": "mobley_2689721",
+    "ethanethiol": "mobley_1800170",
 }
 
 

@@ -35,7 +35,7 @@ def test_parse_materials_arg():
 
 def test_discover_materials():
     """Validates material discovery in test_data directory."""
-    discovered = discover_materials("test_data", ["argon", "benzene"])
+    discovered = discover_materials("data/test_data", ["argon", "benzene"])
     assert len(discovered) == 2
     assert any("argon" in m for m in discovered)
     assert any("benzene" in m for m in discovered)

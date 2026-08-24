@@ -185,7 +185,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
 
-    default_data_dir = "test_data"
+    default_data_dir = "data/test_data"
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     default_out_dir = f"runs/batch_{ts}"
 

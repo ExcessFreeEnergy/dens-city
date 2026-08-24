@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -16,8 +17,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-TEST_DATA_DIR = REPO_ROOT / "test_data"
-FF_JSON_PATH = TEST_DATA_DIR / "forcefield_parameters.json"
+TEST_DATA_DIR = REPO_ROOT / "data" / "test_data"
+FF_JSON_PATH = Path(os.environ.get("FORCEFIELD_JSON", TEST_DATA_DIR / "forcefield_parameters.json"))
 
 
 def compute_wca_dispersion_integral(sigma: float, epsilon_k: float, r_cut_sigma: float = 5.0) -> float:

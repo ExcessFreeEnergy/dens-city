@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-TEST_DATA_DIR = REPO_ROOT / "test_data"
+TEST_DATA_DIR = REPO_ROOT / "data" / "test_data"
 
 # Comprehensive atomtype lookup database
 # Keys: atom type -> (R_min_half_A, eps_kcal_mol, mass, atomic_num, description)

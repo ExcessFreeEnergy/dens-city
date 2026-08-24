@@ -18,8 +18,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-TEST_DATA_DIR = REPO_ROOT / "test_data"
 DATA_DIR = REPO_ROOT / "data"
+TEST_DATA_DIR = DATA_DIR / "test_data"
 FF_JSON_PATH = TEST_DATA_DIR / "forcefield_parameters.json"
 OUTPUT_TXT_PATH = DATA_DIR / "input_validation.txt"
 OUTPUT_CSV_PATH = DATA_DIR / "input_validation.csv"

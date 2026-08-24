@@ -31,11 +31,14 @@ dist/
 output.xyz*
 *.npz
 *.dat
-!test_data/*.dat
-
 # Data directories
-data/
-/data/
+data/*
+!data/test_data/
+!data/database.*
+!data/iupac_to_cid.*
+!data/smiles_to_cid.*
+!data/input_validation.*
+!data/e2e_freesolv_verification_report.md
 runs/
 
 # macOS metadata

@@ -19,7 +19,7 @@ from dens_city.utils.materials import (
 def test_list_all_available_materials():
     """Verifies that all test_data molecular datasets are discovered."""
     mats = MaterialLoader.list_available_materials()
-    assert len(mats) >= 20, f"Expected at least 20 materials in test_data, found {len(mats)}: {mats}"
+    assert len(mats) >= 32, f"Expected at least 32 materials in test_data, found {len(mats)}: {mats}"
 
 
 def test_all_materials_have_distinct_derived_parameters():
