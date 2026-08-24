@@ -243,8 +243,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--batch-size",
         "-b",
         type=int,
-        default=32,
-        help="Molecule batch size for parallel tensor evaluation along Axis 0 (default: 32)",
+        default=512,
+        help="Molecule batch size for parallel tensor evaluation along Axis 0 (default: 512)",
     )
     parser.add_argument(
         "--temp",

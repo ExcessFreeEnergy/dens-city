@@ -33,7 +33,7 @@ class BoltzmannGenerator:
         prior: Optional[CDFTBaseDistribution] = None,
         temperature_k: float = 300.0,
         learning_rate: float = 0.01,
-        batch_size: int = 32,
+        batch_size: int = 512,
         w_torsion: float = 0.0,
         dihedral_quadruplets: Optional[Union[List[Tuple[int, int, int, int]], Tensor]] = None,
     ):
@@ -240,7 +240,7 @@ class BoltzmannGenerator:
     def train(
         self,
         steps: int = 100,
-        batch_size: int = 32,
+        batch_size: int = 512,
         verbose: bool = False,
     ) -> List[float]:
         """

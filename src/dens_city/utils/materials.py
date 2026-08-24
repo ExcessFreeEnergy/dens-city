@@ -532,7 +532,7 @@ class MolecularBatch:
     def create_batch(
         cls,
         materials: List[Material],
-        batch_size: int = 32,
+        batch_size: int = 512,
         target_n_particles: int = 128,
         default_temp_k: float = 300.0,
     ) -> MolecularBatch:

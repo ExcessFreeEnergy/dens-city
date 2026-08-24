@@ -52,7 +52,7 @@ class MaterialPipelineTask:
     cdft_steps: int = 60
     cdft_lr: float = 0.02
     bg_steps: int = 40
-    bg_batch_size: int = 32
+    bg_batch_size: int = 512
     bg_lr: float = 0.01
     bg_samples: int = 100
     bg_w_tor: float = 0.0
@@ -470,7 +470,7 @@ class AsyncArtifactWriter:
 
 def process_batched_materials(
     batch_tasks: List[MaterialPipelineTask],
-    batch_size: int = 32,
+    batch_size: int = 512,
     async_writer: Optional[AsyncArtifactWriter] = None,
 ) -> List[MaterialPipelineResult]:
     """
