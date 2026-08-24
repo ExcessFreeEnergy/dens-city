@@ -22,7 +22,7 @@ from dens_city.boltzmann.bijectors import Base2CartesianFlow
 from dens_city.boltzmann.energy import MicroscopicEnergy
 from dens_city.boltzmann.generator import BoltzmannGenerator
 from dens_city.boltzmann.prior import CDFTBaseDistribution
-from dens_city.cdft.cdft import TinyCDFT
+from dens_city.cdft.cdft import BatchedTinyCDFT, TinyCDFT
 from dens_city.utils.materials import Material, MaterialLoader, MolecularBatch
 
 
@@ -524,43 +524,34 @@ def process_batched_materials(
         target_n_particles=128,
     )
 
-    # 2. cDFT Screening Phase (Solve density profiles)
-    cdft_profiles = []
-    cdft_pressures = []
-    cdft_losses = []
-    cdft_gammas = []
-    cdft_times = []
+    # 2. Batched cDFT Screening Phase (Solve all 32 density profiles simultaneously in 1 JIT graph)
+    t_c0 = time.perf_counter()
+    batched_cdft = BatchedTinyCDFT(
+        batch=mol_batch,
+        n_grid=128,
+        learning_rate=batch_tasks[0].cdft_lr if batch_tasks else 0.02,
+    )
+    cdft_losses = batched_cdft.solve(steps=batch_tasks[0].cdft_steps if batch_tasks else 50, verbose=False)
+    t_cdft_total = time.perf_counter() - t_c0
+    t_cdft_per_mat = t_cdft_total / max(1, len(loaded_materials))
 
-    for mat in loaded_materials:
-        t_c0 = time.perf_counter()
-        slit_w = max(40.0, 12.0 * mat.effective_sigma)
-        cdft = TinyCDFT(
-            material=mat,
-            n_grid=128,
-            slit_width_a=slit_w,
-            temperature_k=mat.temperature_k,
-            bulk_density_a3=mat.bulk_density_a3,
-            learning_rate=0.02,
-        )
-        cdft_res = cdft.solve(steps=batch_tasks[0].cdft_steps if batch_tasks else 50, verbose=False)
-        t_cdft = time.perf_counter() - t_c0
+    cdft_profiles = batched_cdft.get_density_profiles()
+    cdft_pressures = batched_cdft.get_wall_contact_pressures()
+    cdft_gammas = batched_cdft.get_excess_adsorptions()
+    final_cdft_loss = cdft_losses[-1] if cdft_losses else 0.0
 
-        rho = cdft.get_density_profile()
-        p_w = cdft.get_wall_contact_pressure()
-        gamma = cdft.get_excess_adsorption()
-        loss = cdft_res.get("final_loss", 0.0) if isinstance(cdft_res, dict) else (cdft_res[-1] if cdft_res else 0.0)
+    for local_idx, orig_idx in enumerate(task_indices):
+        mat = loaded_materials[local_idx]
+        rho = cdft_profiles[local_idx]
+        p_w = cdft_pressures[local_idx]
+        gamma = cdft_gammas[local_idx]
+        dz_val = batched_cdft.dz_vals[local_idx]
+        slit_w = batched_cdft.slit_widths[local_idx]
 
-        cdft_profiles.append(rho)
-        cdft_pressures.append(p_w)
-        cdft_gammas.append(gamma)
-        cdft_losses.append(loss)
-        cdft_times.append(t_cdft)
-
-        # Async cDFT file exports
-        mat_out_dir = os.path.join(batch_tasks[0].out_dir, mat.name)
+        mat_out_dir = os.path.join(batch_tasks[orig_idx].out_dir, mat.name)
         if async_writer:
             async_writer.write_npy(os.path.join(mat_out_dir, "density_profile.npy"), rho)
-            z_grid = np.linspace(0.5 * cdft.dz_val, cdft.slit_width_a - 0.5 * cdft.dz_val, cdft.n_grid)
+            z_grid = np.linspace(0.5 * dz_val, slit_w - 0.5 * dz_val, batched_cdft.n_grid)
             async_writer.write_csv(
                 os.path.join(mat_out_dir, "density_profile.csv"),
                 "z_angstrom,rho_a3",
@@ -571,7 +562,7 @@ def process_batched_materials(
                 f"Num Sites: {mat.num_sites}\nTemperature: {mat.temperature_k:.2f} K\n"
                 f"Bulk Density: {mat.bulk_density_a3:.6f} Å^-3\nBulk Pressure: {mat.bulk_pressure_bar:.4f} bar\n"
                 f"Chemical Potential: {mat.bulk_mu:.4f} k_B T\nWall Contact Pressure: {p_w:.4f} bar\n"
-                f"Excess Adsorption: {gamma:.6f} Å^-2\ncDFT Solver Runtime: {t_cdft:.3f} s\n"
+                f"Excess Adsorption: {gamma:.6f} Å^-2\ncDFT Solver Runtime: {t_cdft_per_mat:.3f} s\n"
             )
             async_writer.write_txt(os.path.join(mat_out_dir, "cdft_summary.txt"), summary_txt)
 
@@ -586,7 +577,7 @@ def process_batched_materials(
                 material_name=mat.name,
                 status=PipelineStatus.SUCCESS_CDFT_ONLY.value,
                 runtime_seconds=time.perf_counter() - t_start,
-                cdft_runtime_seconds=cdft_times[local_idx],
+                cdft_runtime_seconds=t_cdft_per_mat,
                 num_sites=mat.num_sites,
                 temperature_k=mat.temperature_k,
                 bulk_density_a3=mat.bulk_density_a3,
@@ -594,7 +585,7 @@ def process_batched_materials(
                 bulk_pressure_bar=mat.bulk_pressure_bar,
                 wall_pressure_bar=cdft_pressures[local_idx],
                 excess_adsorption_a2=cdft_gammas[local_idx],
-                cdft_final_loss=cdft_losses[local_idx],
+                cdft_final_loss=final_cdft_loss,
                 artifact_dir=mat_out_dir,
             )
         return [results_map[i] for i in range(len(batch_tasks))]
@@ -656,7 +647,7 @@ def process_batched_materials(
             material_name=mat.name,
             status=PipelineStatus.SUCCESS.value,
             runtime_seconds=time.perf_counter() - t_start,
-            cdft_runtime_seconds=cdft_times[local_idx],
+            cdft_runtime_seconds=t_cdft_per_mat,
             bg_runtime_seconds=t_bg,
             num_sites=mat.num_sites,
             temperature_k=mat.temperature_k,
@@ -665,7 +656,7 @@ def process_batched_materials(
             bulk_pressure_bar=mat.bulk_pressure_bar,
             wall_pressure_bar=cdft_pressures[local_idx],
             excess_adsorption_a2=cdft_gammas[local_idx],
-            cdft_final_loss=cdft_losses[local_idx],
+            cdft_final_loss=final_cdft_loss,
             bg_final_loss=bg_loss,
             artifact_dir=mat_out_dir,
         )

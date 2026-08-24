@@ -8,7 +8,7 @@ and exact Irving-Kirkwood mechanical virial observables.
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import numpy as np
 from tinygrad import GlobalCounters, Tensor, TinyJit, dtypes, nn
@@ -17,7 +17,7 @@ from tinygrad.helpers import getenv, trange
 from dens_city.cdft.kernels import KernelBuilder
 
 if TYPE_CHECKING:
-    from dens_city.utils.materials import Material
+    from dens_city.utils.materials import Material, MolecularBatch
 
 
 class TinyCDFT:
@@ -244,3 +244,262 @@ class TinyCDFT:
         """
         rho_arr = self.get_density_profile()
         return float(np.sum(rho_arr - self.bulk_rho_val) * self.dz_val)
+
+
+class BatchedTinyCDFT:
+    """
+    Batched Classical Density Functional Theory Solver in pure tinygrad.
+    Minimizes the Grand Potential functional Omega[psi] simultaneously for B <= 32 distinct
+    materials in a single JIT graph execution via grouped planar convolutions.
+    """
+
+    def __init__(
+        self,
+        batch: MolecularBatch,
+        n_grid: int = 128,
+        learning_rate: float = 0.02,
+        wall_sigma: float = 3.4,
+        wall_epsilon_k: float = 50.0,
+    ):
+        self.batch = batch
+        self.batch_size = batch.batch_size
+        self.n_grid = n_grid
+        self.materials = batch.materials
+
+        dz_list = []
+        temp_list = []
+        rho_bulk_list = []
+        mu_ex_list = []
+        psi_init_list = []
+        v_ext_list = []
+        slit_widths = []
+
+        # 1. Per-material parameter extraction and kernel building
+        raw_fmt_w3, raw_fmt_w2, raw_fmt_w1, raw_fmt_w0, raw_fmt_wv2, raw_fmt_wv1 = [], [], [], [], [], []
+        raw_att_kernels = []
+        fmt_k_sizes = []
+        att_k_sizes = []
+
+        for b in range(self.batch_size):
+            mat = self.materials[b]
+            if mat is not None:
+                sigma_b = mat.effective_sigma
+                eps_b = mat.effective_epsilon_k
+                slit_w_b = max(40.0, 12.0 * sigma_b)
+                dz_b = slit_w_b / n_grid
+                temp_b = mat.temperature_k
+                rho_b = mat.bulk_density_a3
+
+                fmt_dict = KernelBuilder.build_fmt_planar_kernels(sigma_b, dz_b)
+                att_raw, att_pad = KernelBuilder.build_wca_attraction_kernel(sigma_b, eps_b, dz_b)
+
+                v_ext_raw = (
+                    KernelBuilder.build_slit_wall_potential(
+                        n_grid=n_grid,
+                        dz=dz_b,
+                        fluid_sigma=sigma_b,
+                        wall_sigma=wall_sigma,
+                        wall_epsilon_k=wall_epsilon_k,
+                    )
+                    / temp_b
+                )
+
+                eta_b = (math.pi / 6.0) * rho_b * (sigma_b**3)
+                one_minus_eta = max(1e-12, 1.0 - eta_b)
+                mu_fmt = -math.log(one_minus_eta) + (eta_b * (14.0 - 13.0 * eta_b + 5.0 * (eta_b**2))) / (
+                    2.0 * (one_minus_eta**3)
+                )
+                att_sum = float(att_raw.numpy().sum()) * dz_b
+                mu_att = (rho_b * att_sum) / temp_b
+                mu_ex_b = mu_fmt + mu_att
+
+                psi_max = math.log(0.60 / max(1e-4, eta_b))
+                v_ext_np = v_ext_raw.numpy().reshape(n_grid)
+                psi_init_b = np.clip(-v_ext_np, -50.0, psi_max)
+            else:
+                sigma_b = 3.4
+                eps_b = 100.0
+                slit_w_b = 40.0
+                dz_b = slit_w_b / n_grid
+                temp_b = 300.0
+                rho_b = 0.0
+                fmt_dict = KernelBuilder.build_fmt_planar_kernels(sigma_b, dz_b)
+                att_raw, att_pad = KernelBuilder.build_wca_attraction_kernel(sigma_b, eps_b, dz_b)
+                v_ext_raw = Tensor.zeros(1, 1, n_grid, 1)
+                v_ext_np = np.zeros(n_grid)
+                mu_ex_b = 0.0
+                psi_init_b = np.zeros(n_grid)
+
+            slit_widths.append(slit_w_b)
+            dz_list.append(dz_b)
+            temp_list.append(temp_b)
+            rho_bulk_list.append(rho_b)
+            mu_ex_list.append(mu_ex_b)
+            psi_init_list.append(psi_init_b)
+            v_ext_list.append(v_ext_np)
+
+            w3_arr = fmt_dict["w3"].numpy().reshape(-1)
+            raw_fmt_w3.append(w3_arr)
+            raw_fmt_w2.append(fmt_dict["w2"].numpy().reshape(-1))
+            raw_fmt_w1.append(fmt_dict["w1"].numpy().reshape(-1))
+            raw_fmt_w0.append(fmt_dict["w0"].numpy().reshape(-1))
+            raw_fmt_wv2.append(fmt_dict["wv2"].numpy().reshape(-1))
+            raw_fmt_wv1.append(fmt_dict["wv1"].numpy().reshape(-1))
+            fmt_k_sizes.append(len(w3_arr))
+
+            att_arr = att_raw.numpy().reshape(-1)
+            raw_att_kernels.append(att_arr)
+            att_k_sizes.append(len(att_arr))
+
+        self.slit_widths = slit_widths
+        self.dz_vals = dz_list
+        self.temp_vals = temp_list
+        self.rho_bulk_vals = rho_bulk_list
+
+        # 2. Build grouped convolution kernels with symmetric center-padding
+        max_fmt_k = max(fmt_k_sizes)
+        self.fmt_pad = (max_fmt_k - 1) // 2
+
+        def stack_grouped_kernels(kernel_arrays: List[np.ndarray], target_k: int) -> Tensor:
+            stacked = np.zeros((self.batch_size, 1, target_k, 1), dtype=np.float32)
+            for b, arr in enumerate(kernel_arrays):
+                k_len = len(arr)
+                start = (target_k - k_len) // 2
+                stacked[b, 0, start : start + k_len, 0] = arr
+            return Tensor(stacked, dtype=dtypes.float32).realize()
+
+        self.fmt_w3 = stack_grouped_kernels(raw_fmt_w3, max_fmt_k)
+        self.fmt_w2 = stack_grouped_kernels(raw_fmt_w2, max_fmt_k)
+        self.fmt_w1 = stack_grouped_kernels(raw_fmt_w1, max_fmt_k)
+        self.fmt_w0 = stack_grouped_kernels(raw_fmt_w0, max_fmt_k)
+        self.fmt_wv2 = stack_grouped_kernels(raw_fmt_wv2, max_fmt_k)
+        self.fmt_wv1 = stack_grouped_kernels(raw_fmt_wv1, max_fmt_k)
+
+        max_att_k = max(att_k_sizes)
+        self.att_pad = (max_att_k - 1) // 2
+        self.att_kernel = stack_grouped_kernels(raw_att_kernels, max_att_k)
+
+        # 3. Stacked static field buffers: shape (1, B, N_grid, 1) and (1, B, 1, 1)
+        self.dz = Tensor(dz_list, dtype=dtypes.float32).reshape(1, self.batch_size, 1, 1).realize()
+        self.temperature_k = Tensor(temp_list, dtype=dtypes.float32).reshape(1, self.batch_size, 1, 1).realize()
+        self.bulk_density = Tensor(rho_bulk_list, dtype=dtypes.float32).reshape(1, self.batch_size, 1, 1).realize()
+        self.mu_ex = Tensor(mu_ex_list, dtype=dtypes.float32).reshape(1, self.batch_size, 1, 1).realize()
+        self.molecule_mask = (
+            batch.molecule_mask.reshape(1, self.batch_size, 1, 1).realize()
+            if hasattr(batch, "molecule_mask")
+            else Tensor.ones(1, self.batch_size, 1, 1)
+        )
+        self.v_ext = (
+            Tensor(np.array(v_ext_list, dtype=np.float32)).reshape(1, self.batch_size, n_grid, 1).contiguous().realize()
+        )
+
+        psi_init_np = np.array(psi_init_list, dtype=np.float32).reshape(1, self.batch_size, n_grid, 1)
+        self.psi = Tensor(psi_init_np).contiguous().realize()
+        self.psi.requires_grad = True
+
+        opt_type = nn.optim.Muon if getenv("MUON") else nn.optim.SGD if getenv("SGD") else nn.optim.Adam
+        self.opt = opt_type([self.psi], lr=learning_rate)
+        self.train_step = TinyJit(self._train_step)
+
+    def compute_density(self) -> Tensor:
+        """Computes positive density field rho for all batch slots: (1, B, N_grid, 1)."""
+        return (self.psi).exp() * self.bulk_density
+
+    def grand_potential(self) -> Tensor:
+        """
+        Evaluates grand potential functional for all B fluids simultaneously via grouped conv2d.
+        """
+        rho = self.compute_density()  # (1, B, N_grid, 1)
+
+        # 1. Ideal gas free energy
+        f_ideal = (rho * self.psi - (rho - self.bulk_density)).sum(axis=2, keepdim=True) * self.dz
+
+        # 2. External wall potential energy
+        f_ext = (rho * self.v_ext).sum(axis=2, keepdim=True) * self.dz
+
+        # 3. Batched Rosenfeld FMT Hard-Sphere Excess via Grouped Convolutions
+        n3 = rho.conv2d(self.fmt_w3, groups=self.batch_size, padding=(self.fmt_pad, 0))
+        n2 = rho.conv2d(self.fmt_w2, groups=self.batch_size, padding=(self.fmt_pad, 0))
+        n1 = rho.conv2d(self.fmt_w1, groups=self.batch_size, padding=(self.fmt_pad, 0))
+        n0 = rho.conv2d(self.fmt_w0, groups=self.batch_size, padding=(self.fmt_pad, 0))
+        nv2 = rho.conv2d(self.fmt_wv2, groups=self.batch_size, padding=(self.fmt_pad, 0))
+        nv1 = rho.conv2d(self.fmt_wv1, groups=self.batch_size, padding=(self.fmt_pad, 0))
+
+        n3_star = n3.minimum(1.0 - 1e-5)
+        one_minus_n3 = 1.0 - n3_star
+        phi_fmt = (
+            -n0 * one_minus_n3.log()
+            + (n1 * n2 - nv1 * nv2) / one_minus_n3
+            + (n2 * n2 * n2 - 3.0 * n2 * (nv2 * nv2)) / (24.0 * math.pi * (one_minus_n3 * one_minus_n3))
+        )
+        f_fmt = phi_fmt.sum(axis=2, keepdim=True) * self.dz
+
+        # 4. Batched WCA Attractive Dispersion Excess
+        att_conv = rho.conv2d(self.att_kernel, groups=self.batch_size, padding=(self.att_pad, 0))
+        f_att = 0.5 * (rho * att_conv).sum(axis=2, keepdim=True) * (self.dz * self.dz) / self.temperature_k
+
+        # 5. Excess Chemical Potential Reservoir term
+        f_mu = -(rho * self.mu_ex).sum(axis=2, keepdim=True) * self.dz
+
+        omega_b = (f_ideal + f_ext + f_fmt + f_att + f_mu) * self.molecule_mask
+        n_active = self.molecule_mask.sum().maximum(1.0)
+        return omega_b.sum() / n_active
+
+    def _train_step(self) -> Tensor:
+        Tensor.training = True
+        self.opt.zero_grad()
+        loss = self.grand_potential().backward()
+        return loss.realize(*self.opt.schedule_step())
+
+    def solve(self, steps: int = 50, verbose: bool = False) -> List[float]:
+        losses = []
+        iterator = trange(steps) if verbose else range(steps)
+        for _ in iterator:
+            GlobalCounters.reset()
+            loss = self.train_step()
+            losses.append(loss.item())
+        return losses
+
+    def get_density_profiles(self) -> List[np.ndarray]:
+        rho_all = self.compute_density().reshape(self.batch_size, self.n_grid).numpy()
+        return [rho_all[b].copy() for b in range(self.batch_size)]
+
+    def get_wall_contact_pressures(self) -> List[float]:
+        rho_profiles = self.get_density_profiles()
+        v_ext_all = (self.v_ext * self.temperature_k).reshape(self.batch_size, self.n_grid).numpy()
+        pressures = []
+
+        for b in range(self.batch_size):
+            if self.materials[b] is None:
+                pressures.append(0.0)
+                continue
+            rho_arr = rho_profiles[b]
+            v_ext_arr = v_ext_all[b]
+            dz_val = self.dz_vals[b]
+
+            dv_dz = np.gradient(v_ext_arr, dz_val)
+            mid = self.n_grid // 2
+            min_grad_idx = int(np.argmin(dv_dz[:mid]))
+            tol = 1.0
+            plateau_candidates = np.where(np.abs(dv_dz[min_grad_idx:mid]) < tol)[0]
+            bulk_cutoff_idx = (min_grad_idx + int(plateau_candidates[0])) if len(plateau_candidates) > 0 else mid
+
+            f_integral = -float(
+                np.sum(rho_arr[min_grad_idx:bulk_cutoff_idx] * dv_dz[min_grad_idx:bulk_cutoff_idx]) * dz_val
+            )
+            p_virial_bar = f_integral * (1e30 * 1.380649e-23 * 1e-5)
+            pressures.append(p_virial_bar)
+
+        return pressures
+
+    def get_excess_adsorptions(self) -> List[float]:
+        rho_profiles = self.get_density_profiles()
+        gammas = []
+        for b in range(self.batch_size):
+            if self.materials[b] is None:
+                gammas.append(0.0)
+                continue
+            rho_arr = rho_profiles[b]
+            gamma = float(np.sum(rho_arr - self.rho_bulk_vals[b]) * self.dz_vals[b])
+            gammas.append(gamma)
+        return gammas
