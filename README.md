@@ -118,26 +118,29 @@ uv run dens-city --materials argon benzene --debug
 
 ---
 
-## 4. Benchmark Results & FreeSolv Validation
+## 4. Notes on Long-Range Forces
 
-In high-throughput benchmark runs across all 20 benchmark fluids in `test_data/`, `dens-city` completes the full coupled pipeline in **51.41 seconds** (average rate of 38.9 3D conformations/s) with **100% SUCCESS**:
+### Why GCMC Chokes on Long-Range Forces
+Grand Canonical Monte Carlo (GCMC) simulates discrete particles through stochastic atom insertions, deletions, and displacements:
+- **Reciprocal-Space Recalculation**: In Ewald summation (or Particle-Mesh Ewald), every particle insertion or deletion alters the global structure factor $\sum_j q_j e^{i \mathbf{k} \cdot \mathbf{r}_j}$. Updates across thousands of trial moves per second create a massive computational bottleneck.
+- **Neutrality Violations**: Insertion of an isolated charged ion breaks electroneutrality in the box, which requires artificial background neutralizing plasma or fractional insertion schemes.
+- **The Overlap Wall**: Insertion of a full molecule with Lennard-Jones cores and partial charges into a dense polar fluid (such as liquid water) suffers a $>99.9\%$ rejection rate, which demands millions of failed trial steps for a handful of accepted configurations.
 
-### FreeSolv Cross-Reference Validation (`FreeSolv/database.pickle`)
+### Why cDFT Solves This for Free
+In cDFT, there are no particles, no trial moves, and no discrete insertions. The system contains only a continuous, smooth charge density field:
+$$\rho_q(\mathbf{r}) = \sum_i q_i \rho_i(\mathbf{r})$$
 
-| Material | FreeSolv ID | IUPAC Name | Sites (Real/Pad) | $\Delta G_{\rm solv}^{\rm expt}$ (kcal/mol) | $\Delta G_{\rm solv}^{\rm calc}$ (kcal/mol) | $P_{\rm wall}$ (bar) | Status |
-| :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
-| `acetone` | `mobley_3867265` | acetone | 10 / 128 | **-3.80** | -3.51 | +1,961.95 | **SUCCESS** |
-| `ammonia` | `mobley_5631798` | ammonia | 4 / 128 | **-4.29** | -4.02 | -221.27 | **SUCCESS** |
-| `benzene` | `mobley_3053621` | benzene | 12 / 128 | **-0.90** | -0.81 | -273.46 | **SUCCESS** |
-| `methane` | `mobley_9055303` | methane | 5 / 128 | **+2.00** | +2.45 | -1,651.30 | **SUCCESS** |
-| `methanol` | `mobley_1636752` | methanol | 6 / 128 | **-5.10** | -3.49 | -1,765.79 | **SUCCESS** |
-| `n_decane` | `mobley_2197088` | decane | 32 / 128 | **+3.16** | +3.33 | +32,791.55 | **SUCCESS** |
-| `neopentane` | `mobley_1261349` | neopentane | 17 / 128 | **+2.51** | +2.51 | +3,056.06 | **SUCCESS** |
+The long-range electrostatic energy is the double integral:
+$$\mathcal{F}_{\text{coul}}[\rho] = \frac{1}{2} \iint \frac{\rho_q(\mathbf{r}) \rho_q(\mathbf{r}')}{4\pi \varepsilon_0 \varepsilon_r |\mathbf{r} - \mathbf{r}'|} \, d\mathbf{r} \, d\mathbf{r}'$$
 
-Run the automated FreeSolv validation report script:
-```bash
-uv run python scripts/verify_e2e_against_freesolv.py
-```
+Instead of pairwise sums over periodic images, this integral is mathematically identical to the classical Poisson equation:
+$$\nabla^2 \phi(\mathbf{r}) = -\frac{\rho_q(\mathbf{r})}{\varepsilon_0 \varepsilon_r}$$
+
+### Map to tinygrad
+- **1D Slit Pores**: A planar sheet of charge has a constant electric field. The 1D Green's function is $v_C(z) = -2\pi |z|$, which reduces to a 1D convolution or direct cumulative integral across the grid tensor.
+- **3D Grids**: Poisson solves in a single step in Fourier space. In $k$-space, the Laplacian $\nabla^2$ becomes $-k^2$:
+  $$\tilde{\phi}(\mathbf{k}) = \frac{4\pi}{\varepsilon_0 \varepsilon_r k^2} \tilde{\rho}_q(\mathbf{k})$$
+  A forward 3D FFT, element-wise vector division by $k^2$, and an inverse 3D FFT solve the exact, infinite long-range field across the full periodic box in milliseconds on GPU.
 
 ---
 
