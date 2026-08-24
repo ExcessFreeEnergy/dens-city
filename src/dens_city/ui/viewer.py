@@ -1,7 +1,8 @@
 """
 High-performance 3D molecular viewer implemented in Raylib (pyray).
-Renders atom sites with realistic ball-and-stick proportions, multi-bond cylinder geometry
-(triple, double, single, aromatic), Phong specular highlights, and alpha-blended probability density clouds.
+Renders atom sites with realistic ball-and-stick proportions, camera-aligned multi-bond cylinder geometry
+(triple, double, single, aromatic), dynamic ground plane positioning, Phong specular highlights,
+and alpha-blended probability density clouds for arbitrary molecules up to 128+ sites.
 """
 
 from __future__ import annotations
@@ -119,7 +120,24 @@ def get_atom_element(atom_type: str, site_name: str = "") -> str:
 
     # 2. GAFF 2-character prefixes for standard organic elements:
     t_lower = t.lower()
-    if t_lower in ("ca", "cp", "cq", "cc", "cd", "ce", "cf", "cg", "ch", "cx", "cy", "cz", "c.3", "c.2", "c.1", "c.ar"):
+    if t_lower in (
+        "ca",
+        "cp",
+        "cq",
+        "cc",
+        "cd",
+        "ce",
+        "cf",
+        "cg",
+        "ch",
+        "cx",
+        "cy",
+        "cz",
+        "c.3",
+        "c.2",
+        "c.1",
+        "c.ar",
+    ):
         return "C"
     if t_lower in ("na", "nb", "nc", "nd", "ne", "nf", "nh", "no", "n.am", "n.pl3", "n.4", "n.ar"):
         return "N"
@@ -178,8 +196,9 @@ class DensityCloud:
 
 class MoleculeViewer:
     """
-    Raylib 3D molecular renderer with multi-bond cylinder geometry,
-    specular lighting, orbital mouse controls, and probability cloud rendering.
+    Raylib 3D molecular renderer with camera-aligned multi-bond cylinder geometry,
+    scale-invariant auto-framing, dynamic ground grid, specular lighting,
+    and alpha-blended probability density clouds.
     """
 
     def __init__(
@@ -200,10 +219,16 @@ class MoleculeViewer:
         # Orbital Camera parameters
         self.azimuth = 0.75
         self.elevation = 0.35
-        self.distance = 12.0
+        self.distance = 15.0
         self.target = pr.Vector3(0.0, 0.0, 0.0)
-        self.default_distance = 12.0
+        self.default_distance = 15.0
         self.default_target = pr.Vector3(0.0, 0.0, 0.0)
+
+        # Dynamic Grid parameters
+        self.grid_y = -3.0
+        self.grid_slices = 30
+        self.grid_spacing = 1.0
+        self.show_grid = True
 
         # Volumetric Probability Cloud
         self.density_cloud: Optional[DensityCloud] = None
@@ -220,7 +245,10 @@ class MoleculeViewer:
         self.density_cloud = cloud
 
     def _update_molecule_bounds(self) -> None:
-        """Calculates centroid and auto-frames camera distance for current material."""
+        """
+        Calculates centroid, bounding radius, dynamic ground grid altitude,
+        and auto-frames camera distance from perspective frustum limits (up to 128+ sites).
+        """
         mat = self.current_material
         sites = mat.sites
 
@@ -229,6 +257,9 @@ class MoleculeViewer:
             self.distance = 8.0
             self.default_target = self.target
             self.default_distance = self.distance
+            self.grid_y = -2.0
+            self.grid_slices = 20
+            self.grid_spacing = 1.0
             return
 
         cx = sum(s.x for s in sites) / len(sites)
@@ -236,6 +267,8 @@ class MoleculeViewer:
         cz = sum(s.z for s in sites) / len(sites)
         self.target = pr.Vector3(cx, cy, cz)
         self.default_target = pr.Vector3(cx, cy, cz)
+
+        min_y = min(s.y for s in sites)
 
         max_d = 0.0
         for s in sites:
@@ -246,10 +279,20 @@ class MoleculeViewer:
             if d > max_d:
                 max_d = d
 
-        # Dynamic scale-invariant camera distance
-        span = max(max_d, mat.effective_sigma * 0.4)
-        self.distance = max(4.5, span * 2.6)
+        bounding_radius = max(max_d, mat.effective_sigma * 0.5, 1.0)
+
+        # 1. Perspective FOV frustum-based auto-framing:
+        # Distance guarantees the entire bounding sphere is contained in 45-degree vertical FOV
+        fov_half_rad = math.radians(22.5)
+        fit_dist = (bounding_radius / math.sin(fov_half_rad)) * 1.15
+        self.distance = max(6.0, fit_dist)
         self.default_distance = self.distance
+
+        # 2. Dynamic Ground Grid: Positioned strictly beneath the lowest atom in the molecule
+        grid_margin = max(1.2, 0.15 * bounding_radius)
+        self.grid_y = min_y - grid_margin
+        self.grid_slices = max(24, min(120, int(math.ceil(bounding_radius * 2.2))))
+        self.grid_spacing = max(1.0, round(bounding_radius / 15.0))
 
     def next_material(self) -> None:
         """Switches to the next material in the list."""
@@ -296,7 +339,7 @@ class MoleculeViewer:
         # 2. Right / Middle Mouse Button -> Pan
         if pr.is_mouse_button_down(pr.MOUSE_BUTTON_RIGHT) or pr.is_mouse_button_down(pr.MOUSE_BUTTON_MIDDLE):
             delta = pr.get_mouse_delta()
-            pan_speed = self.distance * 0.0012
+            pan_speed = self.distance * 0.0015
             sin_az = math.sin(self.azimuth)
             cos_az = math.cos(self.azimuth)
             self.target.x -= (delta.x * cos_az) * pan_speed
@@ -307,7 +350,7 @@ class MoleculeViewer:
         wheel = pr.get_mouse_wheel_move()
         if wheel != 0:
             zoom_factor = 1.0 - wheel * 0.1
-            self.distance = max(1.2, min(250.0, self.distance * zoom_factor))
+            self.distance = max(0.5, min(1000.0, self.distance * zoom_factor))
 
         # 4. Keyboard Navigation
         if pr.is_key_pressed(pr.KEY_RIGHT) or pr.is_key_pressed(pr.KEY_RIGHT_BRACKET):
@@ -316,6 +359,8 @@ class MoleculeViewer:
             self.prev_material()
         if pr.is_key_pressed(pr.KEY_R) or pr.is_key_pressed(pr.KEY_SPACE):
             self.reset_view()
+        if pr.is_key_pressed(pr.KEY_G):
+            self.show_grid = not self.show_grid
         if pr.is_key_pressed(pr.KEY_C):
             self.show_cloud = not self.show_cloud
 
@@ -341,9 +386,12 @@ class MoleculeViewer:
         s1: AtomSite,
         s2: AtomSite,
         bond_type: str,
+        cam_pos: pr.Vector3,
     ) -> None:
         """
         Renders accurate multi-bond cylinder geometry (triple, double, single, aromatic).
+        Multi-bond offsets are oriented perpendicular to the camera line-of-sight to ensure
+        all parallel bond cylinders remain visible from any rotation angle without self-occlusion.
         """
         p1 = pr.Vector3(s1.x, s1.y, s1.z)
         p2 = pr.Vector3(s2.x, s2.y, s2.z)
@@ -360,18 +408,36 @@ class MoleculeViewer:
 
         ux, uy, uz = vx / length, vy / length, vz / length
 
-        # Compute perpendicular normal vector
-        if abs(uy) < 0.9:
-            ax, ay, az = 0.0, 1.0, 0.0
-        else:
-            ax, ay, az = 1.0, 0.0, 0.0
+        # Compute line-of-sight view vector from bond midpoint to camera
+        mid_x = 0.5 * (p1.x + p2.x)
+        mid_y = 0.5 * (p1.y + p2.y)
+        mid_z = 0.5 * (p1.z + p2.z)
+        cvx = cam_pos.x - mid_x
+        cvy = cam_pos.y - mid_y
+        cvz = cam_pos.z - mid_z
+        cv_len = math.sqrt(cvx * cvx + cvy * cvy + cvz * cvz)
 
-        # Cross product u x a
-        nx = uy * az - uz * ay
-        ny = uz * ax - ux * az
-        nz = ux * ay - uy * ax
+        if cv_len > 1e-4:
+            cvx, cvy, cvz = cvx / cv_len, cvy / cv_len, cvz / cv_len
+        else:
+            cvx, cvy, cvz = 0.0, 1.0, 0.0
+
+        # Cross product of bond axis u and view ray cv gives camera-facing perpendicular normal
+        nx = uy * cvz - uz * cvy
+        ny = uz * cvx - ux * cvz
+        nz = ux * cvy - uy * cvx
         n_len = math.sqrt(nx * nx + ny * ny + nz * nz)
-        nx, ny, nz = nx / n_len, ny / n_len, nz / n_len
+
+        if n_len > 1e-3:
+            nx, ny, nz = nx / n_len, ny / n_len, nz / n_len
+        else:
+            # Fallback if looking directly down the bond axis
+            ax, ay, az = (0.0, 1.0, 0.0) if abs(uy) < 0.9 else (1.0, 0.0, 0.0)
+            nx = uy * az - uz * ay
+            ny = uz * ax - ux * az
+            nz = ux * ay - uy * ax
+            n_len = math.sqrt(nx * nx + ny * ny + nz * nz)
+            nx, ny, nz = nx / n_len, ny / n_len, nz / n_len
 
         bt = str(bond_type).strip().lower()
 
@@ -409,18 +475,18 @@ class MoleculeViewer:
             rad = 0.060
             self._draw_cylinder_segment(p1, p2, rad, c1, c2)
 
-    def draw_molecule_3d(self) -> None:
+    def draw_molecule_3d(self, cam_pos: pr.Vector3) -> None:
         """Renders 3D atom spheres and multi-bond cylinders for the active material."""
         mat = self.current_material
         sites: List[AtomSite] = mat.sites
         bonds = mat.bonds
 
-        # 1. Draw Bonds (Cylinders with multi-bond geometry)
+        # 1. Draw Bonds (Cylinders with camera-aligned multi-bond geometry)
         for b in bonds:
             i, j = b[0], b[1]
             b_type = b[2] if len(b) > 2 else "1"
             if 0 <= i < len(sites) and 0 <= j < len(sites):
-                self.draw_bond(sites[i], sites[j], b_type)
+                self.draw_bond(sites[i], sites[j], b_type, cam_pos)
 
         # 2. Draw Atom Sites (Spheres with ball-and-stick scaling)
         for s in sites:
@@ -465,7 +531,7 @@ class MoleculeViewer:
 
         controls_text = "[Left Drag] Rotate | [Scroll] Zoom | [Right Drag] Pan"
         pr.draw_text(controls_text, 25, 95, 12, pr.GRAY)
-        nav_text = "[←/→] Switch Material | [R] Reset | [C] Cloud"
+        nav_text = "[←/→] Switch Material | [R] Reset | [G] Grid | [C] Cloud"
         pr.draw_text(nav_text, 25, 115, 12, pr.GRAY)
 
         pr.draw_fps(self.width - 90, 15)
@@ -514,18 +580,22 @@ class MoleculeViewer:
 
             pr.begin_mode_3d(camera)
 
-            # Floor reference grid
-            pr.draw_grid(20, 1.0)
+            # 1. Dynamic Floor Reference Grid (Cleanly positioned beneath the molecule)
+            if self.show_grid:
+                pr.rl_push_matrix()
+                pr.rl_translatef(self.target.x, self.grid_y, self.target.z)
+                pr.draw_grid(self.grid_slices, self.grid_spacing)
+                pr.rl_pop_matrix()
 
-            # 1. Shaded Opaque Geometry (Bonds & Atoms)
+            # 2. Shaded Opaque Geometry (Bonds & Atoms)
             if shader_enabled and shader is not None:
                 pr.begin_shader_mode(shader)
-                self.draw_molecule_3d()
+                self.draw_molecule_3d(cam_pos)
                 pr.end_shader_mode()
             else:
-                self.draw_molecule_3d()
+                self.draw_molecule_3d(cam_pos)
 
-            # 2. Translucent Volumetric Probability Cloud
+            # 3. Translucent Volumetric Probability Cloud
             self.draw_probability_cloud_3d()
 
             pr.end_mode_3d()

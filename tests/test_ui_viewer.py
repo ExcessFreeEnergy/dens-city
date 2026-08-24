@@ -1,7 +1,8 @@
 """
 Unit and functional tests for the Raylib 3D Molecular Viewer in dens_city.ui.
 Verifies CPK/publication color mappings, GAFF/Tripos element parsing, orbital camera math,
-multi-bond geometry, auto-framing, multi-material navigation, and probability clouds.
+multi-bond geometry, scale-invariant auto-framing (up to 128+ sites), dynamic ground grid positioning,
+multi-material navigation, and probability clouds.
 """
 
 import math
@@ -15,7 +16,7 @@ from dens_city.ui.viewer import (
     get_atom_element,
     get_atom_radius,
 )
-from dens_city.utils.materials import MaterialLoader
+from dens_city.utils.materials import AtomSite, Material, MaterialLoader
 
 
 def test_atom_element_parsing():
@@ -107,23 +108,87 @@ def test_molecule_viewer_bounds_and_auto_framing():
     assert viewer.current_material.name == "5cb"
 
 
+def test_sodium_dodecyl_sulfate_bounds_and_ground_grid():
+    """
+    Validates that Sodium Dodecyl Sulfate (43 sites, elongated surfactant)
+    is properly centered, auto-framed without frustum clipping, and its ground grid
+    is positioned strictly below the lowest atom elevation.
+    """
+    sds = MaterialLoader.load_material("sodium_dodecyl_sulfate")
+    assert len(sds.sites) == 43
+    assert len(sds.bonds) == 41
+
+    viewer = MoleculeViewer(materials=[sds])
+
+    min_y = min(s.y for s in sds.sites)
+    assert viewer.grid_y < min_y, f"Grid altitude {viewer.grid_y} must be strictly below min_y {min_y}"
+    assert viewer.distance >= 25.0, f"Camera distance {viewer.distance} must scale for ~20 Å SDS span"
+
+    # Sulfate head group has 3 S=O double bonds
+    so_double_bonds = [b for b in sds.bonds if str(b[2]).strip() == "2"]
+    assert len(so_double_bonds) == 3, f"Expected 3 S=O double bonds, got {len(so_double_bonds)}"
+
+
+def test_large_128_site_molecule_scaling():
+    """
+    Validates scale-invariant auto-framing and grid sizing for large 128-site polymers/macromolecules.
+    """
+    sites = []
+    for i in range(128):
+        # 128-site helical/linear polymer chain spanning ~100 Å in Z
+        sites.append(
+            AtomSite(
+                site_name=f"C{i + 1}",
+                atom_type="c3",
+                x=math.cos(i * 0.3) * 2.0,
+                y=math.sin(i * 0.3) * 2.0,
+                z=i * 0.8,
+                charge=0.0,
+                sigma=3.4,
+                epsilon_kcal=0.1,
+                epsilon_k=50.0,
+                mass=12.011,
+            )
+        )
+
+    bonds = [(i, i + 1, "1") for i in range(127)]
+    mat_128 = Material(
+        name="poly_128",
+        identifier="poly_128",
+        dimension_mode="3D_MOLECULAR",
+        sites=sites,
+        bonds=bonds,
+        effective_sigma=3.4,
+        effective_epsilon_k=50.0,
+        temperature_k=300.0,
+    )
+
+    viewer = MoleculeViewer(materials=[mat_128])
+    assert len(viewer.current_material.sites) == 128
+    # Target must be at center of chain (z ~ 50.8 Å)
+    assert math.isclose(viewer.target.z, 50.8, abs_tol=1.0)
+    # Camera distance must scale to contain the full ~102 Å bounding sphere
+    assert viewer.distance > 100.0, f"Expected camera distance > 100 Å, got {viewer.distance}"
+    # Ground grid must be beneath the lowest Y coordinate
+    min_y = min(s.y for s in sites)
+    assert viewer.grid_y < min_y
+    assert viewer.grid_slices >= 80
+
+
 def test_nitrogen_and_co2_multi_bond_detection():
     """Validates that multi-bonds (triple in N2, double in CO2) are loaded from .mol2."""
     nitrogen = MaterialLoader.load_material("nitrogen")
     assert len(nitrogen.sites) == 2
     assert len(nitrogen.bonds) == 1
-    # Nitrogen bond is triple bond "3"
     assert str(nitrogen.bonds[0][2]).strip() == "3"
 
     co2 = MaterialLoader.load_material("carbon_dioxide")
     assert len(co2.sites) == 3
     assert len(co2.bonds) == 2
-    # Both bonds in CO2 are double bonds "2"
     assert str(co2.bonds[0][2]).strip() == "2"
     assert str(co2.bonds[1][2]).strip() == "2"
 
     five_cb = MaterialLoader.load_material("5cb")
-    # 5CB has nitrile triple bond (bond 1 between site 1 and 2)
     has_triple = any(str(b[2]).strip() == "3" for b in five_cb.bonds)
     assert has_triple, "5CB must contain a triple bond in its nitrile group"
 
@@ -156,12 +221,10 @@ def test_camera_spherical_coordinate_math():
     viewer.azimuth = 0.0
 
     pos = viewer.get_camera_position()
-    # At elevation 0, azimuth 0: camera is on Z-axis behind target (x=target.x, y=target.y, z=target.z + 10)
     assert math.isclose(pos.x, viewer.target.x, abs_tol=1e-5)
     assert math.isclose(pos.y, viewer.target.y, abs_tol=1e-5)
     assert math.isclose(pos.z, viewer.target.z + 10.0, abs_tol=1e-5)
 
-    # Elevation 90 deg (pi/2): camera is directly above target on Y-axis
     viewer.elevation = math.pi / 2.0
     pos_top = viewer.get_camera_position()
     assert math.isclose(pos_top.x, viewer.target.x, abs_tol=1e-5)
@@ -182,3 +245,4 @@ def test_cli_materials_arg_parsing():
     assert "argon" in all_mats
     assert "water" in all_mats
     assert "5cb" in all_mats
+    assert "sodium_dodecyl_sulfate" in all_mats
