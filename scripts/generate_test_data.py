@@ -2,7 +2,8 @@
 """
 Populates the data/test_data/ directory with standard Tripos .mol2 structure files
 for benchmark materials in dens-city, copying directly from FreeSolv where available,
-and generating canonical geometries for the remaining fluids.
+and generating canonical geometries for the remaining fluids. Also generates
+forcefield_parameters.json, forcefield_parameters.csv, and gaff.dat.
 
 Usage:
     python scripts/generate_test_data.py        # Populates 32 core benchmark materials
@@ -10,24 +11,150 @@ Usage:
 """
 
 import argparse
+import json
 import math
 import shutil
 import sys
 import tarfile
 from pathlib import Path
 
-# Add scripts directory to path for imports
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
-
-from generate_forcefield_params import generate_json_and_csv
-
-REPO_ROOT = SCRIPT_DIR.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
 TEST_DATA_DIR = DATA_DIR / "test_data"
 FREESOLV_SUBMODULE_DIR = REPO_ROOT / "FreeSolv"
 MOL2_GAFF_DIR = DATA_DIR / "mol2files_gaff"
+
+# Comprehensive atomtype lookup database
+# Keys: atom type -> (R_min_half_A, eps_kcal_mol, mass, atomic_num, description)
+ATOMTYPES_DB = {
+    # Carbon
+    "c": (1.9080, 0.0860, 12.01, 6, "sp2 C carbonyl group"),
+    "c1": (1.9080, 0.2100, 12.01, 6, "sp C alkyne / nitrile / TraPPE CO2"),
+    "c2": (1.9080, 0.0860, 12.01, 6, "sp2 C aliphatic alkene"),
+    "c3": (1.9080, 0.1094, 12.01, 6, "sp3 C aliphatic alkane"),
+    "ca": (1.9080, 0.0860, 12.01, 6, "sp2 C aromatic ring"),
+    "cc": (1.9080, 0.0860, 12.01, 6, "sp2 C in 5-membered aromatic ring"),
+    "cd": (1.9080, 0.0860, 12.01, 6, "sp2 C in 5-membered aromatic ring"),
+    "ce": (1.9080, 0.0860, 12.01, 6, "sp2 C in 5-membered aromatic ring"),
+    "cf": (1.9080, 0.0860, 12.01, 6, "sp2 C in 5-membered aromatic ring"),
+    "cg": (1.9080, 0.2100, 12.01, 6, "sp C in alkyne"),
+    "cp": (1.9080, 0.0860, 12.01, 6, "sp2 aromatic bridgehead C"),
+    "cx": (1.9080, 0.0860, 12.01, 6, "sp3 C in 3-membered ring"),
+    "cy": (1.9080, 0.0860, 12.01, 6, "sp3 C in 4-membered ring"),
+    # Hydrogen
+    "h1": (1.3870, 0.0157, 1.008, 1, "H bonded to aliphatic C with 1 EWG"),
+    "h2": (1.2870, 0.0157, 1.008, 1, "H bonded to aliphatic C with 2 EWG"),
+    "h3": (1.1870, 0.0157, 1.008, 1, "H bonded to aliphatic C with 3 EWG"),
+    "h4": (1.4090, 0.0150, 1.008, 1, "H bonded to aromatic C with 1 EWG"),
+    "h5": (1.3590, 0.0150, 1.008, 1, "H bonded to aromatic C with 2 EWG"),
+    "ha": (1.4590, 0.0150, 1.008, 1, "H bonded to aromatic C / H2"),
+    "hc": (1.4870, 0.0157, 1.008, 1, "H bonded to aliphatic C without EWG"),
+    "hn": (0.6000, 0.0157, 1.008, 1, "H bonded to nitrogen"),
+    "ho": (0.0000, 0.0000, 1.008, 1, "Hydroxyl H bonded to oxygen"),
+    "hs": (0.6000, 0.0157, 1.008, 1, "H bonded to sulfur"),
+    "hw": (0.0000, 0.0000, 1.008, 1, "SPC/E & TIP3P Water Hydrogen"),
+    # Oxygen
+    "o": (1.6612, 0.2100, 16.00, 8, "Carbonyl / TraPPE oxygen"),
+    "oh": (1.7210, 0.2104, 16.00, 8, "Hydroxyl oxygen in alcohols"),
+    "os": (1.6837, 0.1700, 16.00, 8, "Ether / ester / sulfate oxygen"),
+    "ow": (1.7766, 0.1553, 16.00, 8, "SPC/E Water Oxygen (sigma=3.166 A, eps=78.2 K)"),
+    # Nitrogen
+    "n": (1.8240, 0.1700, 14.01, 7, "sp2 nitrogen in amides"),
+    "n1": (1.8240, 0.1700, 14.01, 7, "sp nitrogen in nitriles / TraPPE N2"),
+    "n2": (1.8240, 0.1700, 14.01, 7, "sp2 nitrogen in imines"),
+    "n3": (1.8240, 0.1700, 14.01, 7, "sp3 nitrogen in amines / ammonia"),
+    "na": (1.8240, 0.1700, 14.01, 7, "sp2 nitrogen in aromatic rings"),
+    "nb": (1.8240, 0.1700, 14.01, 7, "sp2 nitrogen in aromatic rings"),
+    "nc": (1.8240, 0.1700, 14.01, 7, "sp2 nitrogen in 5-membered aromatic rings"),
+    "nd": (1.8240, 0.1700, 14.01, 7, "sp2 nitrogen in 5-membered aromatic rings"),
+    "nh": (1.8240, 0.1700, 14.01, 7, "Amine nitrogen"),
+    "no": (1.8240, 0.1700, 14.01, 7, "Nitro group nitrogen"),
+    # Halogens
+    "f": (1.7500, 0.0610, 19.00, 9, "Fluorine in fluorocarbons & HF"),
+    "cl": (1.9480, 0.2650, 35.45, 17, "Chlorine bonded to carbon"),
+    "br": (2.0200, 0.4200, 79.90, 35, "Bromine bonded to carbon"),
+    "i": (2.1500, 0.5000, 126.90, 53, "Iodine bonded to carbon"),
+    # Sulfur & Phosphorus
+    "s": (2.0000, 0.2500, 32.06, 16, "sp2 Sulfur"),
+    "s4": (2.0000, 0.2500, 32.06, 16, "Hypervalent Sulfur (IV)"),
+    "s6": (2.0000, 0.2500, 32.06, 16, "Hypervalent Sulfur (VI) in SF6 / SDS"),
+    "sh": (2.0000, 0.2500, 32.06, 16, "Thiol Sulfur in -SH"),
+    "ss": (2.0000, 0.2500, 32.06, 16, "Disulfide Sulfur"),
+    "sy": (2.0000, 0.2500, 32.06, 16, "Sulfur in sulfoxides"),
+    "p5": (2.1000, 0.2000, 30.97, 15, "Phosphorus in phosphates"),
+    # Inorganic / Ionic / Noble Gas / Coarse-Grained
+    "Ar": (1.9109, 0.2380, 39.95, 18, "Monoatomic Argon LJ (sigma=3.405 A, eps=119.8 K)"),
+    "Na": (1.8680, 0.0028, 22.99, 11, "Sodium cation Na+"),
+    "Cl": (2.4700, 0.1000, 35.45, 17, "Chloride anion Cl- (RPM / electrolyte)"),
+    "Ca": (1.7130, 0.4590, 40.08, 20, "Calcium divalent cation Ca2+"),
+    "Col": (8.4180, 0.0000, 1000.0, 0, "Large Colloidal Hard Sphere (sigma=15.0 A)"),
+}
+
+
+def compute_sigma(r_min_half_A: float) -> tuple:
+    if r_min_half_A == 0.0:
+        return 0.0, 0.0
+    sigma_A = 2.0 * r_min_half_A / (2.0 ** (1.0 / 6.0))
+    sigma_nm = sigma_A / 10.0
+    return sigma_A, sigma_nm
+
+
+def compute_epsilon(eps_kcal: float) -> tuple:
+    eps_kj = eps_kcal * 4.184
+    eps_K = (eps_kcal * 4184.0) / 8.314462618
+    return eps_kj, eps_K
+
+
+def generate_gaff_dat() -> str:
+    lines = [
+        "AMBER General Amber Force Field (GAFF) & Extended dens-city Parameters",
+        "MOD4",
+        "MASS",
+    ]
+    for atype, (r_min, eps_kcal, mass, at_num, desc) in sorted(ATOMTYPES_DB.items()):
+        lines.append(f"{atype:<6} {mass:>7.3f}        0.878               {desc}")
+    lines.append("")
+    lines.append("NONBON")
+    for atype, (r_min, eps_kcal, mass, at_num, desc) in sorted(ATOMTYPES_DB.items()):
+        sig_A, sig_nm = compute_sigma(r_min)
+        eps_kj, eps_K = compute_epsilon(eps_kcal)
+        lines.append(
+            f"  {atype:<6} {r_min:>10.4f} {eps_kcal:>10.4f}             {desc} (sigma={sig_A:.4f}A, eps={eps_K:.1f}K)"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def generate_forcefield_files(dest_dir: Path) -> None:
+    json_data = {}
+    csv_lines = [
+        "atom_type,atomic_number,mass_amu,r_min_half_A,sigma_A,sigma_nm,epsilon_kcal_mol,epsilon_kj_mol,epsilon_K,description"
+    ]
+    for atype, (r_min, eps_kcal, mass, at_num, desc) in sorted(ATOMTYPES_DB.items()):
+        sig_A, sig_nm = compute_sigma(r_min)
+        eps_kj, eps_K = compute_epsilon(eps_kcal)
+        json_data[atype] = {
+            "atom_type": atype,
+            "atomic_number": at_num,
+            "mass_amu": mass,
+            "r_min_half_angstrom": r_min,
+            "sigma_angstrom": round(sig_A, 5),
+            "sigma_nm": round(sig_nm, 6),
+            "epsilon_kcal_mol": round(eps_kcal, 5),
+            "epsilon_kj_mol": round(eps_kj, 5),
+            "epsilon_kelvin": round(eps_K, 2),
+            "description": desc,
+        }
+        csv_lines.append(
+            f'{atype},{at_num},{mass},{r_min:.4f},{sig_A:.5f},{sig_nm:.6f},{eps_kcal:.5f},{eps_kj:.5f},{eps_K:.2f},"{desc}"'
+        )
+
+    json_path = dest_dir / "forcefield_parameters.json"
+    json_path.write_text(json.dumps(json_data, indent=2))
+    csv_path = dest_dir / "forcefield_parameters.csv"
+    csv_path.write_text("\n".join(csv_lines))
+    dat_path = dest_dir / "gaff.dat"
+    dat_path.write_text(generate_gaff_dat())
 
 
 def format_mol2(name: str, atoms: list, bonds: list, comment: str = "") -> str:
@@ -48,13 +175,11 @@ def format_mol2(name: str, atoms: list, bonds: list, comment: str = "") -> str:
     ]
 
     for i, at in enumerate(atoms, start=1):
-        # atom: (name, x, y, z, atom_type, charge)
         at_name, x, y, z, at_type, q = at
         lines.append(f"{i:>7} {at_name:<6} {x:>12.4f} {y:>10.4f} {z:>10.4f} {at_type:<8} 1 MOL {q:>12.6f}")
 
     lines.append("@<TRIPOS>BOND")
     for i, b in enumerate(bonds, start=1):
-        # bond: (a1, a2, bond_type)
         a1, a2, b_type = b
         lines.append(f"{i:>6} {a1:>6} {a2:>6} {b_type:<4}")
 
@@ -65,7 +190,6 @@ def format_mol2(name: str, atoms: list, bonds: list, comment: str = "") -> str:
 
 
 def build_water() -> str:
-    # SPC/E geometry: r(OH) = 1.0000 A, theta = 109.47 deg
     r_oh = 1.0000
     half_angle = math.radians(109.47 / 2.0)
     hx = r_oh * math.sin(half_angle)
@@ -75,88 +199,64 @@ def build_water() -> str:
         ("H1", hx, 0.0, hz, "hw", 0.423800),
         ("H2", -hx, 0.0, hz, "hw", 0.423800),
     ]
-    bonds = [
-        (1, 2, "1"),
-        (1, 3, "1"),
-    ]
+    bonds = [(1, 2, "1"), (1, 3, "1")]
     return format_mol2("water", atoms, bonds, "SPC/E Water model (dens-city)")
 
 
 def build_nitrogen() -> str:
-    # TraPPE / diatomic N2: r(NN) = 1.1000 A
     atoms = [
         ("N1", 0.0, 0.0, -0.5500, "n1", 0.000000),
         ("N2", 0.0, 0.0, 0.5500, "n1", 0.000000),
     ]
-    bonds = [
-        (1, 2, "3"),
-    ]
+    bonds = [(1, 2, "3")]
     return format_mol2("nitrogen", atoms, bonds, "TraPPE Diatomic Nitrogen (N2)")
 
 
 def build_carbon_dioxide() -> str:
-    # TraPPE CO2: linear, r(CO) = 1.1600 A, C=+0.70, O=-0.35
     atoms = [
         ("C1", 0.0, 0.0, 0.0000, "c1", 0.700000),
         ("O1", 0.0, 0.0, -1.1600, "o", -0.350000),
         ("O2", 0.0, 0.0, 1.1600, "o", -0.350000),
     ]
-    bonds = [
-        (1, 2, "2"),
-        (1, 3, "2"),
-    ]
+    bonds = [(1, 2, "2"), (1, 3, "2")]
     return format_mol2("carbon_dioxide", atoms, bonds, "TraPPE Carbon Dioxide (CO2)")
 
 
 def build_argon() -> str:
-    # Argon noble gas monoatomic: sigma = 3.405 A
-    atoms = [
-        ("Ar1", 0.0, 0.0, 0.0, "Ar", 0.000000),
-    ]
+    atoms = [("Ar1", 0.0, 0.0, 0.0, "Ar", 0.000000)]
     bonds = []
     return format_mol2("argon", atoms, bonds, "Monoatomic Argon (Ar)")
 
 
 def build_sodium_chloride() -> str:
-    # NaCl ion pair: r = 2.36 A
     atoms = [
         ("Na1", 0.0, 0.0, -1.1800, "Na", 1.000000),
         ("Cl1", 0.0, 0.0, 1.1800, "Cl", -1.000000),
     ]
-    bonds = [
-        (1, 2, "1"),
-    ]
+    bonds = [(1, 2, "1")]
     return format_mol2("sodium_chloride", atoms, bonds, "Sodium Chloride (NaCl) 1:1 RPM electrolyte")
 
 
 def build_calcium_chloride() -> str:
-    # CaCl2 linear 2:1 electrolyte: r(CaCl) = 2.70 A
     atoms = [
         ("Ca1", 0.0, 0.0, 0.0000, "Ca", 2.000000),
         ("Cl1", 0.0, 0.0, -2.7000, "Cl", -1.000000),
         ("Cl2", 0.0, 0.0, 2.7000, "Cl", -1.000000),
     ]
-    bonds = [
-        (1, 2, "1"),
-        (1, 3, "1"),
-    ]
+    bonds = [(1, 2, "1"), (1, 3, "1")]
     return format_mol2("calcium_chloride", atoms, bonds, "Calcium Chloride (CaCl2) 2:1 electrolyte")
 
 
 def build_hydrogen_fluoride() -> str:
-    # HF associating dipole: r(HF) = 0.917 A, q = +/- 0.45e
     atoms = [
         ("F1", 0.0, 0.0, 0.0000, "f", -0.450000),
         ("H1", 0.0, 0.0, 0.9170, "ha", 0.450000),
     ]
-    bonds = [
-        (1, 2, "1"),
-    ]
+    bonds = [(1, 2, "1")]
     return format_mol2("hydrogen_fluoride", atoms, bonds, "Hydrogen Fluoride (HF) 1D Associating fluid")
 
 
 def build_sulfur_hexafluoride() -> str:
-    # SF6 octahedral: r(SF) = 1.56 A
     r_sf = 1.5600
     atoms = [
         ("S1", 0.0, 0.0, 0.0, "s6", 1.500000),
@@ -167,46 +267,30 @@ def build_sulfur_hexafluoride() -> str:
         ("F5", 0.0, 0.0, r_sf, "f", -0.250000),
         ("F6", 0.0, 0.0, -r_sf, "f", -0.250000),
     ]
-    bonds = [
-        (1, 2, "1"),
-        (1, 3, "1"),
-        (1, 4, "1"),
-        (1, 5, "1"),
-        (1, 6, "1"),
-        (1, 7, "1"),
-    ]
+    bonds = [(1, 2, "1"), (1, 3, "1"), (1, 4, "1"), (1, 5, "1"), (1, 6, "1"), (1, 7, "1")]
     return format_mol2("sulfur_hexafluoride", atoms, bonds, "Sulfur Hexafluoride (SF6) octahedral fluid")
 
 
 def build_hydrogen() -> str:
-    # H2 diatomic: r(HH) = 0.7414 A
     atoms = [
         ("H1", 0.0, 0.0, -0.3707, "ha", 0.000000),
         ("H2", 0.0, 0.0, 0.3707, "ha", 0.000000),
     ]
-    bonds = [
-        (1, 2, "1"),
-    ]
+    bonds = [(1, 2, "1")]
     return format_mol2("hydrogen", atoms, bonds, "Molecular Hydrogen (H2)")
 
 
 def build_colloidal_hard_sphere() -> str:
-    # Colloid hard sphere: giant single excluded volume particle
-    atoms = [
-        ("COL1", 0.0, 0.0, 0.0, "Col", 0.000000),
-    ]
+    atoms = [("COL1", 0.0, 0.0, 0.0, "Col", 0.000000)]
     bonds = []
     return format_mol2("colloidal_hard_sphere", atoms, bonds, "Large Colloidal Hard Sphere (D=15A)")
 
 
 def build_polyethylene() -> str:
-    # Extended polyethylene oligomer (eicosane C20H42 all-trans chain)
     n_c = 20
     atoms = []
     bonds = []
     c_idx = []
-
-    # All-trans zigzag along x-axis: dx = 1.27 A, dy = +/- 0.44 A
     for i in range(n_c):
         x = i * 1.27
         y = 0.44 if (i % 2 == 0) else -0.44
@@ -216,46 +300,32 @@ def build_polyethylene() -> str:
         atoms.append((c_name, x, y, z, "c3", q_c))
         c_idx.append(len(atoms))
 
-        # Add hydrogens
         h_y = 0.88 if (i % 2 == 0) else -0.88
-        h_z1 = 0.89
-        h_z2 = -0.89
-        q_h = 0.06
-
-        atoms.append((f"H{i * 2 + 1}", x, h_y, h_z1, "hc", q_h))
+        atoms.append((f"H{i * 2 + 1}", x, h_y, 0.89, "hc", 0.06))
         h1_idx = len(atoms)
-        atoms.append((f"H{i * 2 + 2}", x, h_y, h_z2, "hc", q_h))
+        atoms.append((f"H{i * 2 + 2}", x, h_y, -0.89, "hc", 0.06))
         h2_idx = len(atoms)
 
         bonds.append((c_idx[-1], h1_idx, "1"))
         bonds.append((c_idx[-1], h2_idx, "1"))
-
-        # Terminal extra hydrogens
         if i == 0:
-            atoms.append(("H0", x - 0.89, y, 0.0, "hc", q_h))
+            atoms.append(("H0", x - 0.89, y, 0.0, "hc", 0.06))
             bonds.append((c_idx[-1], len(atoms), "1"))
         elif i == n_c - 1:
-            atoms.append((f"H{n_c * 2 + 1}", x + 0.89, y, 0.0, "hc", q_h))
+            atoms.append((f"H{n_c * 2 + 1}", x + 0.89, y, 0.0, "hc", 0.06))
             bonds.append((c_idx[-1], len(atoms), "1"))
-
-        # Carbon-carbon backbone bond
         if i > 0:
             bonds.append((c_idx[i - 1], c_idx[i], "1"))
-
     return format_mol2("polyethylene", atoms, bonds, "Polyethylene oligomer (C20H42 eicosane chain)")
 
 
 def build_5cb() -> str:
-    # 5CB (4-Cyano-4'-pentylbiphenyl): C18H19N
     atoms = []
     bonds = []
-
-    # Cyano group N#C- at origin / -z
     atoms.append(("N1", 0.0, 0.0, -7.0, "n1", -0.550000))
     atoms.append(("C1", 0.0, 0.0, -5.85, "c1", 0.450000))
     bonds.append((1, 2, "3"))
 
-    # Ring 1: 4-substituted phenyl (z in [-4.7, -2.0])
     r1_coords = [
         ("C2", 0.0, 0.0, -4.45, "ca", 0.00),
         ("C3", 1.21, 0.0, -3.75, "ca", -0.13),
@@ -271,20 +341,15 @@ def build_5cb() -> str:
     r1_start = len(atoms) + 1
     for item in r1_coords:
         atoms.append(item)
-    bonds.append((2, r1_start, "1"))  # C1 - C2
-    bonds.append((r1_start, r1_start + 1, "ar"))
-    bonds.append((r1_start + 1, r1_start + 2, "ar"))
-    bonds.append((r1_start + 2, r1_start + 3, "ar"))
-    bonds.append((r1_start + 3, r1_start + 4, "ar"))
-    bonds.append((r1_start + 4, r1_start + 5, "ar"))
+    bonds.append((2, r1_start, "1"))
+    for i in range(5):
+        bonds.append((r1_start + i, r1_start + i + 1, "ar"))
     bonds.append((r1_start + 5, r1_start, "ar"))
-    # H bonds
     bonds.append((r1_start + 1, r1_start + 6, "1"))
     bonds.append((r1_start + 2, r1_start + 7, "1"))
     bonds.append((r1_start + 4, r1_start + 8, "1"))
     bonds.append((r1_start + 5, r1_start + 9, "1"))
 
-    # Ring 2: biphenyl linked at C5 (z in [-0.15, 2.55], rotated ~30 deg)
     r2_start = len(atoms) + 1
     r2_coords = [
         ("C8", 0.0, 0.0, -0.15, "ca", 0.05),
@@ -300,20 +365,15 @@ def build_5cb() -> str:
     ]
     for item in r2_coords:
         atoms.append(item)
-    bonds.append((r1_start + 3, r2_start, "1"))  # C5 - C8 inter-ring bond
-    bonds.append((r2_start, r2_start + 1, "ar"))
-    bonds.append((r2_start + 1, r2_start + 2, "ar"))
-    bonds.append((r2_start + 2, r2_start + 3, "ar"))
-    bonds.append((r2_start + 3, r2_start + 4, "ar"))
-    bonds.append((r2_start + 4, r2_start + 5, "ar"))
+    bonds.append((r1_start + 3, r2_start, "1"))
+    for i in range(5):
+        bonds.append((r2_start + i, r2_start + i + 1, "ar"))
     bonds.append((r2_start + 5, r2_start, "ar"))
-    # H bonds
     bonds.append((r2_start + 1, r2_start + 6, "1"))
     bonds.append((r2_start + 2, r2_start + 7, "1"))
     bonds.append((r2_start + 4, r2_start + 8, "1"))
     bonds.append((r2_start + 5, r2_start + 9, "1"))
 
-    # Pentyl tail attached to C11 (5 carbons: C14-C18)
     tail_c = [
         ("C14", 0.0, 0.0, 4.15, "c3", -0.06),
         ("C15", 1.25, 0.0, 4.95, "c3", -0.12),
@@ -324,11 +384,10 @@ def build_5cb() -> str:
     tail_start = len(atoms) + 1
     for c in tail_c:
         atoms.append(c)
-    bonds.append((r2_start + 3, tail_start, "1"))  # C11 - C14
+    bonds.append((r2_start + 3, tail_start, "1"))
     for i in range(4):
         bonds.append((tail_start + i, tail_start + i + 1, "1"))
 
-    # Pentyl hydrogens (11 H)
     h_tail = [
         ("H9", -0.55, 0.89, 4.40, "hc", 0.06),
         ("H10", -0.55, -0.89, 4.40, "hc", 0.06),
@@ -356,16 +415,12 @@ def build_5cb() -> str:
     bonds.append((tail_start + 4, h_start + 8, "1"))
     bonds.append((tail_start + 4, h_start + 9, "1"))
     bonds.append((tail_start + 4, h_start + 10, "1"))
-
     return format_mol2("5cb", atoms, bonds, "4-Cyano-4'-pentylbiphenyl (5CB) nematic liquid crystal")
 
 
 def build_sds() -> str:
-    # Sodium Dodecyl Sulfate: C12H25-O-SO3(-) Na(+)
     atoms = []
     bonds = []
-
-    # Sulfate headgroup + Na+
     atoms.append(("Na1", 0.0, 0.0, -3.20, "Na", 1.000000))
     atoms.append(("S1", 0.0, 0.0, -1.00, "s6", 1.300000))
     atoms.append(("O1", 1.40, 0.0, -1.30, "o", -0.650000))
@@ -378,7 +433,6 @@ def build_sds() -> str:
     bonds.append((2, 5, "2"))
     bonds.append((2, 6, "1"))
 
-    # Dodecyl tail: C1 to C12 along z/x zigzag
     c_start = len(atoms) + 1
     for i in range(12):
         z = 1.80 + i * 1.27
@@ -387,31 +441,26 @@ def build_sds() -> str:
         q_c = 0.10 if i == 0 else (-0.18 if i == 11 else -0.12)
         atoms.append((f"C{i + 1}", x, y, z, "c3", q_c))
 
-    bonds.append((6, c_start, "1"))  # O4 - C1
+    bonds.append((6, c_start, "1"))
     for i in range(11):
         bonds.append((c_start + i, c_start + i + 1, "1"))
 
-    # Hydrogens
     for i in range(12):
         z = 1.80 + i * 1.27
         x = 0.88 if (i % 2 == 0) else -0.88
-        q_h = 0.06
-        atoms.append((f"H{i * 2 + 1}", x, 0.89, z, "hc", q_h))
+        atoms.append((f"H{i * 2 + 1}", x, 0.89, z, "hc", 0.06))
         h1 = len(atoms)
-        atoms.append((f"H{i * 2 + 2}", x, -0.89, z, "hc", q_h))
+        atoms.append((f"H{i * 2 + 2}", x, -0.89, z, "hc", 0.06))
         h2 = len(atoms)
         bonds.append((c_start + i, h1, "1"))
         bonds.append((c_start + i, h2, "1"))
         if i == 11:
-            atoms.append(("H25", x, 0.0, z + 0.89, "hc", q_h))
+            atoms.append(("H25", x, 0.0, z + 0.89, "hc", 0.06))
             bonds.append((c_start + i, len(atoms), "1"))
-
     return format_mol2("sds", atoms, bonds, "Sodium dodecyl sulfate (SDS) anionic surfactant")
 
 
-# 32 Curated Benchmark Materials (20 Baseline + 12 High-Variance FreeSolv Additions)
 BENCHMARK_MATERIALS = [
-    # 1-20 Original Benchmark Suite
     ("Water", "generate", build_water, "water.mol2"),
     ("Nitrogen", "generate", build_nitrogen, "nitrogen.mol2"),
     ("Methane", "freesolv", "mobley_9055303.mol2", "methane.mol2"),
@@ -432,7 +481,6 @@ BENCHMARK_MATERIALS = [
     ("Acetone", "freesolv", "mobley_3867265.mol2", "acetone.mol2"),
     ("Large colloidal hard sphere", "generate", build_colloidal_hard_sphere, "colloidal_hard_sphere.mol2"),
     ("Hydrogen", "generate", build_hydrogen, "hydrogen.mol2"),
-    # 21-32 High-Variance FreeSolv Additions (Reaching full 32 batch)
     ("Ethanol", "freesolv", "mobley_2310185.mol2", "ethanol.mol2"),
     ("Acetic acid", "freesolv", "mobley_3034976.mol2", "acetic_acid.mol2"),
     ("Ethyl acetate", "freesolv", "mobley_6973347.mol2", "ethyl_acetate.mol2"),
@@ -449,13 +497,7 @@ BENCHMARK_MATERIALS = [
 
 
 def verify_and_extract_freesolv() -> Path:
-    """
-    Verifies that the FreeSolv submodule / GAFF database is available.
-    Extracts mol2files_gaff.tar.gz and copies metadata files to data/ if not already present.
-    """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-    # 1. Copy metadata files if FreeSolv submodule exists
     if FREESOLV_SUBMODULE_DIR.exists():
         metadata_files = [
             "database.json",
@@ -470,11 +512,9 @@ def verify_and_extract_freesolv() -> Path:
             if src.exists() and not dst.exists():
                 shutil.copy2(src, dst)
 
-    # 2. Check if data/mol2files_gaff exists and has .mol2 files
     if MOL2_GAFF_DIR.exists() and any(MOL2_GAFF_DIR.glob("*.mol2")):
         return MOL2_GAFF_DIR
 
-    # 3. Extract tarball from FreeSolv submodule or data/
     tar_paths = [
         FREESOLV_SUBMODULE_DIR / "mol2files_gaff.tar.gz",
         DATA_DIR / "mol2files_gaff.tar.gz",
@@ -503,16 +543,13 @@ def verify_and_extract_freesolv() -> Path:
 
 
 def generate_all(populate_entire_freesolv: bool = False) -> None:
-    """Populates data/test_data with benchmark materials and force field parameters."""
     print("================================================================================")
     print("  dens-city: Test Data & Benchmark Molecular Dataset Generator")
     print("================================================================================")
 
-    # Step 1: Verify FreeSolv availability
     freesolv_src_dir = verify_and_extract_freesolv()
     print(f"  FreeSolv Source     : {freesolv_src_dir}")
 
-    # Step 2: Ensure data/ and data/test_data/ exist
     TEST_DATA_DIR.mkdir(parents=True, exist_ok=True)
     print(f"  Target Test Data Dir: {TEST_DATA_DIR}")
     mode_str = (
@@ -521,7 +558,6 @@ def generate_all(populate_entire_freesolv: bool = False) -> None:
     print(f"  Mode                : {mode_str}")
     print("--------------------------------------------------------------------------------")
 
-    # Step 3: Populate canonical benchmark materials (32 materials)
     for idx, (name, src_type, src_val, out_filename) in enumerate(BENCHMARK_MATERIALS, 1):
         out_path = TEST_DATA_DIR / out_filename
         if src_type == "freesolv":
@@ -539,7 +575,6 @@ def generate_all(populate_entire_freesolv: bool = False) -> None:
             out_path.write_text(mol2_content)
             print(f"[{idx:02d}/32] {name:<35} <- Generated canonical model -> {out_filename}")
 
-    # Step 4: If --all requested, copy EVERY remaining FreeSolv molecule into test_data/
     if populate_entire_freesolv:
         print("--------------------------------------------------------------------------------")
         print("  Populating entire FreeSolv database into data/test_data/...")
@@ -555,12 +590,10 @@ def generate_all(populate_entire_freesolv: bool = False) -> None:
                 copied_extra += 1
         print(f"  Copied {copied_extra} additional FreeSolv molecules into {TEST_DATA_DIR}.")
 
-    # Step 5: Generate force field parameters and GAFF database in data/test_data/
     print("--------------------------------------------------------------------------------")
     print("  Generating Force Field Parameters & GAFF Database in data/test_data/...")
-    generate_json_and_csv()
+    generate_forcefield_files(TEST_DATA_DIR)
 
-    # Step 6: Verification
     mol2_files = list(TEST_DATA_DIR.glob("*.mol2"))
     print("--------------------------------------------------------------------------------")
     print(f"  Verification: Found {len(mol2_files)} total .mol2 files in {TEST_DATA_DIR}")
