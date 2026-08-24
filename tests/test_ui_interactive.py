@@ -174,5 +174,13 @@ def test_cdft_bg_worker_reset():
         assert t2.wall_pressure_bar == 0.0
         assert t2.coating_viability == "PENDING"
         assert len(t2.current_coords) == len(benzene.sites)
+
+        # Step again after reset to verify stepping is functional
+        worker.step_cdft(n_steps=5)
+        time.sleep(0.05)
+        t3 = worker.poll_telemetry()
+        assert t3.cdft_step == 5
+        assert t3.cdft_progress == 0.1
+        assert t3.wall_pressure_bar != 0.0
     finally:
         worker.close()

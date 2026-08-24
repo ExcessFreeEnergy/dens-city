@@ -318,6 +318,7 @@ class CDFTBGWorker:
 
     def step_cdft(self, n_steps: int = 5) -> None:
         """Executes n_steps of variational cDFT synchronously and updates density profile & telemetry."""
+        self.cancel_flag.clear()
         if self.cdft_solver is None:
             self._init_cdft()
         if self.cdft_solver is None:
@@ -356,6 +357,7 @@ class CDFTBGWorker:
 
     def step_mcmc(self, n_steps: int = 5) -> None:
         """Executes n_steps of Metropolis MCMC relaxation and updates coordinates/telemetry."""
+        self.cancel_flag.clear()
         mat = self.material
         sigmas = [s.sigma for s in mat.sites]
         if self.telemetry.current_coords:
@@ -645,6 +647,7 @@ class CDFTBGWorker:
             is_wetting=True,
         )
         self.last_applied_seq = self.seq_counter
+        self.cancel_flag.clear()
 
     def close(self) -> None:
         """Cleans up ZeroMQ sockets and worker threads."""

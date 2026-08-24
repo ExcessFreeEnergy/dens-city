@@ -525,9 +525,11 @@ class MoleculeViewer:
     def draw_hud(self) -> None:
         """Renders top-left HUD with State badge and camera controls."""
         mat = self.material
+        hud_w = 440
+        hud_h = 140
         bg_dark = pr.Color(16, 20, 26, 225)
-        pr.draw_rectangle(15, 15, 370, 140, bg_dark)
-        pr.draw_rectangle_lines(15, 15, 370, 140, pr.Color(50, 60, 75, 255))
+        pr.draw_rectangle(15, 15, hud_w, hud_h, bg_dark)
+        pr.draw_rectangle_lines(15, 15, hud_w, hud_h, pr.Color(50, 60, 75, 255))
 
         title_text = f"Material: {mat.name}"
         pr.draw_text(title_text, 25, 25, 18, pr.RAYWHITE)
@@ -672,7 +674,7 @@ class MoleculeViewer:
         pr.draw_text(viab_text, panel_x + 15, y, 13, viab_col)
 
     def draw_control_deck(self) -> None:
-        """Renders minimalist bottom execution control deck with Reset button."""
+        """Renders minimalist bottom execution control deck with Reset button and dual progress bars."""
         deck_x = 20
         deck_y = self.height - 75
         deck_w = self.width - 40
@@ -694,33 +696,33 @@ class MoleculeViewer:
         cdft_converged = self.telemetry.state in ("CDFT_CONVERGED", "RUNNING_BG", "COMPLETE")
 
         # 0. [Reset] Button
-        btn_reset = pr.Rectangle(curr_x, btn_y, 75, btn_h)
+        btn_reset = pr.Rectangle(curr_x, btn_y, 70, btn_h)
         hover0 = pr.check_collision_point_rec(mouse_pos, btn_reset)
         col0 = pr.Color(55, 50, 60, 255) if not hover0 else pr.Color(80, 65, 85, 255)
         pr.draw_rectangle_rec(btn_reset, col0)
         pr.draw_rectangle_lines_ex(btn_reset, 1, pr.Color(85, 75, 95, 255))
-        pr.draw_text("Reset", curr_x + 18, btn_y + 10, 13, pr.RAYWHITE)
+        pr.draw_text("Reset", curr_x + 16, btn_y + 10, 13, pr.RAYWHITE)
 
         if hover0 and mouse_clicked:
             self.reset_all()
 
-        curr_x += 85
+        curr_x += 80
 
         # 1. [Step cDFT] Button
-        btn_step_cdft = pr.Rectangle(curr_x, btn_y, 90, btn_h)
+        btn_step_cdft = pr.Rectangle(curr_x, btn_y, 85, btn_h)
         hover1 = pr.check_collision_point_rec(mouse_pos, btn_step_cdft)
         col1 = pr.Color(40, 50, 65, 255) if not hover1 else pr.Color(55, 70, 90, 255)
         pr.draw_rectangle_rec(btn_step_cdft, col1)
         pr.draw_rectangle_lines_ex(btn_step_cdft, 1, pr.Color(70, 85, 105, 255))
-        pr.draw_text("Step cDFT", curr_x + 12, btn_y + 10, 13, pr.RAYWHITE)
+        pr.draw_text("Step cDFT", curr_x + 10, btn_y + 10, 13, pr.RAYWHITE)
 
         if hover1 and mouse_clicked and not self.worker.is_running:
             self.worker.step_cdft(n_steps=5)
 
-        curr_x += 100
+        curr_x += 93
 
         # 2. [Solve cDFT] / [Cancel] Button
-        btn_solve_cdft = pr.Rectangle(curr_x, btn_y, 100, btn_h)
+        btn_solve_cdft = pr.Rectangle(curr_x, btn_y, 95, btn_h)
         hover2 = pr.check_collision_point_rec(mouse_pos, btn_solve_cdft)
         if is_running_cdft:
             col2 = pr.Color(180, 45, 45, 255) if not hover2 else pr.Color(210, 60, 60, 255)
@@ -731,7 +733,7 @@ class MoleculeViewer:
 
         pr.draw_rectangle_rec(btn_solve_cdft, col2)
         pr.draw_rectangle_lines_ex(btn_solve_cdft, 1, pr.Color(80, 130, 180, 255))
-        pr.draw_text(label2, curr_x + (25 if is_running_cdft else 13), btn_y + 10, 13, pr.RAYWHITE)
+        pr.draw_text(label2, curr_x + (24 if is_running_cdft else 11), btn_y + 10, 13, pr.RAYWHITE)
 
         if hover2 and mouse_clicked:
             if is_running_cdft:
@@ -739,12 +741,12 @@ class MoleculeViewer:
             elif not self.worker.is_running:
                 self.worker.solve_cdft()
 
-        curr_x += 112
+        curr_x += 105
 
         # 3. Horizontal cDFT Progress Bar
-        bar_w = 175
-        bar_h = 16
-        bar_y = btn_y + 9
+        bar_w = 110
+        bar_h = 14
+        bar_y = btn_y + 10
         pr.draw_rectangle(curr_x, bar_y, bar_w, bar_h, pr.Color(25, 30, 40, 255))
         pr.draw_rectangle_lines(curr_x, bar_y, bar_w, bar_h, pr.Color(50, 60, 75, 255))
 
@@ -754,12 +756,12 @@ class MoleculeViewer:
         pr.draw_rectangle(curr_x, bar_y, fill_w, bar_h, fill_col)
 
         pct_text = f"{int(prog * 100)}%"
-        pr.draw_text(pct_text, curr_x + bar_w + 8, btn_y + 10, 12, pr.LIGHTGRAY)
+        pr.draw_text(pct_text, curr_x + bar_w + 6, btn_y + 10, 11, pr.LIGHTGRAY)
 
-        curr_x += bar_w + 50
+        curr_x += bar_w + 45
 
         # 4. [Step MCMC] Button (Grayed out until cDFT 100%)
-        btn_step_mcmc = pr.Rectangle(curr_x, btn_y, 95, btn_h)
+        btn_step_mcmc = pr.Rectangle(curr_x, btn_y, 88, btn_h)
         hover3 = pr.check_collision_point_rec(mouse_pos, btn_step_mcmc)
         if cdft_converged:
             col3 = pr.Color(50, 45, 75, 255) if not hover3 else pr.Color(70, 60, 105, 255)
@@ -770,15 +772,15 @@ class MoleculeViewer:
 
         pr.draw_rectangle_rec(btn_step_mcmc, col3)
         pr.draw_rectangle_lines_ex(btn_step_mcmc, 1, pr.Color(50, 60, 75, 255))
-        pr.draw_text("Step MCMC", curr_x + 10, btn_y + 10, 13, text_col3)
+        pr.draw_text("Step MCMC", curr_x + 8, btn_y + 10, 13, text_col3)
 
         if hover3 and mouse_clicked and cdft_converged and not self.worker.is_running:
             self.worker.step_mcmc(n_steps=5)
 
-        curr_x += 105
+        curr_x += 96
 
         # 5. [Fully Solve BG] / [Cancel] Button (Grayed out until cDFT 100%)
-        btn_solve_bg = pr.Rectangle(curr_x, btn_y, 125, btn_h)
+        btn_solve_bg = pr.Rectangle(curr_x, btn_y, 115, btn_h)
         hover4 = pr.check_collision_point_rec(mouse_pos, btn_solve_bg)
         if is_running_bg:
             col4 = pr.Color(180, 45, 45, 255) if not hover4 else pr.Color(210, 60, 60, 255)
@@ -795,7 +797,7 @@ class MoleculeViewer:
 
         pr.draw_rectangle_rec(btn_solve_bg, col4)
         pr.draw_rectangle_lines_ex(btn_solve_bg, 1, pr.Color(60, 65, 80, 255))
-        pr.draw_text(label4, curr_x + (40 if is_running_bg else 16), btn_y + 10, 13, text_col4)
+        pr.draw_text(label4, curr_x + (36 if is_running_bg else 12), btn_y + 10, 13, text_col4)
 
         if hover4 and mouse_clicked and cdft_converged:
             if is_running_bg:
@@ -803,10 +805,27 @@ class MoleculeViewer:
             elif not self.worker.is_running:
                 self.worker.solve_bg()
 
-        curr_x += 135
+        curr_x += 125
 
-        # 6. [VDW Mesh] Toggle Button
-        btn_vdw = pr.Rectangle(curr_x, btn_y, 100, btn_h)
+        # 6. Horizontal BG Progress Bar
+        bar_bg_w = 110
+        bar_bg_h = 14
+        bar_bg_y = btn_y + 10
+        pr.draw_rectangle(curr_x, bar_bg_y, bar_bg_w, bar_bg_h, pr.Color(25, 30, 40, 255))
+        pr.draw_rectangle_lines(curr_x, bar_bg_y, bar_bg_w, bar_bg_h, pr.Color(50, 60, 75, 255))
+
+        prog_bg = max(0.0, min(1.0, self.telemetry.bg_progress))
+        fill_bg_w = int(bar_bg_w * prog_bg)
+        fill_bg_col = pr.Color(40, 220, 120, 255) if prog_bg >= 1.0 else pr.Color(180, 90, 240, 255)
+        pr.draw_rectangle(curr_x, bar_bg_y, fill_bg_w, bar_bg_h, fill_bg_col)
+
+        pct_bg_text = f"{int(prog_bg * 100)}%"
+        pr.draw_text(pct_bg_text, curr_x + bar_bg_w + 6, btn_y + 10, 11, pr.LIGHTGRAY)
+
+        curr_x += bar_bg_w + 48
+
+        # 7. [VDW Mesh] Toggle Button
+        btn_vdw = pr.Rectangle(curr_x, btn_y, 95, btn_h)
         hover5 = pr.check_collision_point_rec(mouse_pos, btn_vdw)
         if self.show_vdw_surface:
             col5 = pr.Color(40, 90, 85, 255) if not hover5 else pr.Color(55, 120, 110, 255)
@@ -818,7 +837,7 @@ class MoleculeViewer:
         pr.draw_rectangle_rec(btn_vdw, col5)
         pr.draw_rectangle_lines_ex(btn_vdw, 1, border_col5)
         vdw_label = "Mesh: ON" if self.show_vdw_surface else "Mesh: OFF"
-        pr.draw_text(vdw_label, curr_x + 14, btn_y + 10, 13, pr.RAYWHITE)
+        pr.draw_text(vdw_label, curr_x + 12, btn_y + 10, 13, pr.RAYWHITE)
 
         if hover5 and mouse_clicked:
             self.show_vdw_surface = not self.show_vdw_surface
