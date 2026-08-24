@@ -33,7 +33,7 @@ class BoltzmannGenerator:
         prior: Optional[CDFTBaseDistribution] = None,
         temperature_k: float = 300.0,
         learning_rate: float = 0.01,
-        batch_size: int = 64,
+        batch_size: int = 32,
         w_torsion: float = 0.0,
         dihedral_quadruplets: Optional[Union[List[Tuple[int, int, int, int]], Tensor]] = None,
     ):
@@ -222,7 +222,7 @@ class BoltzmannGenerator:
     def train(
         self,
         steps: int = 100,
-        batch_size: int = 64,
+        batch_size: int = 32,
         verbose: bool = False,
     ) -> List[float]:
         """
@@ -368,7 +368,7 @@ class BoltzmannGenerator:
         e_curr = self.beta * u_curr - log_pz_curr - log_det_curr
 
         initial_u_mean = float(u_curr.mean().item())
-        accepted_count = 0.0
+        accepted_sum = Tensor([0.0], dtype=dtypes.float32)
 
         # 3. Vectorized Latent Space Metropolis Monte Carlo loop (unjitted for dynamic RNG)
         for _ in range(mcmc_steps):
@@ -422,7 +422,7 @@ class BoltzmannGenerator:
             rand_u = Tensor.rand(B)
             accept_mask = rand_u < accept_prob
 
-            accepted_count += float(accept_mask.float().mean().item())
+            accepted_sum = accepted_sum + accept_mask.float().sum()
 
             # Batch updates via where()
             mask_z = accept_mask.reshape(B, *([1] * (len(z_curr.shape) - 1)))
@@ -435,7 +435,8 @@ class BoltzmannGenerator:
             u_curr = accept_mask.where(u_prop, u_curr).realize()
 
         final_u_mean = float(u_curr.mean().item())
-        acceptance_rate = (accepted_count / max(1, mcmc_steps)) if mcmc_steps > 0 else 1.0
+        total_accepted = float(accepted_sum.item())
+        acceptance_rate = (total_accepted / max(1, B * mcmc_steps)) if mcmc_steps > 0 else 1.0
 
         out = x_curr
         n_real = getattr(self.energy_fn, "n_real_particles", None)

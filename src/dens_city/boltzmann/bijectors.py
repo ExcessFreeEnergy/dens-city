@@ -281,14 +281,14 @@ class ZMatrixBijector:
         log_det = Tensor.zeros(B, dtype=dtypes.float32)
 
         if self.n_atoms >= 3 and bonds_b.shape[-1] >= 2:
-            # b2 contributes 2 ln |b| = ln(b^2)
+            # b_i contributes 2 ln |b_i| = ln(b_i^2)
             b_rest = bonds_b[:, 1:]
-            log_det = log_det + (b_rest * b_rest + 1e-4).log().sum(axis=-1)
+            log_det = log_det + 2.0 * b_rest.abs().maximum(1e-6).log().sum(axis=-1)
 
         if self.n_atoms >= 3 and angles_b.shape[-1] >= 1:
-            # angles th2, th3, ... contribute ln |sin(th)| = 0.5 ln(sin^2(th))
-            sin_sq = angles_b.sin() * angles_b.sin() + 1e-4
-            log_det = log_det + 0.5 * sin_sq.log().sum(axis=-1)
+            # angles th_i contribute ln |sin(th_i)|
+            sin_th = angles_b.sin().abs().maximum(1e-6)
+            log_det = log_det + sin_th.log().sum(axis=-1)
 
         return log_det if is_batched else log_det.squeeze(0)
 

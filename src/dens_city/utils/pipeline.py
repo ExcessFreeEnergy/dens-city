@@ -50,14 +50,15 @@ class MaterialPipelineTask:
     cdft_steps: int = 60
     cdft_lr: float = 0.02
     bg_steps: int = 40
-    bg_batch_size: int = 16
+    bg_batch_size: int = 32
     bg_lr: float = 0.01
     bg_samples: int = 100
     bg_w_tor: float = 0.0
     bg_mcmc_steps: int = 0
     bg_mcmc_step_size: float = 0.1
     skip_bg: bool = False
-    no_plot: bool = True
+    debug: bool = False
+    debug_log_path: Optional[str] = None
     r_cut: Optional[float] = None
 
 
@@ -208,7 +209,6 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
         artifacts_created.append(csv_path)
 
         summary_path = os.path.join(mat_out_dir, "cdft_summary.txt")
-        ascii_graph = cdft.ascii_plot(width=60, height=12) if not task.no_plot else ""
         with open(summary_path, "w", encoding="utf-8") as f:
             f.write(f"Material: {material.name}\n")
             f.write(f"Dimension Mode: {material.dimension_mode}\n")
@@ -219,11 +219,7 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
             f.write(f"Chemical Potential: {material.bulk_mu:.4f} k_B T\n")
             f.write(f"Wall Contact Pressure: {p_wall:.4f} bar\n")
             f.write(f"Excess Adsorption: {gamma_ex:.6f} Å^-2\n")
-            f.write(f"cDFT Solver Runtime: {t_cdft:.3f} s\n\n")
-            if ascii_graph:
-                f.write("--- Density Profile ---\n")
-                f.write(ascii_graph)
-                f.write("\n")
+            f.write(f"cDFT Solver Runtime: {t_cdft:.3f} s\n")
         artifacts_created.append(summary_path)
 
     except Exception as e:
@@ -270,20 +266,21 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
         box_xy = (30.0, 30.0)
         box_size_3d = (30.0, 30.0, slit_w)
 
-        # Microscopic Hamiltonian with Shifted-Force boundary condition & Power-of-2 Padding
+        # Microscopic Hamiltonian with Shifted-Force boundary condition & Fixed 128-Site Padding
         energy_fn = MicroscopicEnergy(
             material=material,
             box_size=box_size_3d,
             r_cut=task.r_cut,
-            pad_to_power_of_2=True,
+            pad_to_128=True,
+            target_n_particles=128,
         )
         n_pad_sites = energy_fn.n_particles
 
-        # 4-Channel Base-2 Cartesian Flow (dim = N_pad * 4: strictly dyadic 2^k)
+        # 4-Channel Base-2 Cartesian Flow (dim = 128 * 4 = 512)
         flow = Base2CartesianFlow(
             n_atoms=n_pad_sites,
             n_layers=4,
-            hidden_dim=32 if n_pad_sites <= 8 else 64,
+            hidden_dim=64,
         )
         flow_prior = CDFTBaseDistribution(
             rho_z=rho_profile,
@@ -299,6 +296,7 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
             prior=flow_prior,
             temperature_k=material.temperature_k,
             learning_rate=task.bg_lr,
+            batch_size=task.bg_batch_size,
             w_torsion=task.bg_w_tor,
             dihedral_quadruplets=material.dihedral_quadruplets,
         )

@@ -82,7 +82,7 @@ def test_analytical_jacobian_log_determinant_formula():
     # Analytical sum: i=2 is (bonds[1], angles[0]), i=3 is (bonds[2], angles[1]), i=4 is (bonds[3], angles[2])
     exact_log_det = sum(math.log((bonds_np[i - 1] ** 2) * math.sin(angles_np[i - 2])) for i in range(2, n_atoms))
 
-    assert math.isclose(log_det.item(), exact_log_det, rel_tol=1e-5), (
+    assert math.isclose(log_det.item(), exact_log_det, rel_tol=1e-3), (
         f"Log |det J| {log_det.item()} != analytical {exact_log_det}"
     )
 

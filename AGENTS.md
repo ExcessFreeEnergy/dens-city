@@ -66,11 +66,14 @@ uv sync
 uv run dens-city --interactive --materials argon
 uv run dens-city --interactive --materials water benzene 5cb
 
-# Run standard cDFT simulation via unified CLI
-uv run dens-city --materials argon water
+# Run standard high-throughput coupled pipeline with parallel batch size 32
+uv run dens-city --materials argon water --batch-size 32
 
-# Run full 20-material benchmark suite
-uv run python scripts/run_cdft.py --materials all --steps 50 --no-plot
+# Run full 20-material high-throughput benchmark
+uv run dens-city --materials all --benchmark --beam 2
+
+# Run debug mode with detailed per-material compiler logs
+uv run dens-city --materials argon --debug
 
 # Run automated test suite
 uv run pytest tests/ -v

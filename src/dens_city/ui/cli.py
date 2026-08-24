@@ -1,28 +1,49 @@
 """
 dens-city: Unified Command-Line Interface.
-Supports both batch/analytical cDFT optimization and high-performance 3D interactive Raylib visualization.
+Supports coupled cDFT screening -> Boltzmann Generator batch execution,
+high-performance 3D interactive Raylib visualization, compiler BEAM search,
+and high-throughput batched tensor parallelism across molecular datasets.
 
 Usage:
     # 3D Interactive Raylib Visualizer
     uv run dens-city --interactive --materials argon
     uv run dens-city --interactive --materials water benzene 5cb
 
-    # Standard Classical Density Functional Theory Solver
-    uv run dens-city --materials argon water
+    # Standard High-Throughput Coupled Pipeline
+    uv run dens-city --materials argon water --batch-size 32
+
+    # Benchmark Mode with BEAM=2 Compiler Search
+    uv run dens-city --materials all --benchmark --beam 2
+
+    # Debug Mode with Detailed Compiler Traces
+    uv run dens-city --materials argon benzene --debug
 """
 
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
+import contextlib
+import json
+import multiprocessing as mp
+import os
 import re
 import sys
+import time
+from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
 
-from tinygrad.helpers import colored, getenv
+from tinygrad.helpers import colored
 
-from dens_city.cdft import TinyCDFT
 from dens_city.ui.viewer import run_interactive_viewer
 from dens_city.utils.materials import MaterialLoader
+from dens_city.utils.pipeline import (
+    MaterialPipelineResult,
+    MaterialPipelineTask,
+    PipelineStatus,
+    process_material_task,
+)
 
 
 def parse_materials_arg(mat_args: Optional[List[str]]) -> List[str]:
@@ -45,181 +66,439 @@ def parse_materials_arg(mat_args: Optional[List[str]]) -> List[str]:
     return requested if requested else ["argon"]
 
 
-def main(argv: Optional[List[str]] = None) -> None:
+def discover_materials(data_dir: str, requested_materials: Optional[List[str]] = None) -> List[str]:
+    """Discovers .mol2 files in the specified directory and matches against requested materials."""
+    p = Path(data_dir)
+    discovered = []
+    if p.exists() and p.is_dir():
+        for f in sorted(p.glob("*.mol2")):
+            discovered.append(str(f))
+
+    if not discovered:
+        discovered = MaterialLoader.list_available_materials()
+
+    if requested_materials:
+        req_clean = [m.lower().replace(".mol2", "") for m in requested_materials]
+        if "all" in req_clean:
+            return discovered
+        filtered = []
+        for item in discovered:
+            stem = Path(item).stem.lower()
+            if stem in req_clean or item in requested_materials:
+                filtered.append(item)
+        return filtered if filtered else requested_materials
+
+    return discovered
+
+
+def _run_task_with_logging(task: MaterialPipelineTask, log_file: Optional[str] = None) -> MaterialPipelineResult:
+    """Executes a single pipeline task, optionally capturing stdout/stderr into a per-material log file."""
+    if log_file:
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        with open(log_file, "w", encoding="utf-8") as f:
+            with contextlib.redirect_stdout(f), contextlib.redirect_stderr(f):
+                return process_material_task(task)
+    return process_material_task(task)
+
+
+def print_banner(
+    out_dir: str,
+    num_materials: int,
+    workers: int,
+    temp_k: float,
+    pressure_bar: Optional[float],
+    batch_size: int,
+    beam: int,
+    skip_bg: bool,
+    benchmark: bool,
+) -> None:
+    print("=" * 88)
+    print(colored("  dens-city: Molecular Classical Density Functional Theory & Generative Platform", "cyan"))
+    print("=" * 88)
+    print(f"  Target Materials  : {num_materials} items")
+    print(f"  Parallel Workers  : {workers} isolated processes (Batch Size = {batch_size} molecules/tensor)")
+    print(f"  Compiler BEAM     : BEAM={beam}")
+    print(f"  Thermodynamics    : T = {temp_k:.1f} K" + (f", P = {pressure_bar:.2f} bar" if pressure_bar else ""))
+    print(f"  Execution Mode    : {'cDFT Fast Screening (No BG)' if skip_bg else 'Coupled cDFT + Boltzmann Generator'}")
+    if benchmark:
+        print(f"  Benchmark Profiler: {colored('ACTIVE (Measuring per-material throughput)', 'green')}")
+    print(f"  Artifact Output   : {out_dir}")
+    print("=" * 88)
+    print(f"{'Material':<20} | {'Sites':<5} | {'cDFT (s)':<8} | {'BG (s)':<8} | {'P_wall (bar)':<12} | {'Status':<16}")
+    print("-" * 88)
+
+
+def print_result_row(res: MaterialPipelineResult) -> None:
+    status_colors = {
+        PipelineStatus.SUCCESS.value: "green",
+        PipelineStatus.SUCCESS_CDFT_ONLY.value: "green",
+        PipelineStatus.SKIPPED_THERMO.value: "yellow",
+        PipelineStatus.FAILED_TRAINING.value: "red",
+        PipelineStatus.FAILED_TIMEOUT.value: "red",
+        PipelineStatus.FAILED_ERROR.value: "red",
+    }
+    col = status_colors.get(res.status, "white")
+    status_str = colored(res.status, col)
+    cdft_t_str = f"{res.cdft_runtime_seconds:6.2f}" if res.cdft_runtime_seconds > 0 else "  --  "
+    bg_t_str = f"{res.bg_runtime_seconds:6.2f}" if res.bg_runtime_seconds > 0 else "  --  "
+    p_wall_str = (
+        f"{res.wall_pressure_bar:10.2f}"
+        if res.status in [PipelineStatus.SUCCESS.value, PipelineStatus.SUCCESS_CDFT_ONLY.value]
+        else "    --    "
+    )
+    print(
+        f"{res.material_name:<20} | {res.num_sites:<5} | {cdft_t_str:<8} | {bg_t_str:<8} | {p_wall_str:<12} | {status_str}"
+    )
+
+
+def print_benchmark_table(results: List[MaterialPipelineResult], total_time: float, batch_size: int) -> None:
+    """Prints a detailed statistical benchmark table showing per-material and aggregate performance."""
+    print("\n" + colored("=" * 96, "cyan"))
+    print(colored("  dens-city Performance Benchmark Report", "cyan"))
+    print(colored("=" * 96, "cyan"))
+    print(
+        f"{'Material':<22} | {'Sites (Real/Pad)':<16} | {'cDFT Time':<10} | {'BG Time':<10} | {'Total Time':<11} | {'Throughput':<14}"
+    )
+    print("-" * 96)
+
+    total_samples = 0
+    for r in results:
+        pad_sites_str = f"{r.num_sites}/128"
+        cdft_s = f"{r.cdft_runtime_seconds:6.3f} s" if r.cdft_runtime_seconds > 0 else "    --   "
+        bg_s = f"{r.bg_runtime_seconds:6.3f} s" if r.bg_runtime_seconds > 0 else "    --   "
+        tot_s = f"{r.runtime_seconds:6.3f} s"
+        t_mat = max(1e-4, r.runtime_seconds)
+        samples_count = 100 if r.bg_runtime_seconds > 0 else 0
+        total_samples += samples_count
+        tput_str = f"{samples_count / t_mat:6.1f} conf/s" if samples_count > 0 else f"{1.0 / t_mat:6.2f} mat/s"
+        print(f"{r.material_name:<22} | {pad_sites_str:<16} | {cdft_s:<10} | {bg_s:<10} | {tot_s:<11} | {tput_str:<14}")
+
+    print("-" * 96)
+    print(f"  Total Wall Time   : {total_time:.2f} s across {len(results)} materials")
+    print(
+        f"  Average Rate      : {len(results) / max(1e-4, total_time):.2f} materials/s ({total_samples / max(1e-4, total_time):.1f} 3D conformations/s)"
+    )
+    print(colored("=" * 96, "cyan"))
+
+
+def main(argv: Optional[List[str]] = None) -> int:
     """Main CLI entrypoint for dens-city."""
     if argv is None:
         argv = sys.argv[1:]
 
+    default_data_dir = "test_data"
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    default_out_dir = f"runs/batch_{ts}"
+
     parser = argparse.ArgumentParser(
         prog="dens-city",
-        description="dens-city: Molecular Classical Density Functional Theory & 3D Interactive Platform.",
+        description="dens-city: High-Performance Molecular Classical Density Functional Theory & 3D Generative Platform.",
     )
     parser.add_argument(
         "--materials",
         "-m",
         nargs="+",
-        default=["argon"],
-        help="Material names (e.g. argon, water, methane, 5cb, or 'all')",
+        default=None,
+        help="Material names, .mol2 files, or 'all' (default: all available)",
+    )
+    parser.add_argument(
+        "--data-dir",
+        "-d",
+        type=str,
+        default=default_data_dir,
+        help=f"Directory containing .mol2 material files (default: {default_data_dir})",
+    )
+    parser.add_argument(
+        "--out-dir",
+        "-o",
+        type=str,
+        default=default_out_dir,
+        help=f"Destination path for structured artifacts and logs (default: {default_out_dir})",
     )
     parser.add_argument(
         "--interactive",
         "-i",
         action="store_true",
+        default=False,
         help="Launch the 3D Raylib molecular viewer for real-time visualization",
     )
     parser.add_argument(
-        "--steps",
-        "-s",
+        "--benchmark",
+        action="store_true",
+        default=False,
+        help="Profile execution time per material and output comprehensive benchmark summary",
+    )
+    parser.add_argument(
+        "--beam",
         type=int,
-        default=int(getenv("STEPS", 300)),
-        help="Number of variational optimization gradient descent steps (default: 300)",
+        default=2,
+        help="tinygrad compiler BEAM search optimization level (default: 2)",
     )
     parser.add_argument(
-        "--grid",
-        "-g",
+        "--debug",
+        action="store_true",
+        default=False,
+        help="Enable DEBUG=2 and write detailed per-material compiler logs to data/logs_<timestamp>/",
+    )
+    parser.add_argument(
+        "--batch-size",
+        "-b",
         type=int,
-        default=int(getenv("GRID", 128)),
-        help="Number of spatial grid bins (default: 128)",
-    )
-    parser.add_argument(
-        "--slit-width",
-        "-w",
-        type=float,
-        default=None,
-        help="Confining slit width in Angstroms (default: dynamic 12.0*sigma)",
-    )
-    parser.add_argument(
-        "--lr",
-        type=float,
-        default=float(getenv("LR", 0.02)),
-        help="Optimizer learning rate (default: 0.02)",
+        default=32,
+        help="Molecule batch size for parallel tensor evaluation along Axis 0 (default: 32)",
     )
     parser.add_argument(
         "--temp",
         "-t",
         type=float,
-        default=None,
-        help="System temperature in Kelvin (default: 300.0 K)",
+        default=300.0,
+        help="Thermodynamic reservoir temperature in Kelvin (default: 300.0)",
     )
     parser.add_argument(
         "--pressure",
         "-p",
         type=float,
-        default=None,
-        help="Target bulk reservoir pressure in bar for EOS density solving",
+        default=1.0,
+        help="Thermodynamic reservoir pressure in bar (default: 1.0)",
     )
     parser.add_argument(
         "--mu",
         type=float,
         default=None,
-        help="Target bulk chemical potential in k_B * T for EOS density solving",
+        help="Optional chemical potential in k_B T (overrides bulk pressure calculation)",
     )
     parser.add_argument(
-        "--no-plot",
+        "--workers",
+        "-w",
+        type=int,
+        default=min(4, os.cpu_count() or 1),
+        help=f"Number of concurrent worker processes (default: {min(4, os.cpu_count() or 1)})",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=180.0,
+        help="Maximum execution timeout per material in seconds (default: 180s)",
+    )
+    parser.add_argument(
+        "--grid",
+        "-g",
+        type=int,
+        default=128,
+        help="Spatial grid points for cDFT 1D pore discretization (default: 128)",
+    )
+    parser.add_argument(
+        "--cdft-steps",
+        type=int,
+        default=60,
+        help="cDFT solver variational optimization steps (default: 60)",
+    )
+    parser.add_argument(
+        "--cdft-lr",
+        type=float,
+        default=0.02,
+        help="cDFT solver learning rate (default: 0.02)",
+    )
+    parser.add_argument(
+        "--bg-steps",
+        type=int,
+        default=40,
+        help="Boltzmann Generator training steps (default: 40)",
+    )
+    parser.add_argument(
+        "--bg-lr",
+        type=float,
+        default=0.01,
+        help="Boltzmann Generator learning rate (default: 0.01)",
+    )
+    parser.add_argument(
+        "--bg-samples",
+        type=int,
+        default=100,
+        help="Number of 3D configurations to sample into .xyz trajectory (default: 100)",
+    )
+    parser.add_argument(
+        "--bg-w-tor",
+        type=float,
+        default=0.0,
+        help="Torsional rotamer loss biasing weight (default: 0.0)",
+    )
+    parser.add_argument(
+        "--bg-mcmc-steps",
+        type=int,
+        default=0,
+        help="Number of latent space Metropolis Monte Carlo relaxation steps per sample (default: 0)",
+    )
+    parser.add_argument(
+        "--bg-mcmc-step-size",
+        type=float,
+        default=0.1,
+        help="Step size for Gaussian perturbations in latent MCMC relaxation (default: 0.1)",
+    )
+    parser.add_argument(
+        "--skip-bg",
         action="store_true",
-        help="Disable ASCII density profile visualization",
+        default=False,
+        help="Skip Boltzmann Generator phase and halt after cDFT screening",
     )
 
     args = parser.parse_args(argv)
-    materials_list = parse_materials_arg(args.materials)
 
+    # Configure tinygrad compiler environment
+    if args.beam:
+        os.environ["BEAM"] = str(args.beam)
+    if args.debug:
+        os.environ["DEBUG"] = "2"
+
+    materials = discover_materials(args.data_dir, args.materials)
+    if not materials:
+        print(colored(f"Error: No materials found in data directory: {args.data_dir}", "red"))
+        return 1
+
+    # 1. Interactive 3D Raylib Visualizer Mode
     if args.interactive:
         print(colored("==========================================================================", "cyan"))
         print(colored("  dens-city: 3D Interactive Raylib Molecular Visualizer                  ", "cyan"))
         print(colored("==========================================================================", "cyan"))
-        print(f"Target Materials   : {materials_list}")
+        print(f"Target Materials   : {materials}")
         print("Controls           : Left Drag to Orbit | Scroll to Zoom | ← / → to Switch Materials")
-        run_interactive_viewer(material_names=materials_list)
-        return
+        run_interactive_viewer(material_names=materials)
+        return 0
 
-    # Standard cDFT headless / ASCII runner
-    print(colored("==========================================================================", "cyan"))
-    print(colored("  dens-city: Variational cDFT Statistical Mechanics Solver (tinygrad)    ", "cyan"))
-    print(colored("==========================================================================", "cyan"))
-    print(f"Target Materials   : {materials_list}")
-    print(
-        f"Spatial Grid       : {args.grid} bins across {'dynamic scale-aware' if args.slit_width is None else f'{args.slit_width:.1f} Å'} slit"
+    # 2. Setup output and debug logging directories
+    os.makedirs(args.out_dir, exist_ok=True)
+    jsonl_log_path = os.path.join(args.out_dir, "pipeline_summary.jsonl")
+
+    debug_log_dir = None
+    if args.debug:
+        debug_log_dir = Path("data") / f"logs_{ts}"
+        debug_log_dir.mkdir(parents=True, exist_ok=True)
+
+    print_banner(
+        out_dir=args.out_dir,
+        num_materials=len(materials),
+        workers=args.workers,
+        temp_k=args.temp,
+        pressure_bar=args.pressure,
+        batch_size=args.batch_size,
+        beam=args.beam,
+        skip_bg=args.skip_bg,
+        benchmark=args.benchmark,
     )
-    print(
-        f"Thermodynamics     : Temperature = {300.0 if args.temp is None else args.temp:.2f} K, "
-        f"Pressure = {'default / EOS' if args.pressure is None else f'{args.pressure:.2f} bar'}"
-    )
-    print(f"Optimizer          : Adam (lr = {args.lr:.3f}, steps = {args.steps})")
-    print(colored("==========================================================================", "cyan"))
 
-    results_summary = []
-    t_start_total = sys.modules["time"].time()
+    tasks = [
+        MaterialPipelineTask(
+            material_path_or_name=m,
+            out_dir=args.out_dir,
+            temperature_k=args.temp,
+            pressure_bar=args.pressure,
+            chemical_potential_kbt=args.mu,
+            grid=args.grid,
+            cdft_steps=args.cdft_steps,
+            cdft_lr=args.cdft_lr,
+            bg_steps=args.bg_steps,
+            bg_batch_size=args.batch_size,
+            bg_lr=args.bg_lr,
+            bg_samples=args.bg_samples,
+            bg_w_tor=args.bg_w_tor,
+            bg_mcmc_steps=args.bg_mcmc_steps,
+            bg_mcmc_step_size=args.bg_mcmc_step_size,
+            skip_bg=args.skip_bg,
+            debug=args.debug,
+            debug_log_path=str(debug_log_dir / f"{Path(m).stem}.log") if debug_log_dir else None,
+        )
+        for m in materials
+    ]
 
-    for idx, mat_name in enumerate(materials_list, 1):
-        print(f"\n[{idx:02d}/{len(materials_list):02d}] Solving cDFT for: {colored(mat_name, 'green')}")
-        try:
-            mat = MaterialLoader.load_material(
-                mat_name,
-                temperature_k=args.temp,
-                pressure_bar=args.pressure,
-                chemical_potential_kbt=args.mu,
-            )
-            print(f"  Molecular Model  : {len(mat.sites)}-site flexible/polar ({mat.dimension_mode})")
-            print(f"  Effective σ      : {mat.effective_sigma:6.2f} Å")
-            print(f"  Effective ε/k_B  : {mat.effective_epsilon_k:6.2f} K")
-            print(f"  Derived Bulk ρ_b : {mat.bulk_density_a3:9.6f} Å⁻³ ({mat.molarity_mol_l:.2f} M)")
-            print(f"  Derived Bulk μ   : {mat.bulk_mu:6.2f} k_B*T")
+    results: List[MaterialPipelineResult] = []
+    t_batch_start = time.perf_counter()
 
-            solver = TinyCDFT(
-                material=mat,
-                n_grid=args.grid,
-                slit_width_a=args.slit_width,
-                learning_rate=args.lr,
-                temperature_k=args.temp,
-            )
-
-            t0 = sys.modules["time"].time()
-            res = solver.solve(steps=args.steps, verbose=True)
-            elapsed = sys.modules["time"].time() - t0
-
-            if not args.no_plot:
-                print("\n" + solver.ascii_plot() + "\n")
-
-            print(f"  Converged in     : {elapsed:.3f} s ({args.steps / max(1e-4, elapsed):.1f} steps/s)")
-            print(f"  Wall Pressure    : {res['wall_pressure_bar']:8.2f} bar")
-            print(f"  Excess Adsorption: {res['excess_adsorption']:8.4f} molecules / Å²")
-            print(f"  Peak Density     : {res['peak_density']:8.4f} Å⁻³ (Layering Peak)")
-
-            results_summary.append(
-                {
-                    "material": mat.name,
-                    "mode": mat.dimension_mode,
-                    "sigma": mat.effective_sigma,
-                    "epsilon_k": mat.effective_epsilon_k,
-                    "bulk_density": mat.bulk_density_a3,
-                    "molarity": mat.molarity_mol_l,
-                    "wall_pressure_bar": res["wall_pressure_bar"],
-                    "elapsed": elapsed,
+    with open(jsonl_log_path, "w", encoding="utf-8") as jsonl_file:
+        if args.workers <= 1 or args.debug:
+            # Sequential execution for debug reproducibility or single-worker
+            for task in tasks:
+                mat_name = Path(task.material_path_or_name).stem
+                t0 = time.perf_counter()
+                try:
+                    res = _run_task_with_logging(task, log_file=task.debug_log_path)
+                except Exception as e:
+                    res = MaterialPipelineResult(
+                        material_name=mat_name,
+                        status=PipelineStatus.FAILED_ERROR.value,
+                        error_message=f"Error executing material: {str(e)}",
+                        runtime_seconds=time.perf_counter() - t0,
+                    )
+                results.append(res)
+                print_result_row(res)
+                jsonl_file.write(json.dumps(res.to_dict()) + "\n")
+                jsonl_file.flush()
+        else:
+            ctx = mp.get_context("spawn")
+            with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers, mp_context=ctx) as executor:
+                future_to_task = {
+                    executor.submit(_run_task_with_logging, task, task.debug_log_path): task for task in tasks
                 }
-            )
-        except Exception as e:
-            print(colored(f"Error simulating {mat_name}: {e}", "red"), file=sys.stderr)
 
-    total_time = sys.modules["time"].time() - t_start_total
-    print(colored("\n" + "=" * 106, "cyan"))
-    print(
-        colored(
-            f"  cDFT Simulation Suite Finished in {total_time:.2f} s ({len(results_summary)} / {len(materials_list)} succeeded)",
-            "cyan",
-        )
+                for future in concurrent.futures.as_completed(future_to_task):
+                    task = future_to_task[future]
+                    mat_name = Path(task.material_path_or_name).stem
+                    try:
+                        res = future.result(timeout=args.timeout)
+                    except concurrent.futures.TimeoutError:
+                        res = MaterialPipelineResult(
+                            material_name=mat_name,
+                            status=PipelineStatus.FAILED_TIMEOUT.value,
+                            error_message=f"Task exceeded maximum timeout limit of {args.timeout} seconds.",
+                            runtime_seconds=args.timeout,
+                        )
+                    except Exception as e:
+                        res = MaterialPipelineResult(
+                            material_name=mat_name,
+                            status=PipelineStatus.FAILED_ERROR.value,
+                            error_message=f"Unhandled worker process crash: {str(e)}",
+                        )
+
+                    results.append(res)
+                    print_result_row(res)
+                    jsonl_file.write(json.dumps(res.to_dict()) + "\n")
+                    jsonl_file.flush()
+
+    t_batch_total = time.perf_counter() - t_batch_start
+
+    # Final summary statistics
+    n_success = sum(
+        1 for r in results if r.status in [PipelineStatus.SUCCESS.value, PipelineStatus.SUCCESS_CDFT_ONLY.value]
     )
-    print(colored("=" * 106, "cyan"))
-    print(
-        f"{'Material':<22} {'Mode':<14} {'σ (Å)':>7} {'ε (K)':>7} {'ρ_b (Å⁻³)':>10} {'M (mol/L)':>10} {'P_wall (bar)':>13} {'Time (s)':>9}"
+    n_skipped = sum(1 for r in results if r.status == PipelineStatus.SKIPPED_THERMO.value)
+    n_failed = sum(
+        1
+        for r in results
+        if r.status
+        in [
+            PipelineStatus.FAILED_TRAINING.value,
+            PipelineStatus.FAILED_TIMEOUT.value,
+            PipelineStatus.FAILED_ERROR.value,
+        ]
     )
-    print("-" * 106)
-    for r in results_summary:
-        print(
-            f"{r['material']:<22} {r['mode']:<14} {r['sigma']:7.2f} {r['epsilon_k']:7.1f} "
-            f"{r['bulk_density']:10.5f} {r['molarity']:10.2f} {r['wall_pressure_bar']:13.2f} {r['elapsed']:9.3f}"
-        )
-    print("-" * 106)
+
+    if args.benchmark:
+        print_benchmark_table(results, t_batch_total, args.batch_size)
+
+    print("=" * 88)
+    print(colored(f"  Batch Processing Completed in {t_batch_total:.2f} seconds", "cyan"))
+    print(f"  Total Processed : {len(results)}")
+    print(colored(f"  Successful      : {n_success}", "green"))
+    if n_skipped > 0:
+        print(colored(f"  Skipped (Thermo): {n_skipped}", "yellow"))
+    if n_failed > 0:
+        print(colored(f"  Failed          : {n_failed}", "red"))
+    print(f"  Master Summary  : {jsonl_log_path}")
+    if debug_log_dir:
+        print(f"  Debug Logs Dir  : {debug_log_dir}")
+    print("=" * 88)
+
+    return 0 if n_failed == 0 else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

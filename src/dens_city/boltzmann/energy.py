@@ -61,7 +61,9 @@ class MicroscopicEnergy:
         wall_epsilon_k: float = 119.8,
         wall_type: str = "stele93",
         dielectric_constant: float = 1.0,
-        pad_to_power_of_2: bool = True,
+        pad_to_128: bool = True,
+        pad_to_power_of_2: bool = False,
+        target_n_particles: int = 128,
         e_high: Optional[float] = 1e4,
         e_max: float = 1e20,
     ):
@@ -89,15 +91,19 @@ class MicroscopicEnergy:
 
         self.material = material
         self.n_real_particles = len(s_list)
-        # Pad number of sites to the nearest power of 2 (1, 2, 4, 8, 16, 32, 64, ...) if requested
+
+        # Padding logic: default is uniform 128-site bucketing
         if pad_to_power_of_2:
             self.n_particles = 1 << (self.n_real_particles - 1).bit_length() if self.n_real_particles > 1 else 1
-        else:
+        elif not pad_to_128:
             self.n_particles = self.n_real_particles
+        else:
+            self.n_particles = max(self.n_real_particles, target_n_particles)
 
         n_pad = self.n_particles - self.n_real_particles
         if n_pad > 0:
-            s_list = s_list + [1.0] * n_pad
+            # Physical parameters for dummy atoms are strictly zeroed out
+            s_list = s_list + [0.0] * n_pad
             e_list = e_list + [0.0] * n_pad
             q_list = q_list + [0.0] * n_pad
 
@@ -192,7 +198,11 @@ class MicroscopicEnergy:
         elif len(pos.shape) == 3:
             pos_b = pos
         else:
-            pos_b = pos.reshape(1, self.n_particles, -1)
+            pos_b = pos.reshape(1, -1, 3)
+
+        if pos_b.shape[1] < self.n_particles:
+            pad_len = self.n_particles - pos_b.shape[1]
+            pos_b = pos_b.pad(((0, 0), (0, pad_len), (0, 0)))
 
         # Slice 3D Cartesian coordinates (x, y, z)
         pos_3d = pos_b[..., :3]
@@ -251,7 +261,11 @@ class MicroscopicEnergy:
         elif len(pos.shape) == 3:
             pos_b = pos
         else:
-            pos_b = pos.reshape(1, self.n_particles, -1)
+            pos_b = pos.reshape(1, -1, 3)
+
+        if pos_b.shape[1] < self.n_particles:
+            pad_len = self.n_particles - pos_b.shape[1]
+            pos_b = pos_b.pad(((0, 0), (0, pad_len), (0, 0)))
 
         z = pos_b[..., 2]  # (B, N)
         z_l = z

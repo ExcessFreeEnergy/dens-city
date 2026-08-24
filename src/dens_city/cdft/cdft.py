@@ -244,37 +244,3 @@ class TinyCDFT:
         """
         rho_arr = self.get_density_profile()
         return float(np.sum(rho_arr - self.bulk_rho_val) * self.dz_val)
-
-    def ascii_plot(self, width: int = 60, height: int = 15) -> str:
-        """Renders an ASCII visualization of the density profile across the slit."""
-        rho_arr = self.get_density_profile()
-        r_min, r_max = 0.0, float(np.max(rho_arr)) * 1.15
-        if r_max <= 0.0:
-            r_max = 1.0
-
-        grid = [[" " for _ in range(width)] for _ in range(height)]
-
-        for col in range(width):
-            idx = int(col * (self.n_grid - 1) / (width - 1))
-            val = rho_arr[idx]
-            row = int((val - r_min) / (r_max - r_min) * (height - 1))
-            row = min(height - 1, max(0, height - 1 - row))
-            grid[row][col] = "█"
-
-        # Bulk density baseline
-        bulk_rho = (
-            float(self.bulk_density.item()) if isinstance(self.bulk_density, Tensor) else float(self.bulk_density)
-        )
-        bulk_row = int((bulk_rho - r_min) / (r_max - r_min) * (height - 1))
-        bulk_row = min(height - 1, max(0, height - 1 - bulk_row))
-        for col in range(width):
-            if grid[bulk_row][col] == " ":
-                grid[bulk_row][col] = "-"
-
-        lines = [f"=== cDFT Density Profile: {self.material.name} (Max: {r_max:.4f} Å⁻³, Bulk: {bulk_rho:.4f} Å⁻³) ==="]
-        lines.append(f"{r_max:>7.4f} ┌" + "─" * width + "┐")
-        for row in grid:
-            lines.append("        │" + "".join(row) + "│")
-        lines.append(f"{0.0:>7.4f} └" + "─" * width + "┘")
-        lines.append(f"       0.0 Å{' ' * (width - 10)}{self.slit_width_a:.1f} Å (Slit Width)")
-        return "\n".join(lines)

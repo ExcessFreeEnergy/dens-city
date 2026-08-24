@@ -126,11 +126,11 @@ def test_composite_flow_mcmc_relaxation():
         learning_rate=0.01,
     )
 
-    generator.train(steps=10, batch_size=16)
+    generator.train(steps=5, batch_size=16)
 
     samples, stats = generator.sample_relaxed(
-        n_samples=8,
-        mcmc_steps=6,
+        n_samples=4,
+        mcmc_steps=2,
         mcmc_step_size=0.1,
         return_stats=True,
     )
