@@ -6,6 +6,8 @@ with structured error classification and state serialization.
 
 import math
 import os
+import queue
+import threading
 import time
 import traceback
 from dataclasses import asdict, dataclass, field
@@ -21,7 +23,7 @@ from dens_city.boltzmann.energy import MicroscopicEnergy
 from dens_city.boltzmann.generator import BoltzmannGenerator
 from dens_city.boltzmann.prior import CDFTBaseDistribution
 from dens_city.cdft.cdft import TinyCDFT
-from dens_city.utils.materials import MaterialLoader
+from dens_city.utils.materials import Material, MaterialLoader, MolecularBatch
 
 
 class PipelineStatus(str, Enum):
@@ -395,3 +397,277 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
         artifact_dir=mat_out_dir,
         artifacts=artifacts_created,
     )
+
+
+class AsyncArtifactWriter:
+    """
+    Background asynchronous worker thread for non-blocking disk I/O.
+    Receives (filepath, data_type, payload) items and serializes them in the background
+    to prevent blocking or halting device execution.
+    """
+
+    def __init__(self) -> None:
+        self.q: queue.Queue = queue.Queue()
+        self._thread = threading.Thread(target=self._worker, daemon=True)
+        self._thread.start()
+
+    def _worker(self) -> None:
+        while True:
+            item = self.q.get()
+            if item is None:
+                self.q.task_done()
+                break
+            action, path, payload = item
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                if action == "npy":
+                    np.save(path, payload)
+                elif action == "csv":
+                    header, data = payload
+                    np.savetxt(path, data, delimiter=",", header=header, comments="")
+                elif action == "txt":
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write(payload)
+                elif action == "xyz":
+                    coords, site_names, energies, mat_name = payload
+                    write_xyz_trajectory(path, coords, site_names, energies, mat_name)
+                elif action == "npz":
+                    np.savez(path, **payload)
+            except Exception:
+                pass
+            finally:
+                self.q.task_done()
+
+    def write_npy(self, path: str, arr: np.ndarray) -> None:
+        self.q.put(("npy", path, arr))
+
+    def write_csv(self, path: str, header: str, data: np.ndarray) -> None:
+        self.q.put(("csv", path, (header, data)))
+
+    def write_txt(self, path: str, text: str) -> None:
+        self.q.put(("txt", path, text))
+
+    def write_xyz(
+        self,
+        path: str,
+        coords: np.ndarray,
+        site_names: List[str],
+        energies: Optional[List[float]] = None,
+        material_name: str = "",
+    ) -> None:
+        self.q.put(("xyz", path, (coords, site_names, energies, material_name)))
+
+    def write_npz(self, path: str, np_dict: Dict[str, np.ndarray]) -> None:
+        self.q.put(("npz", path, np_dict))
+
+    def flush(self) -> None:
+        self.q.join()
+
+    def close(self) -> None:
+        self.q.put(None)
+        self._thread.join()
+
+
+def process_batched_materials(
+    batch_tasks: List[MaterialPipelineTask],
+    batch_size: int = 32,
+    async_writer: Optional[AsyncArtifactWriter] = None,
+) -> List[MaterialPipelineResult]:
+    """
+    Ingests up to B=32 material tasks, stacks them into a single MolecularBatch tensor
+    (filling remaining batch slots with zeroed dummy molecules), executes cDFT screening
+    and batched Boltzmann Generator training & sampling in parallel, and dispatches
+    artifacts asynchronously to eliminate blocking I/O overhead.
+    """
+    t_start = time.perf_counter()
+    loaded_materials: List[Material] = []
+    task_indices: List[int] = []
+    results_map: Dict[int, MaterialPipelineResult] = {}
+
+    for idx, task in enumerate(batch_tasks):
+        mat_input = task.material_path_or_name
+        mat_basename = Path(mat_input).stem if os.path.exists(mat_input) or "/" in mat_input else str(mat_input)
+        mat_out_dir = os.path.join(task.out_dir, mat_basename)
+        os.makedirs(mat_out_dir, exist_ok=True)
+
+        try:
+            mat = MaterialLoader.load_material(
+                material_name_or_path=task.material_path_or_name,
+                temperature_k=task.temperature_k,
+                bulk_density_a3=task.bulk_density_a3,
+                pressure_bar=task.pressure_bar,
+                chemical_potential_kbt=task.chemical_potential_kbt,
+            )
+            loaded_materials.append(mat)
+            task_indices.append(idx)
+        except Exception as e:
+            status = (
+                PipelineStatus.SKIPPED_THERMO
+                if "spinodal" in str(e).lower() or "density" in str(e).lower()
+                else PipelineStatus.FAILED_ERROR
+            )
+            results_map[idx] = MaterialPipelineResult(
+                material_name=mat_basename,
+                status=status.value,
+                error_message=f"Thermodynamic routing failed: {str(e)}",
+                runtime_seconds=time.perf_counter() - t_start,
+                artifact_dir=mat_out_dir,
+            )
+
+    if not loaded_materials:
+        return [results_map[i] for i in range(len(batch_tasks))]
+
+    # 1. Stack loaded materials into a fixed (B=32, 128) MolecularBatch
+    mol_batch = MolecularBatch.create_batch(
+        materials=loaded_materials,
+        batch_size=batch_size,
+        target_n_particles=128,
+    )
+
+    # 2. cDFT Screening Phase (Solve density profiles)
+    cdft_profiles = []
+    cdft_pressures = []
+    cdft_losses = []
+    cdft_gammas = []
+    cdft_times = []
+
+    for mat in loaded_materials:
+        t_c0 = time.perf_counter()
+        slit_w = max(40.0, 12.0 * mat.effective_sigma)
+        cdft = TinyCDFT(
+            material=mat,
+            n_grid=128,
+            slit_width_a=slit_w,
+            temperature_k=mat.temperature_k,
+            bulk_density_a3=mat.bulk_density_a3,
+            learning_rate=0.02,
+        )
+        cdft_res = cdft.solve(steps=batch_tasks[0].cdft_steps if batch_tasks else 50, verbose=False)
+        t_cdft = time.perf_counter() - t_c0
+
+        rho = cdft.get_density_profile()
+        p_w = cdft.get_wall_contact_pressure()
+        gamma = cdft.get_excess_adsorption()
+        loss = cdft_res.get("final_loss", 0.0) if isinstance(cdft_res, dict) else (cdft_res[-1] if cdft_res else 0.0)
+
+        cdft_profiles.append(rho)
+        cdft_pressures.append(p_w)
+        cdft_gammas.append(gamma)
+        cdft_losses.append(loss)
+        cdft_times.append(t_cdft)
+
+        # Async cDFT file exports
+        mat_out_dir = os.path.join(batch_tasks[0].out_dir, mat.name)
+        if async_writer:
+            async_writer.write_npy(os.path.join(mat_out_dir, "density_profile.npy"), rho)
+            z_grid = np.linspace(0.5 * cdft.dz_val, cdft.slit_width_a - 0.5 * cdft.dz_val, cdft.n_grid)
+            async_writer.write_csv(
+                os.path.join(mat_out_dir, "density_profile.csv"),
+                "z_angstrom,rho_a3",
+                np.column_stack([z_grid, rho]),
+            )
+            summary_txt = (
+                f"Material: {mat.name}\nDimension Mode: {mat.dimension_mode}\n"
+                f"Num Sites: {mat.num_sites}\nTemperature: {mat.temperature_k:.2f} K\n"
+                f"Bulk Density: {mat.bulk_density_a3:.6f} Å^-3\nBulk Pressure: {mat.bulk_pressure_bar:.4f} bar\n"
+                f"Chemical Potential: {mat.bulk_mu:.4f} k_B T\nWall Contact Pressure: {p_w:.4f} bar\n"
+                f"Excess Adsorption: {gamma:.6f} Å^-2\ncDFT Solver Runtime: {t_cdft:.3f} s\n"
+            )
+            async_writer.write_txt(os.path.join(mat_out_dir, "cdft_summary.txt"), summary_txt)
+
+    # Check if skip_bg
+    all_skip_bg = all(t.skip_bg for t in batch_tasks)
+    if all_skip_bg:
+        for local_idx, orig_idx in enumerate(task_indices):
+            mat = loaded_materials[local_idx]
+            task = batch_tasks[orig_idx]
+            mat_out_dir = os.path.join(task.out_dir, mat.name)
+            results_map[orig_idx] = MaterialPipelineResult(
+                material_name=mat.name,
+                status=PipelineStatus.SUCCESS_CDFT_ONLY.value,
+                runtime_seconds=time.perf_counter() - t_start,
+                cdft_runtime_seconds=cdft_times[local_idx],
+                num_sites=mat.num_sites,
+                temperature_k=mat.temperature_k,
+                bulk_density_a3=mat.bulk_density_a3,
+                chemical_potential_kbt=mat.bulk_mu,
+                bulk_pressure_bar=mat.bulk_pressure_bar,
+                wall_pressure_bar=cdft_pressures[local_idx],
+                excess_adsorption_a2=cdft_gammas[local_idx],
+                cdft_final_loss=cdft_losses[local_idx],
+                artifact_dir=mat_out_dir,
+            )
+        return [results_map[i] for i in range(len(batch_tasks))]
+
+    # 3. Batched Boltzmann Generator Phase
+    t_bg_start = time.perf_counter()
+    bg_steps = batch_tasks[0].bg_steps if batch_tasks else 30
+    bg_samples = batch_tasks[0].bg_samples if batch_tasks else 32
+
+    # Batched Hamiltonian evaluating all B=32 molecules simultaneously along Axis 0
+    energy_fn = MicroscopicEnergy(material=mol_batch, pad_to_128=True)
+    flow = Base2CartesianFlow(n_atoms=128, n_layers=4, hidden_dim=64)
+    generator = BoltzmannGenerator(
+        flow=flow,
+        energy_fn=energy_fn,
+        prior=None,
+        batch_size=batch_size,
+    )
+
+    bg_losses = generator.train(steps=bg_steps, batch_size=batch_size, verbose=False)
+    bg_loss = bg_losses[-1] if bg_losses else 0.0
+
+    # Sample batch configurations: (B, 128, 3)
+    n_samp_batches = max(1, math.ceil(bg_samples / batch_size))
+    all_batch_samples = []
+    for _ in range(n_samp_batches):
+        samp = generator.sample(n_samples=batch_size, return_all_pad=True)
+        all_batch_samples.append(samp.numpy())
+
+    stacked_samples = np.concatenate(all_batch_samples, axis=0)  # (N_samp, 128, 3)
+    t_bg = time.perf_counter() - t_bg_start
+
+    # 4. Extract Per-Material Trajectories and Dispatch Async Writes
+    state_dict = nn.state.get_state_dict(flow)
+    np_weights = {k: v.numpy() for k, v in state_dict.items()}
+
+    for local_idx, orig_idx in enumerate(task_indices):
+        mat = loaded_materials[local_idx]
+        task = batch_tasks[orig_idx]
+        mat_out_dir = os.path.join(task.out_dir, mat.name)
+        site_names = [s.site_name for s in mat.sites] if mat.sites else [mat.name]
+
+        # Extract sampled coordinates for this specific molecule: (N_frames, N_real, 3)
+        mat_coords = stacked_samples[:bg_samples, : mat.num_sites, :]
+
+        if async_writer:
+            async_writer.write_xyz(
+                path=os.path.join(mat_out_dir, "trajectory.xyz"),
+                coords=mat_coords,
+                site_names=site_names,
+                material_name=mat.name,
+            )
+            async_writer.write_npz(
+                path=os.path.join(mat_out_dir, "flow_weights.npz"),
+                np_dict=np_weights,
+            )
+
+        results_map[orig_idx] = MaterialPipelineResult(
+            material_name=mat.name,
+            status=PipelineStatus.SUCCESS.value,
+            runtime_seconds=time.perf_counter() - t_start,
+            cdft_runtime_seconds=cdft_times[local_idx],
+            bg_runtime_seconds=t_bg,
+            num_sites=mat.num_sites,
+            temperature_k=mat.temperature_k,
+            bulk_density_a3=mat.bulk_density_a3,
+            chemical_potential_kbt=mat.bulk_mu,
+            bulk_pressure_bar=mat.bulk_pressure_bar,
+            wall_pressure_bar=cdft_pressures[local_idx],
+            excess_adsorption_a2=cdft_gammas[local_idx],
+            cdft_final_loss=cdft_losses[local_idx],
+            bg_final_loss=bg_loss,
+            artifact_dir=mat_out_dir,
+        )
+
+    return [results_map[i] for i in range(len(batch_tasks))]

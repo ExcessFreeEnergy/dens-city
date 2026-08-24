@@ -40,14 +40,27 @@ class BoltzmannGenerator:
         self.flow = flow
         self.energy_fn = energy_fn
         self.prior = prior
-        self.temperature_k = float(temperature_k)
-        # In dens-city, energies are in Kelvin, so beta = 1 / T stored as realized device buffer
-        self.beta = Tensor([1.0 / max(1e-6, self.temperature_k)], dtype=dtypes.float32).realize()
+        self.batch = getattr(energy_fn, "batch", None)
+        self.is_batched_generator = self.batch is not None
+
+        if self.is_batched_generator:
+            self.temperature_k = float(temperature_k)
+            self.beta = self.batch.beta.realize()
+            self.molecule_mask = self.batch.molecule_mask.realize()
+            self.conditioning = self.batch.conditioning.realize()
+            self.batch_size = self.batch.batch_size
+        else:
+            self.temperature_k = float(temperature_k)
+            # In dens-city, energies are in Kelvin, so beta = 1 / T stored as realized device buffer
+            self.beta = Tensor([1.0 / max(1e-6, self.temperature_k)], dtype=dtypes.float32).realize()
+            self.molecule_mask = None
+            self.conditioning = None
+            self.batch_size = int(batch_size)
+
         self.log_2pi = Tensor([math.log(2.0 * math.pi)], dtype=dtypes.float32).realize()
         self.dim = flow.dim
         self.is_base2_cartesian = isinstance(flow, Base2CartesianFlow)
         self.is_composite = isinstance(flow, CompositeFlow)
-        self.batch_size = int(batch_size)
         self.w_torsion = float(w_torsion)
         self.w_tor = Tensor([self.w_torsion], dtype=dtypes.float32).realize()
 
@@ -183,6 +196,11 @@ class BoltzmannGenerator:
         loss_batch = self.beta * u_exact - log_pz - log_det
         if j_tor is not None:
             loss_batch = loss_batch + self.w_tor * j_tor
+
+        if getattr(self, "is_batched_generator", False) and self.molecule_mask is not None:
+            n_active = self.molecule_mask.sum().maximum(1.0)
+            return (loss_batch * self.molecule_mask).sum() / n_active
+
         return loss_batch.mean()
 
     def _train_step(self, origin_pool: Optional[Tensor] = None) -> Tensor:

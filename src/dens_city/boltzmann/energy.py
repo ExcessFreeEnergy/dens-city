@@ -68,15 +68,34 @@ class MicroscopicEnergy:
         e_max: float = 1e20,
     ):
         if material is not None:
-            if material.sites:
+            if hasattr(material, "atom_mask") and hasattr(material, "molecule_mask"):
+                # material is a MolecularBatch
+                self.is_batched_energy = True
+                self.batch = material
+                self.material = None
+                self.batch_size = material.batch_size
+                self.n_particles = material.n_particles
+                self.n_real_particles = self.n_particles
+                self.sigmas = material.sigmas.realize()
+                self.epsilons = material.epsilons.realize()
+                self.charges = material.charges.realize()
+                self.is_real_atom = material.atom_mask.realize()  # (B, N)
+                self.molecule_mask = material.molecule_mask.realize()  # (B,)
+            elif material.sites:
+                self.is_batched_energy = False
+                self.material = material
                 s_list = [s.sigma for s in material.sites]
                 e_list = [s.epsilon_k for s in material.sites]
                 q_list = [s.charge for s in material.sites]
             else:
+                self.is_batched_energy = False
+                self.material = material
                 s_list = [material.effective_sigma]
                 e_list = [material.effective_epsilon_k]
                 q_list = [material.total_charge]
         elif sigmas is not None and epsilons is not None:
+            self.is_batched_energy = False
+            self.material = None
             s_list = sigmas.tolist() if isinstance(sigmas, (np.ndarray, Tensor)) else list(sigmas)
             e_list = epsilons.tolist() if isinstance(epsilons, (np.ndarray, Tensor)) else list(epsilons)
             q_list = (
@@ -87,34 +106,34 @@ class MicroscopicEnergy:
                 else [0.0] * len(s_list)
             )
         else:
-            raise ValueError("Must provide either a Material instance or explicit (sigmas, epsilons).")
+            raise ValueError("Must provide either a Material/MolecularBatch instance or explicit (sigmas, epsilons).")
 
-        self.material = material
-        self.n_real_particles = len(s_list)
+        if not getattr(self, "is_batched_energy", False):
+            self.n_real_particles = len(s_list)
 
-        # Padding logic: default is uniform 128-site bucketing
-        if pad_to_power_of_2:
-            self.n_particles = 1 << (self.n_real_particles - 1).bit_length() if self.n_real_particles > 1 else 1
-        elif not pad_to_128:
-            self.n_particles = self.n_real_particles
-        else:
-            self.n_particles = max(self.n_real_particles, target_n_particles)
+            # Padding logic: default is uniform 128-site bucketing
+            if pad_to_power_of_2:
+                self.n_particles = 1 << (self.n_real_particles - 1).bit_length() if self.n_real_particles > 1 else 1
+            elif not pad_to_128:
+                self.n_particles = self.n_real_particles
+            else:
+                self.n_particles = max(self.n_real_particles, target_n_particles)
 
-        n_pad = self.n_particles - self.n_real_particles
-        if n_pad > 0:
-            # Physical parameters for dummy atoms are strictly zeroed out
-            s_list = s_list + [0.0] * n_pad
-            e_list = e_list + [0.0] * n_pad
-            q_list = q_list + [0.0] * n_pad
+            n_pad = self.n_particles - self.n_real_particles
+            if n_pad > 0:
+                # Physical parameters for dummy atoms are strictly zeroed out
+                s_list = s_list + [0.0] * n_pad
+                e_list = e_list + [0.0] * n_pad
+                q_list = q_list + [0.0] * n_pad
 
-        self.sigmas = Tensor(s_list, dtype=dtypes.float32).realize()
-        self.epsilons = Tensor(e_list, dtype=dtypes.float32).realize()
-        self.charges = Tensor(q_list, dtype=dtypes.float32).realize()
+            self.sigmas = Tensor(s_list, dtype=dtypes.float32).realize()
+            self.epsilons = Tensor(e_list, dtype=dtypes.float32).realize()
+            self.charges = Tensor(q_list, dtype=dtypes.float32).realize()
 
-        # Real-atom exclusion and reduction mask
-        idx = Tensor.arange(self.n_particles)
-        self.is_real_atom = (idx < self.n_real_particles).float().realize()  # (N,)
-        atom_mask_2d = self.is_real_atom.unsqueeze(1) * self.is_real_atom.unsqueeze(0)  # (N, N)
+            # Real-atom exclusion and reduction mask
+            idx = Tensor.arange(self.n_particles)
+            self.is_real_atom = (idx < self.n_real_particles).float().realize()  # (N,)
+            atom_mask_2d = self.is_real_atom.unsqueeze(1) * self.is_real_atom.unsqueeze(0)  # (N, N)
 
         # Box dimensions as realized device buffers
         self.lx = Tensor([float(box_size[0])], dtype=dtypes.float32).realize()
@@ -131,13 +150,24 @@ class MicroscopicEnergy:
         self.c_coul = Tensor([c_coul_val], dtype=dtypes.float32).realize()
         self.has_charges = bool((self.charges.abs() > 1e-6).any().item())
 
-        # Precompute Lorentz-Berthelot pairwise combining matrices (1, N, N) as realized device buffers
-        s_ij_2d = 0.5 * (self.sigmas.unsqueeze(1) + self.sigmas.unsqueeze(0))
-        e_ij_2d = (self.epsilons.unsqueeze(1) * self.epsilons.unsqueeze(0)).sqrt()
-        q_ij_2d = self.charges.unsqueeze(1) * self.charges.unsqueeze(0)
-        self.s_ij = s_ij_2d.unsqueeze(0).realize()
-        self.e_ij = e_ij_2d.unsqueeze(0).realize()
-        self.q_ij = q_ij_2d.unsqueeze(0).realize()
+        idx = Tensor.arange(self.n_particles)
+        if getattr(self, "is_batched_energy", False):
+            # Precompute Lorentz-Berthelot 3D combining matrices (B, N, N)
+            self.s_ij = (0.5 * (self.sigmas.unsqueeze(2) + self.sigmas.unsqueeze(1))).realize()
+            self.e_ij = ((self.epsilons.unsqueeze(2) * self.epsilons.unsqueeze(1)).sqrt()).realize()
+            self.q_ij = (self.charges.unsqueeze(2) * self.charges.unsqueeze(1)).realize()
+            atom_mask_3d = self.is_real_atom.unsqueeze(2) * self.is_real_atom.unsqueeze(1)  # (B, N, N)
+            triu_base = (idx.unsqueeze(1) < idx.unsqueeze(0)).float().unsqueeze(0)  # (1, N, N)
+            self.triu_mask = (triu_base * atom_mask_3d * self.molecule_mask.reshape(-1, 1, 1)).realize()
+        else:
+            # Precompute Lorentz-Berthelot pairwise combining matrices (1, N, N) as realized device buffers
+            s_ij_2d = 0.5 * (self.sigmas.unsqueeze(1) + self.sigmas.unsqueeze(0))
+            e_ij_2d = (self.epsilons.unsqueeze(1) * self.epsilons.unsqueeze(0)).sqrt()
+            q_ij_2d = self.charges.unsqueeze(1) * self.charges.unsqueeze(0)
+            self.s_ij = s_ij_2d.unsqueeze(0).realize()
+            self.e_ij = e_ij_2d.unsqueeze(0).realize()
+            self.q_ij = q_ij_2d.unsqueeze(0).realize()
+            self.triu_mask = ((idx.unsqueeze(1) < idx.unsqueeze(0)).float() * atom_mask_2d).unsqueeze(0).realize()
 
         # Precompute cutoff potential shifts and force gradients at r = r_cut for Shifted-Force (SF)
         sr_cut = self.s_ij / self.r_cut
@@ -149,8 +179,6 @@ class MicroscopicEnergy:
         self.u_coul_cut = ((self.q_ij * self.c_coul) / self.r_cut).realize()
         self.du_coul_cut = (-(self.q_ij * self.c_coul) / (self.r_cut * self.r_cut)).realize()
 
-        # Upper triangular mask (excludes diagonal, double counting, and dummy atoms)
-        self.triu_mask = ((idx.unsqueeze(1) < idx.unsqueeze(0)).float() * atom_mask_2d).unsqueeze(0).realize()
         self.eye = Tensor.eye(self.n_particles).unsqueeze(0).realize()
 
         # Wall potential parameters in Z as realized device buffers
@@ -160,11 +188,11 @@ class MicroscopicEnergy:
         self.v_wall_inf = Tensor([1e6], dtype=dtypes.float32).realize()
 
         # Lorentz-Berthelot collision diameter with wall (masked for dummy atoms)
-        self.sigma_wf = (0.5 * (self.wall_sigma + self.sigmas)).realize()  # (N,)
-        self.steric_radius = ((0.5 * self.sigma_wf) * self.is_real_atom).realize()  # (N,)
+        self.sigma_wf = (0.5 * (self.wall_sigma + self.sigmas)).realize()
+        self.steric_radius = ((0.5 * self.sigma_wf) * self.is_real_atom).realize()
         self.wall_prefactor = (
             (((2.0 * math.pi * self.wall_epsilon_k) / 3.0) * (self.sigma_wf**3)) * self.is_real_atom
-        ).realize()  # (N,)
+        ).realize()
 
         # Energy regularization parameters as realized device buffers
         self.e_high_val = float(e_high) if e_high is not None else None
@@ -292,12 +320,18 @@ class MicroscopicEnergy:
             is_steric = (z_l < self.sigma_wf) | (z_r < self.sigma_wf)
             v_wall = is_steric.where(self.v_wall_inf, 0.0)
 
-        u_wall = (v_wall * self.is_real_atom.unsqueeze(0)).sum(axis=-1)  # (B,)
-        if self.n_real_particles < self.n_particles:
-            # Subtle anchor to prevent dummy unconstrained coordinate divergence
-            dummy_mask = (1.0 - self.is_real_atom).unsqueeze(0)
+        if getattr(self, "is_batched_energy", False):
+            u_wall = (v_wall * self.is_real_atom).sum(axis=-1) * self.molecule_mask  # (B,)
+            dummy_mask = (1.0 - self.is_real_atom) * self.molecule_mask.unsqueeze(1)
             u_dummy = (1e-4 * (pos_b[..., :3] * pos_b[..., :3]).sum(axis=-1) * dummy_mask).sum(axis=-1)
             u_wall = u_wall + u_dummy
+        else:
+            u_wall = (v_wall * self.is_real_atom.unsqueeze(0)).sum(axis=-1)  # (B,)
+            if self.n_real_particles < self.n_particles:
+                dummy_mask = (1.0 - self.is_real_atom).unsqueeze(0)
+                u_dummy = (1e-4 * (pos_b[..., :3] * pos_b[..., :3]).sum(axis=-1) * dummy_mask).sum(axis=-1)
+                u_wall = u_wall + u_dummy
+
         return u_wall if is_batched else u_wall.squeeze(0)
 
     def regularize_energy(

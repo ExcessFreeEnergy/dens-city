@@ -22,10 +22,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import concurrent.futures
 import contextlib
 import json
-import multiprocessing as mp
 import os
 import re
 import sys
@@ -38,9 +36,11 @@ from tinygrad.helpers import colored
 
 from dens_city.utils.materials import MaterialLoader
 from dens_city.utils.pipeline import (
+    AsyncArtifactWriter,
     MaterialPipelineResult,
     MaterialPipelineTask,
     PipelineStatus,
+    process_batched_materials,
     process_material_task,
 )
 
@@ -414,55 +414,25 @@ def main(argv: Optional[List[str]] = None) -> int:
     results: List[MaterialPipelineResult] = []
     t_batch_start = time.perf_counter()
 
-    with open(jsonl_log_path, "w", encoding="utf-8") as jsonl_file:
-        if args.workers <= 1 or args.debug:
-            # Sequential execution for debug reproducibility or single-worker
-            for task in tasks:
-                mat_name = Path(task.material_path_or_name).stem
-                t0 = time.perf_counter()
-                try:
-                    res = _run_task_with_logging(task, log_file=task.debug_log_path)
-                except Exception as e:
-                    res = MaterialPipelineResult(
-                        material_name=mat_name,
-                        status=PipelineStatus.FAILED_ERROR.value,
-                        error_message=f"Error executing material: {str(e)}",
-                        runtime_seconds=time.perf_counter() - t0,
-                    )
-                results.append(res)
-                print_result_row(res)
-                jsonl_file.write(json.dumps(res.to_dict()) + "\n")
-                jsonl_file.flush()
-        else:
-            ctx = mp.get_context("spawn")
-            with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers, mp_context=ctx) as executor:
-                future_to_task = {
-                    executor.submit(_run_task_with_logging, task, task.debug_log_path): task for task in tasks
-                }
+    task_chunks = [tasks[i : i + args.batch_size] for i in range(0, len(tasks), args.batch_size)]
+    async_writer = AsyncArtifactWriter()
 
-                for future in concurrent.futures.as_completed(future_to_task):
-                    task = future_to_task[future]
-                    mat_name = Path(task.material_path_or_name).stem
-                    try:
-                        res = future.result(timeout=args.timeout)
-                    except concurrent.futures.TimeoutError:
-                        res = MaterialPipelineResult(
-                            material_name=mat_name,
-                            status=PipelineStatus.FAILED_TIMEOUT.value,
-                            error_message=f"Task exceeded maximum timeout limit of {args.timeout} seconds.",
-                            runtime_seconds=args.timeout,
-                        )
-                    except Exception as e:
-                        res = MaterialPipelineResult(
-                            material_name=mat_name,
-                            status=PipelineStatus.FAILED_ERROR.value,
-                            error_message=f"Unhandled worker process crash: {str(e)}",
-                        )
-
+    try:
+        with open(jsonl_log_path, "w", encoding="utf-8") as jsonl_file:
+            for chunk in task_chunks:
+                chunk_results = process_batched_materials(
+                    batch_tasks=chunk,
+                    batch_size=args.batch_size,
+                    async_writer=async_writer,
+                )
+                for res in chunk_results:
                     results.append(res)
                     print_result_row(res)
                     jsonl_file.write(json.dumps(res.to_dict()) + "\n")
                     jsonl_file.flush()
+    finally:
+        async_writer.flush()
+        async_writer.close()
 
     t_batch_total = time.perf_counter() - t_batch_start
 

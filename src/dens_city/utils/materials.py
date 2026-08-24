@@ -5,6 +5,8 @@ from the molecular geometry and force field database with zero hardcoded values.
 Provides self-consistent Carnahan-Starling + Mean-Field Equation of State (EOS) solvers.
 """
 
+from __future__ import annotations
+
 import json
 import math
 from dataclasses import dataclass, field
@@ -494,3 +496,135 @@ class MaterialLoader:
     def list_available_materials(cls) -> List[str]:
         """Returns all available .mol2 files in test_data/."""
         return sorted([p.stem for p in TEST_DATA_DIR.glob("*.mol2")])
+
+
+@dataclass
+class MolecularBatch:
+    """
+    Encapsulates a stacked batch of M <= B target molecules padded to uniform dimensions:
+    - B: fixed target batch size (default: 32)
+    - N: fixed target sites per molecule (default: 128)
+    All parameters are strictly stored as static (B, N) or (B, D) Tensor buffers on device
+    to guarantee zero JIT recompilation across executions.
+    """
+
+    materials: List[Optional[Material]]
+    batch_size: int
+    n_particles: int
+    sigmas: Any  # Tensor of shape (B, N)
+    epsilons: Any  # Tensor of shape (B, N)
+    charges: Any  # Tensor of shape (B, N)
+    atom_mask: Any  # Tensor of shape (B, N) - 1.0 for real atoms, 0.0 for dummy atoms
+    molecule_mask: Any  # Tensor of shape (B,) - 1.0 for active molecules, 0.0 for dummy slots
+    temperature_k: Any  # Tensor of shape (B,)
+    beta: Any  # Tensor of shape (B,)
+    bulk_density_a3: Any  # Tensor of shape (B,)
+    bulk_mu: Any  # Tensor of shape (B,)
+    slit_width_a: Any  # Tensor of shape (B,)
+    conditioning: Any  # Tensor of shape (B, 5) [sigma_eff, eps_eff, T, rho_bulk, mu]
+
+    @property
+    def num_active_materials(self) -> int:
+        return sum(1 for m in self.materials if m is not None)
+
+    @classmethod
+    def create_batch(
+        cls,
+        materials: List[Material],
+        batch_size: int = 32,
+        target_n_particles: int = 128,
+        default_temp_k: float = 300.0,
+    ) -> MolecularBatch:
+        """
+        Ingests a list of M materials, pads each to target_n_particles sites with zeroed parameters,
+        stacks them into fixed (B, N) tensors, and fills remaining batch slots up to batch_size
+        with zeroed dummy molecules.
+        """
+        from tinygrad import Tensor, dtypes
+
+        mats_padded: List[Optional[Material]] = []
+        sigmas_list = []
+        epsilons_list = []
+        charges_list = []
+        atom_mask_list = []
+        molecule_mask_list = []
+        temp_list = []
+        beta_list = []
+        rho_list = []
+        mu_list = []
+        slit_list = []
+        cond_list = []
+
+        n_mats = len(materials)
+        for b in range(batch_size):
+            if b < n_mats:
+                mat = materials[b]
+                mats_padded.append(mat)
+                s_b = [s.sigma for s in mat.sites] if mat.sites else [mat.effective_sigma]
+                e_b = [s.epsilon_k for s in mat.sites] if mat.sites else [mat.effective_epsilon_k]
+                q_b = [s.charge for s in mat.sites] if mat.sites else [mat.total_charge]
+                mask_b = [1.0] * len(s_b)
+
+                # Pad dummy atoms up to target_n_particles
+                n_pad = max(0, target_n_particles - len(s_b))
+                if n_pad > 0:
+                    s_b = s_b + [0.0] * n_pad
+                    e_b = e_b + [0.0] * n_pad
+                    q_b = q_b + [0.0] * n_pad
+                    mask_b = mask_b + [0.0] * n_pad
+
+                s_b = s_b[:target_n_particles]
+                e_b = e_b[:target_n_particles]
+                q_b = q_b[:target_n_particles]
+                mask_b = mask_b[:target_n_particles]
+
+                sigmas_list.append(s_b)
+                epsilons_list.append(e_b)
+                charges_list.append(q_b)
+                atom_mask_list.append(mask_b)
+                molecule_mask_list.append(1.0)
+
+                temp_val = mat.temperature_k
+                beta_val = 1.0 / max(1e-6, temp_val)
+                rho_val = mat.bulk_density_a3
+                mu_val = mat.bulk_mu
+                slit_val = max(40.0, 12.0 * mat.effective_sigma)
+
+                temp_list.append(temp_val)
+                beta_list.append(beta_val)
+                rho_list.append(rho_val)
+                mu_list.append(mu_val)
+                slit_list.append(slit_val)
+                cond_list.append([mat.effective_sigma, mat.effective_epsilon_k, temp_val, rho_val, mu_val])
+            else:
+                # Empty batch slot: Zero-padded dummy molecule
+                mats_padded.append(None)
+                sigmas_list.append([0.0] * target_n_particles)
+                epsilons_list.append([0.0] * target_n_particles)
+                charges_list.append([0.0] * target_n_particles)
+                atom_mask_list.append([0.0] * target_n_particles)
+                molecule_mask_list.append(0.0)
+
+                temp_list.append(default_temp_k)
+                beta_list.append(1.0 / default_temp_k)
+                rho_list.append(0.0)
+                mu_list.append(0.0)
+                slit_list.append(40.0)
+                cond_list.append([0.0, 0.0, default_temp_k, 0.0, 0.0])
+
+        return MolecularBatch(
+            materials=mats_padded,
+            batch_size=batch_size,
+            n_particles=target_n_particles,
+            sigmas=Tensor(sigmas_list, dtype=dtypes.float32).realize(),
+            epsilons=Tensor(epsilons_list, dtype=dtypes.float32).realize(),
+            charges=Tensor(charges_list, dtype=dtypes.float32).realize(),
+            atom_mask=Tensor(atom_mask_list, dtype=dtypes.float32).realize(),
+            molecule_mask=Tensor(molecule_mask_list, dtype=dtypes.float32).realize(),
+            temperature_k=Tensor(temp_list, dtype=dtypes.float32).realize(),
+            beta=Tensor(beta_list, dtype=dtypes.float32).realize(),
+            bulk_density_a3=Tensor(rho_list, dtype=dtypes.float32).realize(),
+            bulk_mu=Tensor(mu_list, dtype=dtypes.float32).realize(),
+            slit_width_a=Tensor(slit_list, dtype=dtypes.float32).realize(),
+            conditioning=Tensor(cond_list, dtype=dtypes.float32).realize(),
+        )
