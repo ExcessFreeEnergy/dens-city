@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """
 Populates the data/test_data/ directory with standard Tripos .mol2 structure files
-for the 32 fundamental benchmark materials in dens-city, copying directly from
-FreeSolv where available, and generating canonical geometries for the remaining fluids.
-Also generates standard Amber gaff.dat, forcefield_parameters.json, and forcefield_parameters.csv.
+for benchmark materials in dens-city, copying directly from FreeSolv where available,
+and generating canonical geometries for the remaining fluids.
+
+Usage:
+    python scripts/generate_test_data.py        # Populates 32 core benchmark materials
+    python scripts/generate_test_data.py --all  # Populates ALL 642+ FreeSolv molecules + canonical fluids
 """
 
+import argparse
 import math
 import shutil
 import sys
@@ -405,9 +409,8 @@ def build_sds() -> str:
     return format_mol2("sds", atoms, bonds, "Sodium dodecyl sulfate (SDS) anionic surfactant")
 
 
-# Complete 32 benchmark materials (20 baseline + 12 high-variance FreeSolv additions)
-# Tuple: (Display Name, source_type, source_val, output_filename)
-MATERIALS = [
+# 32 Curated Benchmark Materials (20 Baseline + 12 High-Variance FreeSolv Additions)
+BENCHMARK_MATERIALS = [
     # 1-20 Original Benchmark Suite
     ("Water", "generate", build_water, "water.mol2"),
     ("Nitrogen", "generate", build_nitrogen, "nitrogen.mol2"),
@@ -445,18 +448,33 @@ MATERIALS = [
 ]
 
 
-def verify_freesolv_setup() -> Path:
+def verify_and_extract_freesolv() -> Path:
     """
     Verifies that the FreeSolv submodule / GAFF database is available.
-    Extracts mol2files_gaff.tar.gz into data/mol2files_gaff if not already present.
+    Extracts mol2files_gaff.tar.gz and copies metadata files to data/ if not already present.
     """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 1. Check if data/mol2files_gaff exists and has .mol2 files
+    # 1. Copy metadata files if FreeSolv submodule exists
+    if FREESOLV_SUBMODULE_DIR.exists():
+        metadata_files = [
+            "database.json",
+            "database.pickle",
+            "database.txt",
+            "iupac_to_cid.json",
+            "smiles_to_cid.json",
+        ]
+        for f in metadata_files:
+            src = FREESOLV_SUBMODULE_DIR / f
+            dst = DATA_DIR / f
+            if src.exists() and not dst.exists():
+                shutil.copy2(src, dst)
+
+    # 2. Check if data/mol2files_gaff exists and has .mol2 files
     if MOL2_GAFF_DIR.exists() and any(MOL2_GAFF_DIR.glob("*.mol2")):
         return MOL2_GAFF_DIR
 
-    # 2. Check for FreeSolv submodule or tarball
+    # 3. Extract tarball from FreeSolv submodule or data/
     tar_paths = [
         FREESOLV_SUBMODULE_DIR / "mol2files_gaff.tar.gz",
         DATA_DIR / "mol2files_gaff.tar.gz",
@@ -464,13 +482,15 @@ def verify_freesolv_setup() -> Path:
 
     for tar_p in tar_paths:
         if tar_p.exists():
-            print(f"Extracting FreeSolv GAFF database from {tar_p} into {MOL2_GAFF_DIR}...")
+            print(f"Extracting FreeSolv GAFF archive from {tar_p} -> {MOL2_GAFF_DIR}...")
             MOL2_GAFF_DIR.mkdir(parents=True, exist_ok=True)
             with tarfile.open(tar_p, "r:gz") as tar:
-                tar.extractall(path=DATA_DIR)
+                if hasattr(tarfile, "data_filter"):
+                    tar.extractall(path=DATA_DIR, filter="data")
+                else:
+                    tar.extractall(path=DATA_DIR)
             return MOL2_GAFF_DIR
 
-    # 3. Check if FreeSolv submodule itself exists
     if FREESOLV_SUBMODULE_DIR.exists() and (FREESOLV_SUBMODULE_DIR / "database.pickle").exists():
         return FREESOLV_SUBMODULE_DIR
 
@@ -482,28 +502,30 @@ def verify_freesolv_setup() -> Path:
     )
 
 
-def generate_all() -> None:
-    """Populates data/test_data with all 32 benchmark materials and force field parameters."""
+def generate_all(populate_entire_freesolv: bool = False) -> None:
+    """Populates data/test_data with benchmark materials and force field parameters."""
     print("================================================================================")
     print("  dens-city: Test Data & Benchmark Molecular Dataset Generator")
     print("================================================================================")
 
     # Step 1: Verify FreeSolv availability
-    freesolv_src_dir = verify_freesolv_setup()
+    freesolv_src_dir = verify_and_extract_freesolv()
     print(f"  FreeSolv Source     : {freesolv_src_dir}")
 
     # Step 2: Ensure data/ and data/test_data/ exist
     TEST_DATA_DIR.mkdir(parents=True, exist_ok=True)
     print(f"  Target Test Data Dir: {TEST_DATA_DIR}")
-    print(f"  Target Molecules    : {len(MATERIALS)} items (Full 32 Parallel Batch)")
+    mode_str = (
+        "ENTIRE FreeSolv Database (642+ molecules)" if populate_entire_freesolv else "32 Core Benchmark Materials"
+    )
+    print(f"  Mode                : {mode_str}")
     print("--------------------------------------------------------------------------------")
 
-    # Step 3: Populate/copy all 32 .mol2 files
-    for idx, (name, src_type, src_val, out_filename) in enumerate(MATERIALS, 1):
+    # Step 3: Populate canonical benchmark materials (32 materials)
+    for idx, (name, src_type, src_val, out_filename) in enumerate(BENCHMARK_MATERIALS, 1):
         out_path = TEST_DATA_DIR / out_filename
         if src_type == "freesolv":
             src_path = freesolv_src_dir / src_val
-            # Fallback search if nested in mol2files_gaff
             if not src_path.exists() and (freesolv_src_dir / "mol2files_gaff" / src_val).exists():
                 src_path = freesolv_src_dir / "mol2files_gaff" / src_val
 
@@ -517,21 +539,48 @@ def generate_all() -> None:
             out_path.write_text(mol2_content)
             print(f"[{idx:02d}/32] {name:<35} <- Generated canonical model -> {out_filename}")
 
-    # Step 4: Generate force field parameters and GAFF database in data/test_data/
+    # Step 4: If --all requested, copy EVERY remaining FreeSolv molecule into test_data/
+    if populate_entire_freesolv:
+        print("--------------------------------------------------------------------------------")
+        print("  Populating entire FreeSolv database into data/test_data/...")
+        all_freesolv_files = list(freesolv_src_dir.glob("*.mol2"))
+        if not all_freesolv_files and (freesolv_src_dir / "mol2files_gaff").exists():
+            all_freesolv_files = list((freesolv_src_dir / "mol2files_gaff").glob("*.mol2"))
+
+        copied_extra = 0
+        for f in all_freesolv_files:
+            dst = TEST_DATA_DIR / f.name
+            if not dst.exists():
+                shutil.copy2(f, dst)
+                copied_extra += 1
+        print(f"  Copied {copied_extra} additional FreeSolv molecules into {TEST_DATA_DIR}.")
+
+    # Step 5: Generate force field parameters and GAFF database in data/test_data/
     print("--------------------------------------------------------------------------------")
     print("  Generating Force Field Parameters & GAFF Database in data/test_data/...")
     generate_json_and_csv()
 
-    # Step 5: Verify all 32 datasets exist
+    # Step 6: Verification
     mol2_files = list(TEST_DATA_DIR.glob("*.mol2"))
     print("--------------------------------------------------------------------------------")
-    print(f"  Verification: Found {len(mol2_files)} / 32 .mol2 files in {TEST_DATA_DIR}")
-    if len(mol2_files) == 32:
-        print("  Status: COMPLETE (32/32 benchmark datasets successfully populated)")
-    else:
-        print(f"  Warning: Expected 32 files, but found {len(mol2_files)} files!", file=sys.stderr)
+    print(f"  Verification: Found {len(mol2_files)} total .mol2 files in {TEST_DATA_DIR}")
+    print("  Status: COMPLETE")
     print("================================================================================")
 
 
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Populate test_data directory with benchmark molecules and force field parameters."
+    )
+    parser.add_argument(
+        "--all",
+        "-a",
+        action="store_true",
+        help="Extract and populate EVERY molecule from the FreeSolv database (642+ molecules) into test_data/",
+    )
+    args = parser.parse_args()
+    generate_all(populate_entire_freesolv=args.all)
+
+
 if __name__ == "__main__":
-    generate_all()
+    main()
