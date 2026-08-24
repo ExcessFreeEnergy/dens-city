@@ -22,7 +22,12 @@ dependencies = [
     "pytest-benchmark>=4.0.0",
     "matplotlib>=3.7.0",
     "ruff>=0.4.0",
+    "raylib>=5.0.0",
 ]
+
+[project.scripts]
+dens-city = "dens_city.ui.cli:main"
+"dens--city" = "dens_city.ui.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

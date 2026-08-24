@@ -1,5 +1,26 @@
 """
-User Interface (UI) subsystem placeholder for dens-city.
+User Interface (UI) subsystem for dens-city.
+Provides high-performance 3D Raylib molecular visualization and unified CLI tools.
 """
 
-__all__ = []
+from dens_city.ui.cli import main
+from dens_city.ui.viewer import (
+    CPK_COLORS,
+    ELEMENT_RADII,
+    MoleculeViewer,
+    get_atom_color,
+    get_atom_element,
+    get_atom_radius,
+    run_interactive_viewer,
+)
+
+__all__ = [
+    "MoleculeViewer",
+    "run_interactive_viewer",
+    "main",
+    "CPK_COLORS",
+    "ELEMENT_RADII",
+    "get_atom_element",
+    "get_atom_color",
+    "get_atom_radius",
+]
