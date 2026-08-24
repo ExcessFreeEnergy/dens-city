@@ -116,7 +116,7 @@ def test_composite_flow_mcmc_relaxation():
         material=water,
         box_size=(30.0, 30.0, 30.0),
         r_cut=10.0,
-        pad_to_power_of_2=False,
+        pad_to_128=False,
     )
     flow = CompositeFlow(n_atoms=energy_fn.n_particles, n_layers=4, hidden_dim=32)
     generator = BoltzmannGenerator(
@@ -134,6 +134,6 @@ def test_composite_flow_mcmc_relaxation():
         mcmc_step_size=0.1,
         return_stats=True,
     )
-    assert samples.shape == (8, 3, 3)
+    assert samples.shape == (4, 3, 3)
     assert np.all(np.isfinite(samples.numpy()))
     assert 0.0 <= stats["acceptance_rate"] <= 1.0

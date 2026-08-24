@@ -6,7 +6,7 @@ via variational Reverse Kullback-Leibler (KL) divergence minimization in pure ti
 import math
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
-from tinygrad import GlobalCounters, Tensor, TinyJit, dtypes, nn
+from tinygrad import Tensor, TinyJit, dtypes, nn
 from tinygrad.helpers import getenv, trange
 
 from dens_city.boltzmann.bijectors import (
@@ -242,17 +242,17 @@ class BoltzmannGenerator:
                     self.origin_pool = raw_pool.reshape(-1, self.dim).realize()
             self.train_step = TinyJit(self._train_step)
 
-        losses = []
+        loss_tensors = []
         iterator = trange(steps) if verbose else range(steps)
         for i in iterator:
-            GlobalCounters.reset()
             loss = self.train_step(self.origin_pool) if self.origin_pool is not None else self.train_step()
-            loss_val = loss.item()
-            losses.append(loss_val)
+            loss_tensors.append(loss)
 
             if verbose and hasattr(iterator, "set_description") and (i % 20 == 0 or i == steps - 1):
+                loss_val = float(loss.item())
                 iterator.set_description(f"KL Loss: {loss_val:8.4f}")
 
+        losses = [float(loss_t.item()) for loss_t in loss_tensors]
         return losses
 
     def _sample_batch(self, n_samples: int) -> Tensor:
@@ -426,13 +426,13 @@ class BoltzmannGenerator:
 
             # Batch updates via where()
             mask_z = accept_mask.reshape(B, *([1] * (len(z_curr.shape) - 1)))
-            z_curr = mask_z.where(z_prop, z_curr).realize()
+            z_curr = mask_z.where(z_prop, z_curr)
 
             mask_x = accept_mask.reshape(B, *([1] * (len(x_curr.shape) - 1)))
-            x_curr = mask_x.where(x_prop, x_curr).realize()
+            x_curr = mask_x.where(x_prop, x_curr)
 
-            e_curr = accept_mask.where(e_prop, e_curr).realize()
-            u_curr = accept_mask.where(u_prop, u_curr).realize()
+            e_curr = accept_mask.where(e_prop, e_curr)
+            u_curr = accept_mask.where(u_prop, u_curr)
 
         final_u_mean = float(u_curr.mean().item())
         total_accepted = float(accepted_sum.item())

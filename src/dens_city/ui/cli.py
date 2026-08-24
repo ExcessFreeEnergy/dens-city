@@ -36,7 +36,6 @@ from typing import List, Optional
 
 from tinygrad.helpers import colored
 
-from dens_city.ui.viewer import run_interactive_viewer
 from dens_city.utils.materials import MaterialLoader
 from dens_city.utils.pipeline import (
     MaterialPipelineResult,
@@ -357,6 +356,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # 1. Interactive 3D Raylib Visualizer Mode
     if args.interactive:
+        from dens_city.ui.viewer import run_interactive_viewer
+
         print(colored("==========================================================================", "cyan"))
         print(colored("  dens-city: 3D Interactive Raylib Molecular Visualizer                  ", "cyan"))
         print(colored("==========================================================================", "cyan"))

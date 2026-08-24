@@ -4,18 +4,9 @@ Provides high-performance 3D Raylib molecular visualization, non-blocking cDFT a
 Van der Waals surface wireframe mesh, and unified CLI tools.
 """
 
+from typing import Any
+
 from dens_city.ui.cli import main
-from dens_city.ui.viewer import (
-    ELEMENT_COLORS,
-    ELEMENT_RADII,
-    VDW_RADII,
-    MoleculeViewer,
-    get_atom_color,
-    get_atom_element,
-    get_atom_radius,
-    get_vdw_radius,
-    run_interactive_viewer,
-)
 from dens_city.ui.worker import (
     CDFTBGWorker,
     TelemetryData,
@@ -41,3 +32,22 @@ __all__ = [
     "get_atom_radius",
     "get_vdw_radius",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """Lazy-loads Raylib-dependent viewer symbols only when explicitly accessed."""
+    if name in (
+        "MoleculeViewer",
+        "run_interactive_viewer",
+        "ELEMENT_COLORS",
+        "ELEMENT_RADII",
+        "VDW_RADII",
+        "get_atom_color",
+        "get_atom_element",
+        "get_atom_radius",
+        "get_vdw_radius",
+    ):
+        import dens_city.ui.viewer as viewer_mod
+
+        return getattr(viewer_mod, name)
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
