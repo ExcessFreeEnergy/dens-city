@@ -240,8 +240,8 @@ class MoleculeViewer:
         self.default_distance = 15.0
         self.default_target = pr.Vector3(0.0, 0.0, 0.0)
 
-        # Van der Waals Surface Mesh Display
-        self.show_vdw_surface: bool = True
+        # Van der Waals Surface Mesh Display (Default OFF, toggle via [V] or [Mesh] button)
+        self.show_vdw_surface: bool = False
 
         # Worker thread & ZeroMQ bridge
         self.worker = CDFTBGWorker(material=self.material, cdft_steps=100, bg_mcmc_steps=40)
@@ -689,8 +689,8 @@ class MoleculeViewer:
         btn_y = deck_y + 12
         btn_h = 34
 
-        is_running_cdft = self.telemetry.state == "RUNNING_CDFT"
-        is_running_bg = self.telemetry.state == "RUNNING_BG"
+        is_running_cdft = self.worker.is_running and self.telemetry.state == "RUNNING_CDFT"
+        is_running_bg = self.worker.is_running and self.telemetry.state == "RUNNING_BG"
         cdft_converged = self.telemetry.state in ("CDFT_CONVERGED", "RUNNING_BG", "COMPLETE")
 
         # 0. [Reset] Button
@@ -715,7 +715,7 @@ class MoleculeViewer:
         pr.draw_text("Step cDFT", curr_x + 12, btn_y + 10, 13, pr.RAYWHITE)
 
         if hover1 and mouse_clicked and not self.worker.is_running:
-            self.worker.step_cdft()
+            self.worker.step_cdft(n_steps=5)
 
         curr_x += 100
 
@@ -773,7 +773,7 @@ class MoleculeViewer:
         pr.draw_text("Step MCMC", curr_x + 10, btn_y + 10, 13, text_col3)
 
         if hover3 and mouse_clicked and cdft_converged and not self.worker.is_running:
-            self.worker.solve_bg()
+            self.worker.step_mcmc(n_steps=5)
 
         curr_x += 105
 

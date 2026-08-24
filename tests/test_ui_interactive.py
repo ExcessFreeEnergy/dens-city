@@ -1,7 +1,7 @@
 """
 Unit and integration tests for CDFTBGWorker and interactive UI components in dens_city.ui.
 Validates non-blocking ZeroMQ streaming, state machine transitions, telemetry calculation,
-MCMC relaxation coordinate updates, and full system reset.
+MCMC relaxation coordinate updates, stepping controls, and full system reset.
 """
 
 import time
@@ -40,7 +40,7 @@ def test_geometric_metrics_calculation():
 
 
 def test_cdft_bg_worker_initialization_and_single_step():
-    """Validates that CDFTBGWorker initializes cDFT and executes single step with ZeroMQ."""
+    """Validates that CDFTBGWorker initializes cDFT and executes step with ZeroMQ."""
     water = MaterialLoader.load_material("water")
     worker = CDFTBGWorker(
         material=water,
@@ -56,15 +56,22 @@ def test_cdft_bg_worker_initialization_and_single_step():
         assert t0.cdft_progress == 0.0
         assert len(t0.rho_z) == 64
 
-        # Execute 1 cDFT step
-        worker.step_cdft()
+        # Execute cDFT step
+        worker.step_cdft(n_steps=5)
         time.sleep(0.05)
         t1 = worker.poll_telemetry()
 
-        assert t1.cdft_step == 1
-        assert t1.cdft_progress > 0.0
+        assert t1.cdft_step == 5
+        assert t1.cdft_progress == 0.5
         assert len(t1.rho_z) == 64
         assert t1.wall_pressure_bar != 0.0
+
+        # Execute MCMC step
+        worker.step_mcmc(n_steps=2)
+        time.sleep(0.05)
+        t2 = worker.poll_telemetry()
+        assert t2.bg_step == 2
+        assert len(t2.current_coords) == len(water.sites)
     finally:
         worker.close()
 
@@ -151,10 +158,10 @@ def test_cdft_bg_worker_reset():
     )
 
     try:
-        worker.step_cdft()
+        worker.step_cdft(n_steps=5)
         time.sleep(0.05)
         t1 = worker.poll_telemetry()
-        assert t1.cdft_step == 1
+        assert t1.cdft_step == 5
         assert t1.wall_pressure_bar != 0.0
 
         # Trigger reset

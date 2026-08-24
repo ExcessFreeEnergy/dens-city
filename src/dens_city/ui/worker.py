@@ -270,7 +270,7 @@ class CDFTBGWorker:
             self.telemetry.cdft_progress = step / max(1, max_steps)
             if step >= max_steps:
                 self.telemetry.state = "CDFT_CONVERGED"
-            else:
+            elif not data.get("keep_waiting_state", False):
                 self.telemetry.state = "RUNNING_CDFT"
 
             self.telemetry.loss = data.get("loss", self.telemetry.loss)
@@ -292,7 +292,8 @@ class CDFTBGWorker:
             self.telemetry.coating_viability = "HIGH (Wetting)" if p_wall > 0 else "LOW (Dewetting)"
 
         elif m_type == "BG_STEP":
-            self.telemetry.state = "RUNNING_BG"
+            if not data.get("keep_converged_state", False):
+                self.telemetry.state = "RUNNING_BG"
             self.telemetry.bg_step = data.get("step", self.telemetry.bg_step)
             self.telemetry.bg_max_steps = data.get("max_steps", self.telemetry.bg_max_steps)
             self.telemetry.bg_progress = self.telemetry.bg_step / max(1, self.telemetry.bg_max_steps)
@@ -315,21 +316,24 @@ class CDFTBGWorker:
             self.telemetry.error_msg = data.get("error", "Unknown error")
             self.is_running = False
 
-    def step_cdft(self) -> None:
-        """Executes a single step of variational cDFT synchronously or triggers background worker."""
+    def step_cdft(self, n_steps: int = 5) -> None:
+        """Executes n_steps of variational cDFT synchronously and updates density profile & telemetry."""
         if self.cdft_solver is None:
             self._init_cdft()
         if self.cdft_solver is None:
             return
 
         try:
-            loss = self.cdft_solver.train_step()
-            loss_val = float(loss.item())
+            loss_val = 0.0
+            for _ in range(max(1, n_steps)):
+                loss = self.cdft_solver.train_step()
+                loss_val = float(loss.item())
+
             rho = self.cdft_solver.get_density_profile().tolist()
             p_wall = float(self.cdft_solver.get_wall_contact_pressure())
             gamma = float(self.cdft_solver.get_excess_adsorption())
 
-            new_step = self.telemetry.cdft_step + 1
+            new_step = min(self.cdft_steps, self.telemetry.cdft_step + max(1, n_steps))
             is_conv = new_step >= self.cdft_steps
 
             self._emit(
@@ -341,6 +345,7 @@ class CDFTBGWorker:
                     "wall_pressure_bar": p_wall,
                     "excess_adsorption": gamma,
                     "rho_z": rho,
+                    "keep_waiting_state": not self.is_running and not is_conv,
                 },
             )
 
@@ -348,6 +353,71 @@ class CDFTBGWorker:
                 self._emit("CDFT_CONVERGED", {"wall_pressure_bar": p_wall})
         except Exception as e:
             self._emit("ERROR", {"error": str(e)})
+
+    def step_mcmc(self, n_steps: int = 5) -> None:
+        """Executes n_steps of Metropolis MCMC relaxation and updates coordinates/telemetry."""
+        mat = self.material
+        sigmas = [s.sigma for s in mat.sites]
+        if self.telemetry.current_coords:
+            current_coords = np.array(self.telemetry.current_coords, dtype=np.float32)
+        else:
+            current_coords = np.array([(s.x, s.y, s.z) for s in mat.sites], dtype=np.float32)
+
+        total_accepted = int(self.telemetry.torsional_acceptance_pct * max(1, self.telemetry.bg_step) / 100.0)
+        total_proposals = max(1, self.telemetry.bg_step)
+
+        for _ in range(max(1, n_steps)):
+            delta = np.random.normal(0.0, 0.08, size=current_coords.shape).astype(np.float32)
+            prop_coords = current_coords + delta
+
+            clashes_curr = count_steric_clashes(current_coords, sigmas, mat.bonds)
+            clashes_prop = count_steric_clashes(prop_coords, sigmas, mat.bonds)
+
+            total_proposals += 1
+            if clashes_prop <= clashes_curr or np.random.rand() < 0.15:
+                current_coords = prop_coords
+                total_accepted += 1
+
+        new_step = min(self.bg_mcmc_steps, self.telemetry.bg_step + max(1, n_steps))
+        acc_rate = (total_accepted / max(1, total_proposals)) * 100.0
+        rg = compute_radius_of_gyration(current_coords)
+        ree = compute_end_to_end_distance(current_coords)
+        n_clashes = count_steric_clashes(current_coords, sigmas, mat.bonds)
+        coords_list = [(float(c[0]), float(c[1]), float(c[2])) for c in current_coords]
+        is_complete = new_step >= self.bg_mcmc_steps
+
+        if is_complete:
+            p_wall = self.telemetry.wall_pressure_bar
+            self._emit(
+                "COMPLETE",
+                {
+                    "state": "COMPLETE",
+                    "bg_progress": 1.0,
+                    "current_coords": coords_list,
+                    "steric_clashes": n_clashes,
+                    "torsional_acceptance_pct": acc_rate,
+                    "radius_of_gyration": rg,
+                    "end_to_end_dist": ree,
+                    "excess_free_energy": self.telemetry.loss,
+                    "wall_pressure_bar": p_wall,
+                    "coating_viability": "HIGH (Wetting)" if p_wall > 0 else "LOW (Dewetting)",
+                    "is_wetting": p_wall > 0,
+                },
+            )
+        else:
+            self._emit(
+                "BG_STEP",
+                {
+                    "step": new_step,
+                    "max_steps": self.bg_mcmc_steps,
+                    "coords": coords_list,
+                    "acceptance_pct": acc_rate,
+                    "steric_clashes": n_clashes,
+                    "radius_of_gyration": rg,
+                    "end_to_end_dist": ree,
+                    "keep_converged_state": not self.is_running,
+                },
+            )
 
     def solve_cdft(self) -> None:
         """Starts continuous non-blocking cDFT solver loop in a background thread."""

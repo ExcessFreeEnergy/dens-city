@@ -95,7 +95,7 @@ def test_molecule_viewer_bounds_and_auto_framing():
     assert viewer_ar.target.y == 0.0
     assert viewer_ar.target.z == 0.0
     assert viewer_ar.distance >= 4.5
-    assert viewer_ar.show_vdw_surface is True
+    assert viewer_ar.show_vdw_surface is False
     viewer_ar.worker.close()
 
     water = MaterialLoader.load_material("water")
