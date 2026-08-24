@@ -1,7 +1,8 @@
 """
 Unit and functional tests for the Raylib 3D Molecular Viewer in dens_city.ui.
 Verifies CPK/publication color mappings, GAFF/Tripos element parsing, orbital camera math,
-multi-bond geometry, scale-invariant auto-framing (up to 128+ sites), and CLI argument parsing.
+multi-bond geometry, scale-invariant auto-framing (up to 128+ sites), Van der Waals surface radii,
+full reset functionality, and CLI argument parsing.
 """
 
 import math
@@ -9,10 +10,12 @@ import math
 from dens_city.ui.cli import parse_materials_arg
 from dens_city.ui.viewer import (
     ELEMENT_COLORS,
+    VDW_RADII,
     MoleculeViewer,
     get_atom_color,
     get_atom_element,
     get_atom_radius,
+    get_vdw_radius,
 )
 from dens_city.utils.materials import AtomSite, Material, MaterialLoader
 
@@ -63,6 +66,23 @@ def test_element_color_and_radius_mapping():
     assert 0.20 <= fallback_radius <= 0.60
 
 
+def test_vdw_radius_mapping():
+    """Validates crystallographic Van der Waals radii for molecular surface reconstruction."""
+    for elem in ["H", "C", "N", "O", "CL", "S", "AR"]:
+        assert elem in VDW_RADII
+        vdw_r = get_vdw_radius(elem)
+        assert 1.0 <= vdw_r <= 2.5
+
+    assert math.isclose(get_vdw_radius("c3"), 1.70, abs_tol=1e-3)
+    assert math.isclose(get_vdw_radius("ha"), 1.20, abs_tol=1e-3)
+    assert math.isclose(get_vdw_radius("n1"), 1.55, abs_tol=1e-3)
+    assert math.isclose(get_vdw_radius("os"), 1.52, abs_tol=1e-3)
+
+    # Fallback
+    fallback_vdw = get_vdw_radius("Xx", sigma=3.8)
+    assert math.isclose(fallback_vdw, 1.9, abs_tol=1e-3)
+
+
 def test_molecule_viewer_bounds_and_auto_framing():
     """
     Validates that MoleculeViewer accurately calculates centroid and distance
@@ -75,16 +95,44 @@ def test_molecule_viewer_bounds_and_auto_framing():
     assert viewer_ar.target.y == 0.0
     assert viewer_ar.target.z == 0.0
     assert viewer_ar.distance >= 4.5
+    assert viewer_ar.show_vdw_surface is True
+    viewer_ar.worker.close()
 
     water = MaterialLoader.load_material("water")
     viewer_w = MoleculeViewer(material=water)
     assert viewer_w.material.name == "water"
     assert viewer_w.distance > 0.0
+    viewer_w.worker.close()
 
     five_cb = MaterialLoader.load_material("5cb")
     viewer_5cb = MoleculeViewer(material=five_cb)
     assert viewer_5cb.material.name == "5cb"
     assert viewer_5cb.distance > 8.0
+    viewer_5cb.worker.close()
+
+
+def test_molecule_viewer_reset_all():
+    """Validates that reset_all() restores camera, calculations, telemetry, and coordinates."""
+    benzene = MaterialLoader.load_material("benzene")
+    viewer = MoleculeViewer(material=benzene)
+    try:
+        # Step solver and perturb camera
+        viewer.worker.step_cdft()
+        viewer.distance = 99.0
+        viewer.azimuth = 2.5
+        viewer.elevation = 0.8
+        viewer.rendered_coords[0] = (10.0, 10.0, 10.0)
+
+        # Reset all
+        viewer.reset_all()
+        assert viewer.worker.telemetry.state == "WAITING_CDFT"
+        assert viewer.worker.telemetry.cdft_step == 0
+        assert viewer.distance == viewer.default_distance
+        assert math.isclose(viewer.azimuth, 0.75, abs_tol=1e-3)
+        assert math.isclose(viewer.elevation, 0.35, abs_tol=1e-3)
+        assert viewer.rendered_coords[0] == (benzene.sites[0].x, benzene.sites[0].y, benzene.sites[0].z)
+    finally:
+        viewer.worker.close()
 
 
 def test_sodium_dodecyl_sulfate_bounds():
@@ -97,11 +145,14 @@ def test_sodium_dodecyl_sulfate_bounds():
     assert len(sds.bonds) == 41
 
     viewer = MoleculeViewer(material=sds)
-    assert viewer.distance >= 25.0, f"Camera distance {viewer.distance} must scale for ~20 Å SDS span"
+    try:
+        assert viewer.distance >= 25.0, f"Camera distance {viewer.distance} must scale for ~20 Å SDS span"
 
-    # Sulfate head group has 3 S=O double bonds
-    so_double_bonds = [b for b in sds.bonds if str(b[2]).strip() == "2"]
-    assert len(so_double_bonds) == 3, f"Expected 3 S=O double bonds, got {len(so_double_bonds)}"
+        # Sulfate head group has 3 S=O double bonds
+        so_double_bonds = [b for b in sds.bonds if str(b[2]).strip() == "2"]
+        assert len(so_double_bonds) == 3, f"Expected 3 S=O double bonds, got {len(so_double_bonds)}"
+    finally:
+        viewer.worker.close()
 
 
 def test_large_128_site_molecule_scaling():
@@ -139,11 +190,14 @@ def test_large_128_site_molecule_scaling():
     )
 
     viewer = MoleculeViewer(material=mat_128)
-    assert len(viewer.material.sites) == 128
-    # Target must be at center of chain (z ~ 50.8 Å)
-    assert math.isclose(viewer.target.z, 50.8, abs_tol=1.0)
-    # Camera distance must scale to contain the full ~102 Å bounding sphere
-    assert viewer.distance > 100.0, f"Expected camera distance > 100 Å, got {viewer.distance}"
+    try:
+        assert len(viewer.material.sites) == 128
+        # Target must be at center of chain (z ~ 50.8 Å)
+        assert math.isclose(viewer.target.z, 50.8, abs_tol=1.0)
+        # Camera distance must scale to contain the full ~102 Å bounding sphere
+        assert viewer.distance > 100.0, f"Expected camera distance > 100 Å, got {viewer.distance}"
+    finally:
+        viewer.worker.close()
 
 
 def test_nitrogen_and_co2_multi_bond_detection():
@@ -168,21 +222,23 @@ def test_camera_spherical_coordinate_math():
     """Validates camera 3D position calculation from spherical azimuth/elevation."""
     water = MaterialLoader.load_material("water")
     viewer = MoleculeViewer(material=water)
+    try:
+        viewer.distance = 10.0
+        viewer.elevation = 0.0
+        viewer.azimuth = 0.0
 
-    viewer.distance = 10.0
-    viewer.elevation = 0.0
-    viewer.azimuth = 0.0
+        pos = viewer.get_camera_position()
+        assert math.isclose(pos.x, viewer.target.x, abs_tol=1e-5)
+        assert math.isclose(pos.y, viewer.target.y, abs_tol=1e-5)
+        assert math.isclose(pos.z, viewer.target.z + 10.0, abs_tol=1e-5)
 
-    pos = viewer.get_camera_position()
-    assert math.isclose(pos.x, viewer.target.x, abs_tol=1e-5)
-    assert math.isclose(pos.y, viewer.target.y, abs_tol=1e-5)
-    assert math.isclose(pos.z, viewer.target.z + 10.0, abs_tol=1e-5)
-
-    viewer.elevation = math.pi / 2.0
-    pos_top = viewer.get_camera_position()
-    assert math.isclose(pos_top.x, viewer.target.x, abs_tol=1e-5)
-    assert math.isclose(pos_top.y, viewer.target.y + 10.0, abs_tol=1e-5)
-    assert math.isclose(pos_top.z, viewer.target.z, abs_tol=1e-5)
+        viewer.elevation = math.pi / 2.0
+        pos_top = viewer.get_camera_position()
+        assert math.isclose(pos_top.x, viewer.target.x, abs_tol=1e-5)
+        assert math.isclose(pos_top.y, viewer.target.y + 10.0, abs_tol=1e-5)
+        assert math.isclose(pos_top.z, viewer.target.z, abs_tol=1e-5)
+    finally:
+        viewer.worker.close()
 
 
 def test_cli_materials_arg_parsing():

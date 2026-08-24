@@ -1,7 +1,7 @@
 """
 Unit and integration tests for CDFTBGWorker and interactive UI components in dens_city.ui.
 Validates non-blocking ZeroMQ streaming, state machine transitions, telemetry calculation,
-and MCMC relaxation coordinate updates.
+MCMC relaxation coordinate updates, and full system reset.
 """
 
 import time
@@ -136,5 +136,36 @@ def test_cdft_bg_worker_cancellation():
         assert worker.is_running is False
         t = worker.poll_telemetry()
         assert t.state == "WAITING_CDFT"
+    finally:
+        worker.close()
+
+
+def test_cdft_bg_worker_reset():
+    """Validates that worker.reset() completely clears execution state back to initialization."""
+    benzene = MaterialLoader.load_material("benzene")
+    worker = CDFTBGWorker(
+        material=benzene,
+        n_grid=64,
+        cdft_steps=50,
+        zmq_endpoint="inproc://test_worker_reset",
+    )
+
+    try:
+        worker.step_cdft()
+        time.sleep(0.05)
+        t1 = worker.poll_telemetry()
+        assert t1.cdft_step == 1
+        assert t1.wall_pressure_bar != 0.0
+
+        # Trigger reset
+        worker.reset()
+        t2 = worker.poll_telemetry()
+        assert t2.state == "WAITING_CDFT"
+        assert t2.cdft_step == 0
+        assert t2.cdft_progress == 0.0
+        assert t2.loss == 0.0
+        assert t2.wall_pressure_bar == 0.0
+        assert t2.coating_viability == "PENDING"
+        assert len(t2.current_coords) == len(benzene.sites)
     finally:
         worker.close()

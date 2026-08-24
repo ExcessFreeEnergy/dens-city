@@ -1,8 +1,8 @@
 """
 High-performance 3D molecular viewer implemented in Raylib (pyray).
 Integrates variational cDFT and Boltzmann Generator workflows with non-blocking execution,
-real-time 2D density profile overlay, MCMC relaxation visualizer, bottom control deck,
-and right-edge telemetry output panel.
+real-time 2D density profile overlay, Van der Waals (VDW) wireframe surface mesh,
+bottom control deck with full Reset capability, and bottom-right telemetry output panel.
 """
 
 from __future__ import annotations
@@ -50,6 +50,24 @@ ELEMENT_RADII: Dict[str, float] = {
     "AR": 0.52,  # Substantial for monoatomic gases
     "NA": 0.42,
     "CA": 0.45,
+}
+
+# Crystallographic Van der Waals (VDW) radii in Angstroms
+VDW_RADII: Dict[str, float] = {
+    "H": 1.20,
+    "C": 1.70,
+    "N": 1.55,
+    "O": 1.52,
+    "F": 1.47,
+    "CL": 1.75,
+    "BR": 1.85,
+    "I": 1.98,
+    "S": 1.80,
+    "P": 1.80,
+    "AR": 1.88,
+    "NA": 2.27,
+    "CA": 2.00,
+    "FE": 2.05,
 }
 
 # Embedded GLSL Blinn-Phong lighting vertex shader
@@ -181,11 +199,19 @@ def get_atom_radius(atom_type: str, site_name: str = "", sigma: float = 3.4) -> 
     return max(0.20, min(0.60, sigma * 0.12))
 
 
+def get_vdw_radius(atom_type: str, site_name: str = "", sigma: float = 3.4) -> float:
+    """Returns crystallographic Van der Waals radius in Angstroms."""
+    elem = get_atom_element(atom_type, site_name)
+    if elem in VDW_RADII:
+        return VDW_RADII[elem]
+    return max(1.20, sigma * 0.5)
+
+
 class MoleculeViewer:
     """
     Raylib 3D molecular renderer with non-blocking cDFT and Boltzmann Generator workflows,
-    real-time 2D density profile overlay, MCMC relaxation visualizer, bottom control deck,
-    and right-edge telemetry panel.
+    real-time 2D density profile overlay, Van der Waals wireframe surface mesh,
+    bottom control deck with reset capability, and bottom-right telemetry output panel.
     """
 
     def __init__(
@@ -214,11 +240,14 @@ class MoleculeViewer:
         self.default_distance = 15.0
         self.default_target = pr.Vector3(0.0, 0.0, 0.0)
 
+        # Van der Waals Surface Mesh Display
+        self.show_vdw_surface: bool = True
+
         # Worker thread & ZeroMQ bridge
         self.worker = CDFTBGWorker(material=self.material, cdft_steps=100, bg_mcmc_steps=40)
         self.telemetry = self.worker.telemetry
 
-        # 3D Coordinates (can be updated live during MCMC relaxation)
+        # 3D Coordinates (updated live during MCMC relaxation)
         self.rendered_coords: List[Tuple[float, float, float]] = [(s.x, s.y, s.z) for s in self.material.sites]
 
         self._update_molecule_bounds()
@@ -268,6 +297,17 @@ class MoleculeViewer:
         self.distance = self.default_distance
         self.target = self.default_target
 
+    def reset_all(self) -> None:
+        """
+        Completely resets cDFT and Boltzmann calculations, clears graph and telemetry,
+        resets coordinates to initial positions, and restores default camera view.
+        """
+        self.worker.reset()
+        self.telemetry = self.worker.telemetry
+        self.rendered_coords = [(s.x, s.y, s.z) for s in self.material.sites]
+        self._update_molecule_bounds()
+        self.reset_view()
+
     def get_camera_position(self) -> pr.Vector3:
         """Computes 3D camera position from spherical coordinates."""
         cos_el = math.cos(self.elevation)
@@ -312,7 +352,9 @@ class MoleculeViewer:
 
         # 4. Keyboard Hotkeys
         if pr.is_key_pressed(pr.KEY_R):
-            self.reset_view()
+            self.reset_all()
+        if pr.is_key_pressed(pr.KEY_V):
+            self.show_vdw_surface = not self.show_vdw_surface
         if pr.is_key_pressed(pr.KEY_SPACE):
             # Play / Pause toggling
             if self.worker.is_running:
@@ -445,19 +487,38 @@ class MoleculeViewer:
                 color = get_atom_color(s.atom_type, s.site_name)
                 pr.draw_sphere(pos, radius, color)
 
-    def draw_bg_spatial_prior_overlay(self) -> None:
-        """Renders pulsing faint spatial prior spheres around atoms during MCMC relaxation."""
-        if self.telemetry.state not in ("RUNNING_BG", "COMPLETE"):
+    def draw_vdw_surface_3d(self) -> None:
+        """
+        Renders the Van der Waals surface wireframe mesh enclosing the molecule.
+        Matches crystallographic reference visualizations (translucent envelope + crisp wireframe mesh).
+        Dynamically updates as the Boltzmann Generator relaxes atomic coordinates in real-time.
+        """
+        if not self.show_vdw_surface:
             return
 
-        pr.begin_blend_mode(pr.BLEND_ALPHA)
-        pulse = math.sin(pr.get_time() * 4.0)
-        alpha = int(25 + 15 * pulse) if self.telemetry.state == "RUNNING_BG" else 30
-        prior_color = pr.Color(80, 160, 255, alpha)
+        mat = self.material
+        sites = mat.sites
+        coords = self.rendered_coords
 
-        for c in self.rendered_coords:
-            pos = pr.Vector3(c[0], c[1], c[2])
-            pr.draw_sphere(pos, 0.45, prior_color)
+        pr.begin_blend_mode(pr.BLEND_ALPHA)
+
+        # Pass 1: Subtle translucent volume fill
+        fill_color = pr.Color(220, 230, 245, 16)
+        for idx, s in enumerate(sites):
+            if idx < len(coords):
+                c = coords[idx]
+                pos = pr.Vector3(c[0], c[1], c[2])
+                vdw_r = get_vdw_radius(s.atom_type, s.site_name, s.sigma)
+                pr.draw_sphere(pos, vdw_r, fill_color)
+
+        # Pass 2: Clean wireframe mesh (matching reference screenshot)
+        wire_color = pr.Color(160, 175, 195, 80)
+        for idx, s in enumerate(sites):
+            if idx < len(coords):
+                c = coords[idx]
+                pos = pr.Vector3(c[0], c[1], c[2])
+                vdw_r = get_vdw_radius(s.atom_type, s.site_name, s.sigma)
+                pr.draw_sphere_wires(pos, vdw_r, 16, 16, wire_color)
 
         pr.end_blend_mode()
 
@@ -492,7 +553,7 @@ class MoleculeViewer:
         pr.draw_text("State: ", 25, 92, 15, pr.LIGHTGRAY)
         pr.draw_text(st, 75, 92, 15, state_color)
 
-        controls_text = "[Left Drag] Rotate | [Scroll] Zoom | [R] Reset | [Space] Play/Pause"
+        controls_text = "[Left Drag] Orbit | [Scroll] Zoom | [R] Reset | [V] Mesh | [Space] Play"
         pr.draw_text(controls_text, 25, 120, 11, pr.GRAY)
 
         pr.draw_fps(self.width - 90, 15)
@@ -550,12 +611,12 @@ class MoleculeViewer:
         pr.draw_text(p_text, box_x + box_w - 120, box_y + box_h - 18, 11, pr.Color(100, 200, 255, 255))
 
     def draw_telemetry_panel(self) -> None:
-        """Renders right-edge monospace telemetry panel once computations start."""
+        """Renders monospace telemetry panel positioned neatly in the bottom-right."""
         t = self.telemetry
         panel_w = 345
         panel_h = 265
         panel_x = self.width - panel_w - 20
-        panel_y = 50
+        panel_y = self.height - panel_h - 85  # Nearer bottom right, sitting above the bottom control deck
 
         bg_dark = pr.Color(14, 18, 24, 235)
         pr.draw_rectangle(panel_x, panel_y, panel_w, panel_h, bg_dark)
@@ -611,7 +672,7 @@ class MoleculeViewer:
         pr.draw_text(viab_text, panel_x + 15, y, 13, viab_col)
 
     def draw_control_deck(self) -> None:
-        """Renders minimalist, semi-transparent bottom execution control deck."""
+        """Renders minimalist bottom execution control deck with Reset button."""
         deck_x = 20
         deck_y = self.height - 75
         deck_w = self.width - 40
@@ -632,21 +693,34 @@ class MoleculeViewer:
         is_running_bg = self.telemetry.state == "RUNNING_BG"
         cdft_converged = self.telemetry.state in ("CDFT_CONVERGED", "RUNNING_BG", "COMPLETE")
 
+        # 0. [Reset] Button
+        btn_reset = pr.Rectangle(curr_x, btn_y, 75, btn_h)
+        hover0 = pr.check_collision_point_rec(mouse_pos, btn_reset)
+        col0 = pr.Color(55, 50, 60, 255) if not hover0 else pr.Color(80, 65, 85, 255)
+        pr.draw_rectangle_rec(btn_reset, col0)
+        pr.draw_rectangle_lines_ex(btn_reset, 1, pr.Color(85, 75, 95, 255))
+        pr.draw_text("Reset", curr_x + 18, btn_y + 10, 13, pr.RAYWHITE)
+
+        if hover0 and mouse_clicked:
+            self.reset_all()
+
+        curr_x += 85
+
         # 1. [Step cDFT] Button
-        btn_step_cdft = pr.Rectangle(curr_x, btn_y, 95, btn_h)
+        btn_step_cdft = pr.Rectangle(curr_x, btn_y, 90, btn_h)
         hover1 = pr.check_collision_point_rec(mouse_pos, btn_step_cdft)
         col1 = pr.Color(40, 50, 65, 255) if not hover1 else pr.Color(55, 70, 90, 255)
         pr.draw_rectangle_rec(btn_step_cdft, col1)
         pr.draw_rectangle_lines_ex(btn_step_cdft, 1, pr.Color(70, 85, 105, 255))
-        pr.draw_text("Step cDFT", curr_x + 14, btn_y + 10, 13, pr.RAYWHITE)
+        pr.draw_text("Step cDFT", curr_x + 12, btn_y + 10, 13, pr.RAYWHITE)
 
         if hover1 and mouse_clicked and not self.worker.is_running:
             self.worker.step_cdft()
 
-        curr_x += 105
+        curr_x += 100
 
         # 2. [Solve cDFT] / [Cancel] Button
-        btn_solve_cdft = pr.Rectangle(curr_x, btn_y, 105, btn_h)
+        btn_solve_cdft = pr.Rectangle(curr_x, btn_y, 100, btn_h)
         hover2 = pr.check_collision_point_rec(mouse_pos, btn_solve_cdft)
         if is_running_cdft:
             col2 = pr.Color(180, 45, 45, 255) if not hover2 else pr.Color(210, 60, 60, 255)
@@ -657,7 +731,7 @@ class MoleculeViewer:
 
         pr.draw_rectangle_rec(btn_solve_cdft, col2)
         pr.draw_rectangle_lines_ex(btn_solve_cdft, 1, pr.Color(80, 130, 180, 255))
-        pr.draw_text(label2, curr_x + (28 if is_running_cdft else 15), btn_y + 10, 13, pr.RAYWHITE)
+        pr.draw_text(label2, curr_x + (25 if is_running_cdft else 13), btn_y + 10, 13, pr.RAYWHITE)
 
         if hover2 and mouse_clicked:
             if is_running_cdft:
@@ -665,10 +739,10 @@ class MoleculeViewer:
             elif not self.worker.is_running:
                 self.worker.solve_cdft()
 
-        curr_x += 120
+        curr_x += 112
 
         # 3. Horizontal cDFT Progress Bar
-        bar_w = 200
+        bar_w = 175
         bar_h = 16
         bar_y = btn_y + 9
         pr.draw_rectangle(curr_x, bar_y, bar_w, bar_h, pr.Color(25, 30, 40, 255))
@@ -682,10 +756,10 @@ class MoleculeViewer:
         pct_text = f"{int(prog * 100)}%"
         pr.draw_text(pct_text, curr_x + bar_w + 8, btn_y + 10, 12, pr.LIGHTGRAY)
 
-        curr_x += bar_w + 55
+        curr_x += bar_w + 50
 
         # 4. [Step MCMC] Button (Grayed out until cDFT 100%)
-        btn_step_mcmc = pr.Rectangle(curr_x, btn_y, 100, btn_h)
+        btn_step_mcmc = pr.Rectangle(curr_x, btn_y, 95, btn_h)
         hover3 = pr.check_collision_point_rec(mouse_pos, btn_step_mcmc)
         if cdft_converged:
             col3 = pr.Color(50, 45, 75, 255) if not hover3 else pr.Color(70, 60, 105, 255)
@@ -696,15 +770,15 @@ class MoleculeViewer:
 
         pr.draw_rectangle_rec(btn_step_mcmc, col3)
         pr.draw_rectangle_lines_ex(btn_step_mcmc, 1, pr.Color(50, 60, 75, 255))
-        pr.draw_text("Step MCMC", curr_x + 12, btn_y + 10, 13, text_col3)
+        pr.draw_text("Step MCMC", curr_x + 10, btn_y + 10, 13, text_col3)
 
         if hover3 and mouse_clicked and cdft_converged and not self.worker.is_running:
             self.worker.solve_bg()
 
-        curr_x += 110
+        curr_x += 105
 
         # 5. [Fully Solve BG] / [Cancel] Button (Grayed out until cDFT 100%)
-        btn_solve_bg = pr.Rectangle(curr_x, btn_y, 130, btn_h)
+        btn_solve_bg = pr.Rectangle(curr_x, btn_y, 125, btn_h)
         hover4 = pr.check_collision_point_rec(mouse_pos, btn_solve_bg)
         if is_running_bg:
             col4 = pr.Color(180, 45, 45, 255) if not hover4 else pr.Color(210, 60, 60, 255)
@@ -721,13 +795,33 @@ class MoleculeViewer:
 
         pr.draw_rectangle_rec(btn_solve_bg, col4)
         pr.draw_rectangle_lines_ex(btn_solve_bg, 1, pr.Color(60, 65, 80, 255))
-        pr.draw_text(label4, curr_x + (42 if is_running_bg else 18), btn_y + 10, 13, text_col4)
+        pr.draw_text(label4, curr_x + (40 if is_running_bg else 16), btn_y + 10, 13, text_col4)
 
         if hover4 and mouse_clicked and cdft_converged:
             if is_running_bg:
                 self.worker.cancel()
             elif not self.worker.is_running:
                 self.worker.solve_bg()
+
+        curr_x += 135
+
+        # 6. [VDW Mesh] Toggle Button
+        btn_vdw = pr.Rectangle(curr_x, btn_y, 100, btn_h)
+        hover5 = pr.check_collision_point_rec(mouse_pos, btn_vdw)
+        if self.show_vdw_surface:
+            col5 = pr.Color(40, 90, 85, 255) if not hover5 else pr.Color(55, 120, 110, 255)
+            border_col5 = pr.Color(60, 180, 150, 255)
+        else:
+            col5 = pr.Color(35, 40, 50, 255) if not hover5 else pr.Color(50, 60, 75, 255)
+            border_col5 = pr.Color(60, 70, 85, 255)
+
+        pr.draw_rectangle_rec(btn_vdw, col5)
+        pr.draw_rectangle_lines_ex(btn_vdw, 1, border_col5)
+        vdw_label = "Mesh: ON" if self.show_vdw_surface else "Mesh: OFF"
+        pr.draw_text(vdw_label, curr_x + 14, btn_y + 10, 13, pr.RAYWHITE)
+
+        if hover5 and mouse_clicked:
+            self.show_vdw_surface = not self.show_vdw_surface
 
     def run(self) -> None:
         """Main window loop with non-blocking ZeroMQ polling and 60 FPS rendering."""
@@ -787,8 +881,8 @@ class MoleculeViewer:
             else:
                 self.draw_molecule_3d(cam_pos)
 
-            # BG Pulsing Spatial Prior Spheres
-            self.draw_bg_spatial_prior_overlay()
+            # Van der Waals (VDW) Wireframe Surface Mesh
+            self.draw_vdw_surface_3d()
 
             pr.end_mode_3d()
 

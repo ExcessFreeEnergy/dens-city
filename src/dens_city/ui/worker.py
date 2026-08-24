@@ -535,6 +535,47 @@ class CDFTBGWorker:
         elif self.telemetry.state == "RUNNING_BG":
             self.telemetry.state = "CDFT_CONVERGED"
 
+    def reset(self) -> None:
+        """Completely resets cDFT and Boltzmann Generator calculations back to initialization."""
+        self.cancel()
+        self.cdft_solver = None
+        self.bg_generator = None
+        self.energy_fn = None
+
+        initial_coords = [(s.x, s.y, s.z) for s in self.material.sites]
+        sigmas = [s.sigma for s in self.material.sites]
+        coords_arr = np.array(initial_coords) if initial_coords else np.zeros((1, 3))
+
+        lz = max(40.0, float(self.material.effective_sigma) * 10.0)
+        dz = lz / self.n_grid
+        z_coords = np.linspace(0.5 * dz, lz - 0.5 * dz, self.n_grid).tolist()
+        rho_init = [float(self.material.bulk_density_a3)] * self.n_grid
+
+        self.telemetry = TelemetryData(
+            state="WAITING_CDFT",
+            cdft_step=0,
+            cdft_max_steps=self.cdft_steps,
+            cdft_progress=0.0,
+            loss=0.0,
+            wall_pressure_bar=0.0,
+            excess_adsorption=0.0,
+            rho_z=rho_init,
+            z_coords=z_coords,
+            rho_bulk=self.material.bulk_density_a3,
+            bg_step=0,
+            bg_max_steps=self.bg_mcmc_steps,
+            bg_progress=0.0,
+            current_coords=initial_coords,
+            steric_clashes=count_steric_clashes(coords_arr, sigmas, self.material.bonds),
+            torsional_acceptance_pct=0.0,
+            radius_of_gyration=compute_radius_of_gyration(coords_arr),
+            end_to_end_dist=compute_end_to_end_distance(coords_arr),
+            excess_free_energy=0.0,
+            coating_viability="PENDING",
+            is_wetting=True,
+        )
+        self.last_applied_seq = self.seq_counter
+
     def close(self) -> None:
         """Cleans up ZeroMQ sockets and worker threads."""
         self.cancel()
