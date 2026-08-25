@@ -88,6 +88,7 @@ class MaterialPipelineResult:
     excess_adsorption_a2: float = 0.0
     cdft_final_loss: float = 0.0
     bg_final_loss: Optional[float] = None
+    solvation_free_energy_kcal_mol: Optional[float] = None
     artifact_dir: Optional[str] = None
     artifacts: List[str] = field(default_factory=list)
 
@@ -773,6 +774,7 @@ def execute_prepared_batch(
                 wall_pressure_bar=cdft_pressures[local_idx],
                 excess_adsorption_a2=cdft_gammas[local_idx],
                 cdft_final_loss=final_cdft_loss,
+                solvation_free_energy_kcal_mol=getattr(mat, "solvation_free_energy_kcal_mol", 0.0),
                 artifact_dir=mat_out_dir,
             )
         return [results_map[i] for i in range(len(batch_tasks))]
@@ -841,6 +843,7 @@ def execute_prepared_batch(
             excess_adsorption_a2=cdft_gammas[local_idx],
             cdft_final_loss=final_cdft_loss,
             bg_final_loss=bg_loss,
+            solvation_free_energy_kcal_mol=getattr(mat, "solvation_free_energy_kcal_mol", 0.0),
             artifact_dir=mat_out_dir,
         )
 

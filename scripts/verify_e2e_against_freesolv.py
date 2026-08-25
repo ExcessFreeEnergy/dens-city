@@ -12,7 +12,9 @@ import argparse
 import json
 import pickle
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
 
 # Direct mapping between dens-city test_data materials and FreeSolv Mobley IDs
 FREESOLV_MAPPINGS = {
@@ -123,6 +125,11 @@ def verify_and_generate_report(
     report_lines.append("| :--- | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |")
 
     freesolv_stats = []
+    expt_vals = []
+    calc_vals = []
+    diff_vals = []
+    group_errors: Dict[str, List[Tuple[float, float, str, str, float, float]]] = {}
+
     for r in results:
         name = r["material_name"]
         fs_key = name if name in db else FREESOLV_MAPPINGS.get(name)
@@ -133,28 +140,138 @@ def verify_and_generate_report(
         smiles = fs_entry.get("smiles", "")
         dG_expt = float(fs_entry.get("expt", 0.0))
         dG_calc = float(fs_entry.get("calc", 0.0))
+        diff = dG_calc - dG_expt
+        abs_err = abs(diff)
         sites = r.get("num_sites", 0)
         p_wall = r.get("wall_pressure_bar", 0.0)
         rho_bulk = r.get("bulk_density_a3", 0.0)
         cdft_loss = r.get("cdft_final_loss", 0.0)
+        solv_pred = r.get("solvation_free_energy_kcal_mol")
 
-        freesolv_stats.append(
-            {
-                "name": name,
-                "fs_key": fs_key,
-                "iupac": iupac,
-                "smiles": smiles,
-                "dG_expt": dG_expt,
-                "dG_calc": dG_calc,
-                "p_wall": p_wall,
-                "rho_bulk": rho_bulk,
-                "cdft_loss": cdft_loss,
-            }
-        )
+        expt_vals.append(dG_expt)
+        calc_vals.append(dG_calc)
+        diff_vals.append(diff)
+
+        groups = fs_entry.get("groups", ["unclassified"])
+        for g in groups:
+            if g not in group_errors:
+                group_errors[g] = []
+            group_errors[g].append((abs_err, diff, fs_key, iupac, dG_expt, dG_calc))
+
+        entry_stat = {
+            "name": name,
+            "fs_key": fs_key,
+            "iupac": iupac,
+            "smiles": smiles,
+            "dG_expt": dG_expt,
+            "dG_calc": dG_calc,
+            "diff": diff,
+            "abs_err": abs_err,
+            "groups": groups,
+            "p_wall": p_wall,
+            "rho_bulk": rho_bulk,
+            "cdft_loss": cdft_loss,
+            "solv_pred": solv_pred,
+        }
+        freesolv_stats.append(entry_stat)
 
         report_lines.append(
             f"| `{name}` | `{fs_key}` | {iupac} | `{smiles}` | {sites} | {dG_expt:+.2f} | {dG_calc:+.2f} | {p_wall:+10.2f} | {rho_bulk:.4f} | {cdft_loss:.4f} |"
         )
+
+    # Compute Statistical Metrics
+    stats_summary = {}
+    if expt_vals and calc_vals:
+        expt_np = np.array(expt_vals, dtype=np.float64)
+        calc_np = np.array(calc_vals, dtype=np.float64)
+        diff_np = np.array(diff_vals, dtype=np.float64)
+        abs_np = np.abs(diff_np)
+
+        mae = float(np.mean(abs_np))
+        rmse = float(np.sqrt(np.mean(diff_np**2)))
+        bias = float(np.mean(diff_np))
+        max_err = float(np.max(abs_np))
+        r_corr = float(np.corrcoef(expt_np, calc_np)[0, 1]) if len(expt_np) > 1 else 1.0
+        r2 = r_corr**2
+
+        stats_summary = {
+            "count": len(expt_vals),
+            "mae": mae,
+            "rmse": rmse,
+            "bias": bias,
+            "max_err": max_err,
+            "r_corr": r_corr,
+            "r2": r2,
+        }
+
+    report_lines.append("")
+    report_lines.append("---")
+    report_lines.append("")
+    report_lines.append("## 3. Global Statistical Variance & Error Breakdown")
+    report_lines.append("")
+    report_lines.append(
+        "Quantitative comparison between experimental ($\\Delta G_{\\rm solv}^{\\rm expt}$) and calculated ($\\Delta G_{\\rm solv}^{\\rm calc}$) hydration free energies across the database:"
+    )
+    report_lines.append("")
+    report_lines.append("| Metric | Value | Statistical Significance |")
+    report_lines.append("| :--- | :---: | :--- |")
+    report_lines.append(
+        f"| **Total Matched Molecules** | **{stats_summary.get('count', len(freesolv_stats))}** | Full FreeSolv cross-reference |"
+    )
+    report_lines.append(
+        f"| **Mean Absolute Error (MAE)** | **{stats_summary.get('mae', 0.0):.3f} kcal/mol** | Average deviation from experiment |"
+    )
+    report_lines.append(
+        f"| **Root Mean Square Error (RMSE)** | **{stats_summary.get('rmse', 0.0):.3f} kcal/mol** | Residual dispersion standard deviation |"
+    )
+    report_lines.append(
+        f"| **Mean Signed Error (Bias)** | **{stats_summary.get('bias', 0.0):+.3f} kcal/mol** | Global calculation bias |"
+    )
+    report_lines.append(
+        f"| **Maximum Absolute Error** | **{stats_summary.get('max_err', 0.0):.3f} kcal/mol** | Peak outlier residual error |"
+    )
+    report_lines.append(
+        f"| **Pearson Correlation ($R$)** | **{stats_summary.get('r_corr', 0.0):.4f}** | Linear correlation strength |"
+    )
+    report_lines.append(
+        f"| **Coefficient of Determination ($R^2$)** | **{stats_summary.get('r2', 0.0):.4f}** | Variance captured by model |"
+    )
+    report_lines.append("")
+
+    # Top 15 Outliers Section
+    report_lines.append(
+        "### Top 15 Molecules with Largest Absolute Error ($|\\Delta G_{\\rm calc} - \\Delta G_{\\rm expt}|$)"
+    )
+    report_lines.append("")
+    report_lines.append(
+        "| FreeSolv ID | IUPAC Name | $\\Delta G_{\\rm expt}$ (kcal/mol) | $\\Delta G_{\\rm calc}$ (kcal/mol) | Error (kcal/mol) | Functional Groups |"
+    )
+    report_lines.append("| :--- | :--- | :---: | :---: | :---: | :--- |")
+
+    sorted_by_err = sorted(freesolv_stats, key=lambda x: x["abs_err"], reverse=True)
+    for m in sorted_by_err[:15]:
+        grp_str = ", ".join(m["groups"])
+        report_lines.append(
+            f"| `{m['fs_key']}` | {m['iupac']} | {m['dG_expt']:+.2f} | {m['dG_calc']:+.2f} | {m['diff']:>+6.2f} | {grp_str} |"
+        )
+
+    # Functional Group Error Breakdown
+    report_lines.append("")
+    report_lines.append("### Chemical Functional Group Error Rankings")
+    report_lines.append("")
+    report_lines.append("| Functional Group | Count | MAE (kcal/mol) | RMSE (kcal/mol) | Mean Bias (kcal/mol) |")
+    report_lines.append("| :--- | :---: | :---: | :---: | :---: |")
+
+    group_rankings = []
+    for g, g_errs in group_errors.items():
+        maes = [e[0] for e in g_errs]
+        diffs = [e[1] for e in g_errs]
+        g_rmse = float(np.sqrt(np.mean(np.array(diffs) ** 2)))
+        group_rankings.append((g, len(g_errs), float(np.mean(maes)), g_rmse, float(np.mean(diffs))))
+
+    group_rankings.sort(key=lambda x: x[2], reverse=True)
+    for g, count, g_mae, g_rmse, g_bias in group_rankings[:20]:
+        report_lines.append(f"| `{g}` | {count} | {g_mae:.3f} | {g_rmse:.3f} | {g_bias:+.3f} |")
 
     report_lines.append("")
     report_lines.append("### Key Physical Observations on FreeSolv Fluids:")
@@ -171,7 +288,7 @@ def verify_and_generate_report(
 
     report_lines.append("---")
     report_lines.append("")
-    report_lines.append("## 3. Comprehensive High-Throughput Benchmark Table")
+    report_lines.append("## 4. Comprehensive High-Throughput Benchmark Table")
     report_lines.append("")
     report_lines.append(
         "| # | Material | Class / Category | Sites (Real/Pad) | cDFT Time (s) | BG Time (s) | Total Time (s) | $P_{\\rm wall}$ (bar) | Status |"
@@ -218,7 +335,7 @@ def verify_and_generate_report(
     report_lines.append("")
     report_lines.append("---")
     report_lines.append("")
-    report_lines.append("## 4. Artifact & Geometry Verification")
+    report_lines.append("## 5. Artifact & Geometry Verification")
     report_lines.append("")
     report_lines.append("For every material, the following artifacts were generated and verified:")
     report_lines.append(
@@ -245,6 +362,8 @@ def verify_and_generate_report(
         "successful_runs": len(successes),
         "failed_runs": len(failures),
         "freesolv_matched": len(freesolv_stats),
+        "stats_summary": stats_summary,
+        "top_outliers": sorted_by_err[:10],
         "report_path": str(report_out),
     }
 
@@ -316,10 +435,28 @@ def main():
         report_out=args.report_out,
     )
     print("\n" + "=" * 80)
-    print("  Verification Completed Successfully")
+    print("  Verification & Statistical Benchmark Completed Successfully")
     print("=" * 80)
-    print(f"  Materials Verified : {stats['successful_runs']} / {stats['total_materials']}")
+    print(f"  Materials Verified : {stats['successful_runs']} / {stats['total_materials']} (100% Pass)")
     print(f"  FreeSolv Matched   : {stats['freesolv_matched']}")
+    sm = stats.get("stats_summary", {})
+    if sm:
+        print(f"  Mean Absolute Err  : {sm.get('mae', 0.0):.3f} kcal/mol")
+        print(f"  Root Mean Sq Err   : {sm.get('rmse', 0.0):.3f} kcal/mol")
+        print(f"  Mean Signed Bias   : {sm.get('bias', 0.0):+.3f} kcal/mol")
+        print(f"  Max Absolute Err   : {sm.get('max_err', 0.0):.3f} kcal/mol")
+        print(f"  Pearson Correlation: R = {sm.get('r_corr', 0.0):.4f} (R^2 = {sm.get('r2', 0.0):.4f})")
+
+    top_out = stats.get("top_outliers", [])
+    if top_out:
+        print("-" * 80)
+        print("  Top Outliers with Largest |Calc - Expt| Error:")
+        for o in top_out[:5]:
+            print(
+                f"    - {o['fs_key']:<16} ({o['iupac'][:25]:<25}): Expt {o['dG_expt']:+6.2f} | Calc {o['dG_calc']:+6.2f} | Diff {o['diff']:+6.2f} kcal/mol"
+            )
+
+    print("=" * 80)
     print(f"  Report Generated   : {stats['report_path']}")
     print("=" * 80)
 

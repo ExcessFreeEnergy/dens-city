@@ -178,6 +178,8 @@ class Material:
     temperature_k: float = 300.0
     bulk_density_a3: float = 0.02
     bulk_mu: float = 0.0
+    bulk_mu_ex: float = 0.0
+    solvation_free_energy_kcal_mol: float = 0.0
     bulk_pressure_bar: float = 0.0
     precomputed_cdft_data: Optional[Dict[str, Any]] = None
 
@@ -199,23 +201,16 @@ class Material:
         """Computes the maximum spatial bounding diameter of the 3D molecular framework."""
         if not self.sites:
             return self.effective_sigma
-        if len(self.sites) == 1:
-            return self.sites[0].sigma
-
-        max_span = 0.0
-        for i in range(len(self.sites)):
-            for j in range(i, len(self.sites)):
-                s1, s2 = self.sites[i], self.sites[j]
-                dist = math.sqrt((s1.x - s2.x) ** 2 + (s1.y - s2.y) ** 2 + (s1.z - s2.z) ** 2)
-                span = dist + 0.5 * (s1.sigma + s2.sigma)
-                max_span = max(max_span, span)
-        return max_span
+        coords = np.array([[s.x, s.y, s.z] for s in self.sites])
+        diff = coords[:, None, :] - coords[None, :, :]
+        dist_matrix = np.sqrt(np.sum(diff * diff, axis=-1))
+        return float(np.max(dist_matrix))
 
     @property
     def radius_of_gyration_a(self) -> float:
-        """Computes the center-of-mass mass-weighted radius of gyration."""
-        if len(self.sites) <= 1:
-            return 0.0
+        """Computes radius of gyration Rg."""
+        if not self.sites:
+            return 0.5 * self.effective_sigma
         total_m = sum(s.mass for s in self.sites)
         if total_m <= 0.0:
             return 0.0
@@ -228,8 +223,9 @@ class Material:
 
     def compute_bulk_mu(self, T: Optional[float] = None, rho: Optional[float] = None) -> float:
         """
-        Computes the theoretical bulk chemical potential mu_bulk(T, rho) in units of k_B * T
+        Computes theoretical bulk chemical potential mu_bulk(T, rho) in units of k_B * T
         using Rosenfeld FMT (Percus-Yevick compressibility) for hard-core repulsion + mean-field attractive dispersion.
+        Also calculates excess chemical potential and solvation free energy in kcal/mol.
         """
         temp = T if T is not None else self.temperature_k
         rho_b = rho if rho is not None else self.bulk_density_a3
@@ -250,7 +246,10 @@ class Material:
         v_att_integral = compute_wca_dispersion_integral(sig, eps_k) / temp
         mu_att = rho_b * v_att_integral
 
-        self.bulk_mu = mu_id + mu_hs_ex + mu_att
+        self.bulk_mu_ex = mu_hs_ex + mu_att
+        self.bulk_mu = mu_id + self.bulk_mu_ex
+        # 1 k_B * T = 1.987204e-3 * T kcal/mol
+        self.solvation_free_energy_kcal_mol = self.bulk_mu_ex * (1.987204e-3 * temp)
         return self.bulk_mu
 
     def compute_bulk_pressure(self, T: Optional[float] = None, rho: Optional[float] = None) -> float:
