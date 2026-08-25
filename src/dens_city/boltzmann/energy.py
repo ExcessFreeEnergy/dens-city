@@ -7,7 +7,7 @@ and exact Steele 9-3 / hard-core steric wall potentials in confined Z dimension.
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Union
 
 import numpy as np
 from tinygrad import Tensor, TinyJit, dtypes
@@ -367,4 +367,155 @@ class MicroscopicEnergy:
         u = self.compute_pair_energy(pos, shift=shift) + self.compute_wall_energy(pos)
         if regularize and self.e_high is not None:
             return self.regularize_energy(u)
+        return u
+
+
+class EGNNMicroscopicEnergy:
+    """
+    Quantum-accurate Machine Learned Force Field energy environment.
+    Evaluates internal molecular potential U_egnn(x) via a 7-layer EGNN
+    coupled with analytical 1D Steele 9-3 / WCA slit wall potentials in the Z dimension.
+    """
+
+    def __init__(
+        self,
+        material: Optional[Union[Material, Any]] = None,
+        egnn_ff: Optional[Any] = None,
+        atomic_numbers: Optional[Union[List[int], np.ndarray, Tensor]] = None,
+        box_size: Tuple[float, float, float] = (30.0, 30.0, 40.0),
+        wall_sigma: float = 3.405,
+        wall_epsilon_k: float = 119.8,
+        wall_type: str = "stele93",
+        e_high: Optional[float] = 1e4,
+        e_max: float = 1e20,
+    ):
+        from dens_city.boltzmann.egnn import EGNNForceField
+
+        self.box_size = Tensor(list(box_size), dtype=dtypes.float32)
+        self.wall_type = wall_type
+        self.e_high = e_high
+        self.e_max = e_max
+
+        # Setup EGNN model
+        self.egnn_ff = egnn_ff if egnn_ff is not None else EGNNForceField()
+
+        if material is not None and hasattr(material, "atomic_numbers") and hasattr(material, "atom_mask"):
+            # MolecularBatch
+            self.is_batched_energy = True
+            self.batch = material
+            self.batch_size = material.batch_size
+            self.n_particles = material.n_particles
+            self.atomic_numbers = (
+                material.atomic_numbers.realize()
+                if material.atomic_numbers is not None
+                else (material.atom_mask * 6.0).realize()
+            )
+            self.is_real_atom = material.atom_mask.realize()
+            self.molecule_mask = material.molecule_mask.realize()
+        elif material is not None and getattr(material, "sites", None):
+            self.is_batched_energy = False
+            self.material = material
+            z_list = [getattr(s, "atomic_number", 6) for s in material.sites]
+            n_real = len(z_list)
+            self.n_particles = 128
+            self.n_real_particles = n_real
+            z_padded = np.zeros(128, dtype=np.float32)
+            z_padded[:n_real] = z_list
+            mask_padded = np.zeros(128, dtype=np.float32)
+            mask_padded[:n_real] = 1.0
+            self.atomic_numbers = Tensor(z_padded, dtype=dtypes.float32).realize()
+            self.is_real_atom = Tensor(mask_padded, dtype=dtypes.float32).realize()
+            self.molecule_mask = Tensor([1.0], dtype=dtypes.float32).realize()
+        elif atomic_numbers is not None:
+            self.is_batched_energy = False
+            z_arr = np.array(atomic_numbers, dtype=np.float32)
+            n_real = len(z_arr)
+            self.n_particles = 128
+            self.n_real_particles = n_real
+            z_padded = np.zeros(128, dtype=np.float32)
+            z_padded[: min(n_real, 128)] = z_arr[: min(n_real, 128)]
+            mask_padded = np.zeros(128, dtype=np.float32)
+            mask_padded[: min(n_real, 128)] = 1.0
+            self.atomic_numbers = Tensor(z_padded, dtype=dtypes.float32).realize()
+            self.is_real_atom = Tensor(mask_padded, dtype=dtypes.float32).realize()
+            self.molecule_mask = Tensor([1.0], dtype=dtypes.float32).realize()
+        else:
+            self.is_batched_energy = False
+            self.n_particles = 128
+            self.n_real_particles = 128
+            self.atomic_numbers = Tensor.full((128,), 6.0, dtype=dtypes.float32).realize()
+            self.is_real_atom = Tensor.ones(128, dtype=dtypes.float32).realize()
+            self.molecule_mask = Tensor([1.0], dtype=dtypes.float32).realize()
+
+        # Wall potential parameters
+        self.sigma_wf = wall_sigma
+        self.eps_wf_k = wall_epsilon_k
+        self.wall_prefactor = 2.0 * math.pi * (self.sigma_wf**2) * 0.0333 * self.eps_wf_k
+        self.steric_radius = 0.2 * self.sigma_wf
+        self.v_wall_inf = 1e6
+
+    def compute_pair_energy(self, pos: Tensor) -> Tensor:
+        """Evaluates E(n)-invariant EGNN potential energy U_egnn(x)."""
+        is_batched = len(pos.shape) == 3
+        pos_b = pos if is_batched else pos.unsqueeze(0)
+        B, N, _ = pos_b.shape
+
+        if getattr(self, "is_batched_energy", False):
+            z_in = self.atomic_numbers
+            a_mask = self.is_real_atom
+            m_mask = self.molecule_mask
+        else:
+            z_in = self.atomic_numbers.reshape(1, N).expand(B, N)
+            a_mask = self.is_real_atom.reshape(1, N).expand(B, N)
+            m_mask = Tensor.ones(B, dtype=dtypes.float32)
+
+        u_egnn = self.egnn_ff.compute_energy(
+            x=pos_b,
+            atomic_numbers=z_in,
+            atom_mask=a_mask,
+            molecule_mask=m_mask,
+        )
+        return u_egnn if is_batched else u_egnn.squeeze(0)
+
+    def compute_wall_energy(self, pos: Tensor) -> Tensor:
+        """Evaluates 1D Steele 9-3 / steric wall potential in Z."""
+        is_batched = len(pos.shape) == 3
+        pos_b = pos if is_batched else pos.unsqueeze(0)
+        z = pos_b[..., 2]
+        Lz = self.box_size[2]
+        z_l = z
+        z_r = Lz - z
+
+        if self.wall_type == "stele93":
+            z_l_safe = z_l.maximum(self.steric_radius)
+            z_r_safe = z_r.maximum(self.steric_radius)
+            s_l = self.sigma_wf / z_l_safe
+            s3_l = s_l * s_l * s_l
+            s9_l = s3_l * s3_l * s3_l
+            v_l = self.wall_prefactor * ((2.0 / 15.0) * s9_l - s3_l)
+
+            s_r = self.sigma_wf / z_r_safe
+            s3_r = s_r * s_r * s_r
+            s9_r = s3_r * s3_r * s3_r
+            v_r = self.wall_prefactor * ((2.0 / 15.0) * s9_r - s3_r)
+
+            v_stele = (v_l + v_r).minimum(self.v_wall_inf)
+            is_steric = (z_l <= self.steric_radius) | (z_r <= self.steric_radius)
+            v_wall = is_steric.where(self.v_wall_inf, v_stele)
+        else:
+            is_steric = (z_l < self.sigma_wf) | (z_r < self.sigma_wf)
+            v_wall = is_steric.where(self.v_wall_inf, 0.0)
+
+        if getattr(self, "is_batched_energy", False):
+            u_wall = (v_wall * self.is_real_atom).sum(axis=-1) * self.molecule_mask
+        else:
+            u_wall = (v_wall * self.is_real_atom.unsqueeze(0)).sum(axis=-1)
+
+        return u_wall if is_batched else u_wall.squeeze(0)
+
+    def __call__(self, pos: Tensor, shift: bool = True, regularize: bool = True) -> Tensor:
+        """Computes total potential energy U(x) = U_egnn(x) + U_wall(z)."""
+        u = self.compute_pair_energy(pos) + self.compute_wall_energy(pos)
+        if regularize and self.e_high is not None:
+            return regularize_energy(u, e_high=self.e_high, e_max=self.e_max)
         return u

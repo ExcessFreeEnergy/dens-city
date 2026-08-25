@@ -12,12 +12,16 @@ from dens_city.boltzmann.bijectors import (
     compute_cartesian_torsion_loss,
     compute_torsion_rotamer_loss,
 )
-from dens_city.boltzmann.energy import MicroscopicEnergy, regularize_energy
+from dens_city.boltzmann.egnn import EGNNForceField, EGNNLayer
+from dens_city.boltzmann.energy import EGNNMicroscopicEnergy, MicroscopicEnergy, regularize_energy
 from dens_city.boltzmann.generator import BoltzmannGenerator
 from dens_city.boltzmann.prior import CDFTBaseDistribution
 
 __all__ = [
     "MicroscopicEnergy",
+    "EGNNMicroscopicEnergy",
+    "EGNNForceField",
+    "EGNNLayer",
     "regularize_energy",
     "ZMatrixBijector",
     "AffineCouplingLayer",

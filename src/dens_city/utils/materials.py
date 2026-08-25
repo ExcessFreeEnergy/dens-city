@@ -151,6 +151,84 @@ def solve_bulk_density_from_chemical_potential(
     return 0.5 * (low + high)
 
 
+ELEMENT_TO_ATOMIC_NUMBER: Dict[str, int] = {
+    "H": 1,
+    "HE": 2,
+    "LI": 3,
+    "BE": 4,
+    "B": 5,
+    "C": 6,
+    "N": 7,
+    "O": 8,
+    "F": 9,
+    "NE": 10,
+    "NA": 11,
+    "MG": 12,
+    "AL": 13,
+    "SI": 14,
+    "P": 15,
+    "S": 16,
+    "CL": 17,
+    "AR": 18,
+    "K": 19,
+    "CA": 20,
+    "TI": 22,
+    "V": 23,
+    "CR": 24,
+    "MN": 25,
+    "FE": 26,
+    "CO": 27,
+    "NI": 28,
+    "CU": 29,
+    "ZN": 30,
+    "BR": 35,
+    "KR": 36,
+    "I": 53,
+    "XE": 54,
+}
+
+
+def parse_atomic_number(atom_type: str, site_name: str = "", mass: float = 12.0) -> int:
+    """Infers atomic number Z strictly from atom type, site name, or mass."""
+    t = atom_type.strip().upper()
+    s = site_name.strip().upper()
+
+    # Check 2-letter element symbols
+    for sym in ["CL", "BR", "NA", "CA", "FE", "AR", "SI", "AL", "MG", "LI", "ZN", "HE", "NE", "KR", "XE"]:
+        if s.startswith(sym) and (len(s) == len(sym) or s[len(sym) :].isdigit() or s[len(sym)] in "_-."):
+            return ELEMENT_TO_ATOMIC_NUMBER[sym]
+        if t == sym or t.startswith(sym):
+            return ELEMENT_TO_ATOMIC_NUMBER[sym]
+
+    # Check common 1-letter prefixes
+    first_char = t[0] if t else (s[0] if s else "C")
+    if first_char in ELEMENT_TO_ATOMIC_NUMBER:
+        return ELEMENT_TO_ATOMIC_NUMBER[first_char]
+
+    # Fallback based on atomic mass
+    if mass < 2.0:
+        return 1
+    if mass < 13.0:
+        return 6
+    if mass < 15.0:
+        return 7
+    if mass < 17.0:
+        return 8
+    if mass < 21.0:
+        return 9
+    if mass < 33.0:
+        return 16
+    if mass < 38.0:
+        return 17
+    if mass < 42.0:
+        return 18
+    if mass < 82.0:
+        return 35
+    if mass < 130.0:
+        return 53
+    return 6
+
+
 @dataclass
 class AtomSite:
     site_name: str
@@ -163,6 +241,7 @@ class AtomSite:
     epsilon_kcal: float
     epsilon_k: float
     mass: float
+    atomic_number: int = 6
 
 
 @dataclass
@@ -382,6 +461,7 @@ class MaterialLoader:
                     eps_k = float(ff_entry.get("epsilon_kelvin", 120.0))
                     mass = float(ff_entry.get("mass_amu", 12.0))
 
+                    atomic_num = parse_atomic_number(at_type, s_name, mass)
                     sites.append(
                         AtomSite(
                             site_name=s_name,
@@ -394,6 +474,7 @@ class MaterialLoader:
                             epsilon_kcal=eps_kcal,
                             epsilon_k=eps_k,
                             mass=mass,
+                            atomic_number=atomic_num,
                         )
                     )
             elif in_bond and line.strip():
@@ -529,14 +610,15 @@ class MolecularBatch:
     sigmas: Any  # Tensor of shape (B, N)
     epsilons: Any  # Tensor of shape (B, N)
     charges: Any  # Tensor of shape (B, N)
-    atom_mask: Any  # Tensor of shape (B, N) - 1.0 for real atoms, 0.0 for dummy atoms
-    molecule_mask: Any  # Tensor of shape (B,) - 1.0 for active molecules, 0.0 for dummy slots
-    temperature_k: Any  # Tensor of shape (B,)
-    beta: Any  # Tensor of shape (B,)
-    bulk_density_a3: Any  # Tensor of shape (B,)
-    bulk_mu: Any  # Tensor of shape (B,)
-    slit_width_a: Any  # Tensor of shape (B,)
-    conditioning: Any  # Tensor of shape (B, 5) [sigma_eff, eps_eff, T, rho_bulk, mu]
+    atomic_numbers: Any = None  # Tensor of shape (B, N)
+    atom_mask: Any = None  # Tensor of shape (B, N) - 1.0 for real atoms, 0.0 for dummy atoms
+    molecule_mask: Any = None  # Tensor of shape (B,) - 1.0 for active molecules, 0.0 for dummy slots
+    temperature_k: Any = None  # Tensor of shape (B,)
+    beta: Any = None  # Tensor of shape (B,)
+    bulk_density_a3: Any = None  # Tensor of shape (B,)
+    bulk_mu: Any = None  # Tensor of shape (B,)
+    slit_width_a: Any = None  # Tensor of shape (B,)
+    conditioning: Any = None  # Tensor of shape (B, 5) [sigma_eff, eps_eff, T, rho_bulk, mu]
 
     @property
     def num_active_materials(self) -> int:
@@ -562,6 +644,7 @@ class MolecularBatch:
         sigmas_np = np.zeros((batch_size, target_n_particles), dtype=np.float32)
         epsilons_np = np.zeros((batch_size, target_n_particles), dtype=np.float32)
         charges_np = np.zeros((batch_size, target_n_particles), dtype=np.float32)
+        atomic_numbers_np = np.zeros((batch_size, target_n_particles), dtype=np.float32)
         atom_mask_np = np.zeros((batch_size, target_n_particles), dtype=np.float32)
         molecule_mask_np = np.zeros(batch_size, dtype=np.float32)
         temp_np = np.full(batch_size, default_temp_k, dtype=np.float32)
@@ -581,11 +664,13 @@ class MolecularBatch:
             s_b = [s.sigma for s in mat.sites] if mat.sites else [mat.effective_sigma]
             e_b = [s.epsilon_k for s in mat.sites] if mat.sites else [mat.effective_epsilon_k]
             q_b = [s.charge for s in mat.sites] if mat.sites else [mat.total_charge]
+            z_b = [getattr(s, "atomic_number", 6) for s in mat.sites] if mat.sites else [6]
             n_sites = min(len(s_b), target_n_particles)
 
             sigmas_np[b, :n_sites] = s_b[:n_sites]
             epsilons_np[b, :n_sites] = e_b[:n_sites]
             charges_np[b, :n_sites] = q_b[:n_sites]
+            atomic_numbers_np[b, :n_sites] = z_b[:n_sites]
             atom_mask_np[b, :n_sites] = 1.0
 
             temp_val = mat.temperature_k
@@ -606,6 +691,7 @@ class MolecularBatch:
             sigmas=Tensor(sigmas_np, dtype=dtypes.float32).realize(),
             epsilons=Tensor(epsilons_np, dtype=dtypes.float32).realize(),
             charges=Tensor(charges_np, dtype=dtypes.float32).realize(),
+            atomic_numbers=Tensor(atomic_numbers_np, dtype=dtypes.float32).realize(),
             atom_mask=Tensor(atom_mask_np, dtype=dtypes.float32).realize(),
             molecule_mask=Tensor(molecule_mask_np, dtype=dtypes.float32).realize(),
             temperature_k=Tensor(temp_np, dtype=dtypes.float32).realize(),
