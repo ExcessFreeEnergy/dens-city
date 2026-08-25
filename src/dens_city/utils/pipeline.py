@@ -25,6 +25,7 @@ from dens_city.boltzmann.energy import MicroscopicEnergy
 from dens_city.boltzmann.generator import BoltzmannGenerator
 from dens_city.boltzmann.prior import CDFTBaseDistribution
 from dens_city.cdft.cdft import BatchedTinyCDFT, TinyCDFT
+from dens_city.cdft.kernels import KernelBuilder
 from dens_city.utils.materials import Material, MaterialLoader, MolecularBatch
 
 
@@ -474,6 +475,7 @@ def _load_single_material_worker_unpack(args: Tuple) -> Tuple[int, Optional[Mate
     """
     Unpacks task arguments and executes MaterialLoader.load_material in an isolated
     ProcessPool worker process, bypassing Python GIL for fast parallel regex and EOS solves.
+    Also precomputes analytical 1D NumPy FMT planar kernels and wall potentials concurrently.
     """
     task_idx, mat_path_or_name, temp_k, density, p_bar, mu_kbt = args
     try:
@@ -484,6 +486,34 @@ def _load_single_material_worker_unpack(args: Tuple) -> Tuple[int, Optional[Mate
             pressure_bar=p_bar,
             chemical_potential_kbt=mu_kbt,
         )
+        n_grid = 128
+        slit_w = max(40.0, 12.0 * mat.effective_sigma)
+        dz = slit_w / n_grid
+        fmt_dict = KernelBuilder.build_fmt_planar_kernels_np(mat.effective_sigma, dz)
+        att_arr, _ = KernelBuilder.build_wca_attraction_kernel_np(mat.effective_sigma, mat.effective_epsilon_k, dz)
+        v_ext_np = (
+            KernelBuilder.build_slit_wall_potential_np(
+                n_grid=n_grid,
+                dz=dz,
+                fluid_sigma=mat.effective_sigma,
+                wall_sigma=3.4,
+                wall_epsilon_k=50.0,
+            )
+            / mat.temperature_k
+        )
+
+        mat.precomputed_cdft_data = {
+            "fmt_w3": fmt_dict["w3"],
+            "fmt_w2": fmt_dict["w2"],
+            "fmt_w1": fmt_dict["w1"],
+            "fmt_w0": fmt_dict["w0"],
+            "fmt_wv2": fmt_dict["wv2"],
+            "fmt_wv1": fmt_dict["wv1"],
+            "att_arr": att_arr,
+            "v_ext_np": v_ext_np,
+            "slit_w": slit_w,
+            "dz": dz,
+        }
         return task_idx, mat, None
     except Exception as e:
         return task_idx, None, str(e)

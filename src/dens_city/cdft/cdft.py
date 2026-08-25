@@ -283,38 +283,57 @@ class BatchedTinyCDFT:
         for b in range(self.batch_size):
             mat = self.materials[b]
             if mat is not None:
-                sigma_b = mat.effective_sigma
-                eps_b = mat.effective_epsilon_k
-                slit_w_b = max(40.0, 12.0 * sigma_b)
-                dz_b = slit_w_b / n_grid
-                temp_b = mat.temperature_k
-                rho_b = mat.bulk_density_a3
+                p_data = getattr(mat, "precomputed_cdft_data", None)
+                if p_data is not None:
+                    slit_w_b = p_data["slit_w"]
+                    dz_b = p_data["dz"]
+                    temp_b = mat.temperature_k
+                    rho_b = mat.bulk_density_a3
+                    w3_arr = p_data["fmt_w3"]
+                    w2_arr = p_data["fmt_w2"]
+                    w1_arr = p_data["fmt_w1"]
+                    w0_arr = p_data["fmt_w0"]
+                    wv2_arr = p_data["fmt_wv2"]
+                    wv1_arr = p_data["fmt_wv1"]
+                    att_arr = p_data["att_arr"]
+                    v_ext_np = p_data["v_ext_np"]
+                else:
+                    sigma_b = mat.effective_sigma
+                    eps_b = mat.effective_epsilon_k
+                    slit_w_b = max(40.0, 12.0 * sigma_b)
+                    dz_b = slit_w_b / n_grid
+                    temp_b = mat.temperature_k
+                    rho_b = mat.bulk_density_a3
 
-                fmt_dict = KernelBuilder.build_fmt_planar_kernels(sigma_b, dz_b)
-                att_raw, att_pad = KernelBuilder.build_wca_attraction_kernel(sigma_b, eps_b, dz_b)
-
-                v_ext_raw = (
-                    KernelBuilder.build_slit_wall_potential(
-                        n_grid=n_grid,
-                        dz=dz_b,
-                        fluid_sigma=sigma_b,
-                        wall_sigma=wall_sigma,
-                        wall_epsilon_k=wall_epsilon_k,
+                    fmt_dict = KernelBuilder.build_fmt_planar_kernels_np(sigma_b, dz_b)
+                    att_arr, att_pad = KernelBuilder.build_wca_attraction_kernel_np(sigma_b, eps_b, dz_b)
+                    v_ext_np = (
+                        KernelBuilder.build_slit_wall_potential_np(
+                            n_grid=n_grid,
+                            dz=dz_b,
+                            fluid_sigma=sigma_b,
+                            wall_sigma=wall_sigma,
+                            wall_epsilon_k=wall_epsilon_k,
+                        )
+                        / temp_b
                     )
-                    / temp_b
-                )
+                    w3_arr = fmt_dict["w3"]
+                    w2_arr = fmt_dict["w2"]
+                    w1_arr = fmt_dict["w1"]
+                    w0_arr = fmt_dict["w0"]
+                    wv2_arr = fmt_dict["wv2"]
+                    wv1_arr = fmt_dict["wv1"]
 
-                eta_b = (math.pi / 6.0) * rho_b * (sigma_b**3)
+                eta_b = (math.pi / 6.0) * rho_b * (mat.effective_sigma**3)
                 one_minus_eta = max(1e-12, 1.0 - eta_b)
                 mu_fmt = -math.log(one_minus_eta) + (eta_b * (14.0 - 13.0 * eta_b + 5.0 * (eta_b**2))) / (
                     2.0 * (one_minus_eta**3)
                 )
-                att_sum = float(att_raw.numpy().sum()) * dz_b
+                att_sum = float(att_arr.sum()) * dz_b
                 mu_att = (rho_b * att_sum) / temp_b
                 mu_ex_b = mu_fmt + mu_att
 
                 psi_max = math.log(0.60 / max(1e-4, eta_b))
-                v_ext_np = v_ext_raw.numpy().reshape(n_grid)
                 psi_init_b = np.clip(-v_ext_np, -50.0, psi_max)
             else:
                 sigma_b = 3.4
@@ -323,12 +342,17 @@ class BatchedTinyCDFT:
                 dz_b = slit_w_b / n_grid
                 temp_b = 300.0
                 rho_b = 0.0
-                fmt_dict = KernelBuilder.build_fmt_planar_kernels(sigma_b, dz_b)
-                att_raw, att_pad = KernelBuilder.build_wca_attraction_kernel(sigma_b, eps_b, dz_b)
-                v_ext_raw = Tensor.zeros(1, 1, n_grid, 1)
-                v_ext_np = np.zeros(n_grid)
+                fmt_dict = KernelBuilder.build_fmt_planar_kernels_np(sigma_b, dz_b)
+                att_arr, att_pad = KernelBuilder.build_wca_attraction_kernel_np(sigma_b, eps_b, dz_b)
+                v_ext_np = np.zeros(n_grid, dtype=np.float32)
                 mu_ex_b = 0.0
-                psi_init_b = np.zeros(n_grid)
+                psi_init_b = np.zeros(n_grid, dtype=np.float32)
+                w3_arr = fmt_dict["w3"]
+                w2_arr = fmt_dict["w2"]
+                w1_arr = fmt_dict["w1"]
+                w0_arr = fmt_dict["w0"]
+                wv2_arr = fmt_dict["wv2"]
+                wv1_arr = fmt_dict["wv1"]
 
             slit_widths.append(slit_w_b)
             dz_list.append(dz_b)
@@ -338,16 +362,14 @@ class BatchedTinyCDFT:
             psi_init_list.append(psi_init_b)
             v_ext_list.append(v_ext_np)
 
-            w3_arr = fmt_dict["w3"].numpy().reshape(-1)
             raw_fmt_w3.append(w3_arr)
-            raw_fmt_w2.append(fmt_dict["w2"].numpy().reshape(-1))
-            raw_fmt_w1.append(fmt_dict["w1"].numpy().reshape(-1))
-            raw_fmt_w0.append(fmt_dict["w0"].numpy().reshape(-1))
-            raw_fmt_wv2.append(fmt_dict["wv2"].numpy().reshape(-1))
-            raw_fmt_wv1.append(fmt_dict["wv1"].numpy().reshape(-1))
+            raw_fmt_w2.append(w2_arr)
+            raw_fmt_w1.append(w1_arr)
+            raw_fmt_w0.append(w0_arr)
+            raw_fmt_wv2.append(wv2_arr)
+            raw_fmt_wv1.append(wv1_arr)
             fmt_k_sizes.append(len(w3_arr))
 
-            att_arr = att_raw.numpy().reshape(-1)
             raw_att_kernels.append(att_arr)
             att_k_sizes.append(len(att_arr))
 

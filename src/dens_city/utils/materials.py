@@ -179,6 +179,7 @@ class Material:
     bulk_density_a3: float = 0.02
     bulk_mu: float = 0.0
     bulk_pressure_bar: float = 0.0
+    precomputed_cdft_data: Optional[Dict[str, Any]] = None
 
     @property
     def num_sites(self) -> int:
@@ -541,91 +542,63 @@ class MolecularBatch:
         stacks them into fixed (B, N) tensors, and fills remaining batch slots up to batch_size
         with zeroed dummy molecules.
         """
+        import numpy as np
         from tinygrad import Tensor, dtypes
 
         mats_padded: List[Optional[Material]] = []
-        sigmas_list = []
-        epsilons_list = []
-        charges_list = []
-        atom_mask_list = []
-        molecule_mask_list = []
-        temp_list = []
-        beta_list = []
-        rho_list = []
-        mu_list = []
-        slit_list = []
-        cond_list = []
+        sigmas_np = np.zeros((batch_size, target_n_particles), dtype=np.float32)
+        epsilons_np = np.zeros((batch_size, target_n_particles), dtype=np.float32)
+        charges_np = np.zeros((batch_size, target_n_particles), dtype=np.float32)
+        atom_mask_np = np.zeros((batch_size, target_n_particles), dtype=np.float32)
+        molecule_mask_np = np.zeros(batch_size, dtype=np.float32)
+        temp_np = np.full(batch_size, default_temp_k, dtype=np.float32)
+        beta_np = np.full(batch_size, 1.0 / default_temp_k, dtype=np.float32)
+        rho_np = np.zeros(batch_size, dtype=np.float32)
+        mu_np = np.zeros(batch_size, dtype=np.float32)
+        slit_np = np.full(batch_size, 40.0, dtype=np.float32)
+        cond_np = np.zeros((batch_size, 5), dtype=np.float32)
+        cond_np[:, 2] = default_temp_k
 
         n_mats = len(materials)
-        for b in range(batch_size):
-            if b < n_mats:
-                mat = materials[b]
-                mats_padded.append(mat)
-                s_b = [s.sigma for s in mat.sites] if mat.sites else [mat.effective_sigma]
-                e_b = [s.epsilon_k for s in mat.sites] if mat.sites else [mat.effective_epsilon_k]
-                q_b = [s.charge for s in mat.sites] if mat.sites else [mat.total_charge]
-                mask_b = [1.0] * len(s_b)
+        for b in range(min(batch_size, n_mats)):
+            mat = materials[b]
+            mats_padded.append(mat)
+            molecule_mask_np[b] = 1.0
 
-                # Pad dummy atoms up to target_n_particles
-                n_pad = max(0, target_n_particles - len(s_b))
-                if n_pad > 0:
-                    s_b = s_b + [0.0] * n_pad
-                    e_b = e_b + [0.0] * n_pad
-                    q_b = q_b + [0.0] * n_pad
-                    mask_b = mask_b + [0.0] * n_pad
+            s_b = [s.sigma for s in mat.sites] if mat.sites else [mat.effective_sigma]
+            e_b = [s.epsilon_k for s in mat.sites] if mat.sites else [mat.effective_epsilon_k]
+            q_b = [s.charge for s in mat.sites] if mat.sites else [mat.total_charge]
+            n_sites = min(len(s_b), target_n_particles)
 
-                s_b = s_b[:target_n_particles]
-                e_b = e_b[:target_n_particles]
-                q_b = q_b[:target_n_particles]
-                mask_b = mask_b[:target_n_particles]
+            sigmas_np[b, :n_sites] = s_b[:n_sites]
+            epsilons_np[b, :n_sites] = e_b[:n_sites]
+            charges_np[b, :n_sites] = q_b[:n_sites]
+            atom_mask_np[b, :n_sites] = 1.0
 
-                sigmas_list.append(s_b)
-                epsilons_list.append(e_b)
-                charges_list.append(q_b)
-                atom_mask_list.append(mask_b)
-                molecule_mask_list.append(1.0)
+            temp_val = mat.temperature_k
+            temp_np[b] = temp_val
+            beta_np[b] = 1.0 / max(1e-6, temp_val)
+            rho_np[b] = mat.bulk_density_a3
+            mu_np[b] = mat.bulk_mu
+            slit_np[b] = max(40.0, 12.0 * mat.effective_sigma)
+            cond_np[b] = [mat.effective_sigma, mat.effective_epsilon_k, temp_val, mat.bulk_density_a3, mat.bulk_mu]
 
-                temp_val = mat.temperature_k
-                beta_val = 1.0 / max(1e-6, temp_val)
-                rho_val = mat.bulk_density_a3
-                mu_val = mat.bulk_mu
-                slit_val = max(40.0, 12.0 * mat.effective_sigma)
-
-                temp_list.append(temp_val)
-                beta_list.append(beta_val)
-                rho_list.append(rho_val)
-                mu_list.append(mu_val)
-                slit_list.append(slit_val)
-                cond_list.append([mat.effective_sigma, mat.effective_epsilon_k, temp_val, rho_val, mu_val])
-            else:
-                # Empty batch slot: Zero-padded dummy molecule
-                mats_padded.append(None)
-                sigmas_list.append([0.0] * target_n_particles)
-                epsilons_list.append([0.0] * target_n_particles)
-                charges_list.append([0.0] * target_n_particles)
-                atom_mask_list.append([0.0] * target_n_particles)
-                molecule_mask_list.append(0.0)
-
-                temp_list.append(default_temp_k)
-                beta_list.append(1.0 / default_temp_k)
-                rho_list.append(0.0)
-                mu_list.append(0.0)
-                slit_list.append(40.0)
-                cond_list.append([0.0, 0.0, default_temp_k, 0.0, 0.0])
+        for b in range(n_mats, batch_size):
+            mats_padded.append(None)
 
         return MolecularBatch(
             materials=mats_padded,
             batch_size=batch_size,
             n_particles=target_n_particles,
-            sigmas=Tensor(sigmas_list, dtype=dtypes.float32).realize(),
-            epsilons=Tensor(epsilons_list, dtype=dtypes.float32).realize(),
-            charges=Tensor(charges_list, dtype=dtypes.float32).realize(),
-            atom_mask=Tensor(atom_mask_list, dtype=dtypes.float32).realize(),
-            molecule_mask=Tensor(molecule_mask_list, dtype=dtypes.float32).realize(),
-            temperature_k=Tensor(temp_list, dtype=dtypes.float32).realize(),
-            beta=Tensor(beta_list, dtype=dtypes.float32).realize(),
-            bulk_density_a3=Tensor(rho_list, dtype=dtypes.float32).realize(),
-            bulk_mu=Tensor(mu_list, dtype=dtypes.float32).realize(),
-            slit_width_a=Tensor(slit_list, dtype=dtypes.float32).realize(),
-            conditioning=Tensor(cond_list, dtype=dtypes.float32).realize(),
+            sigmas=Tensor(sigmas_np, dtype=dtypes.float32).realize(),
+            epsilons=Tensor(epsilons_np, dtype=dtypes.float32).realize(),
+            charges=Tensor(charges_np, dtype=dtypes.float32).realize(),
+            atom_mask=Tensor(atom_mask_np, dtype=dtypes.float32).realize(),
+            molecule_mask=Tensor(molecule_mask_np, dtype=dtypes.float32).realize(),
+            temperature_k=Tensor(temp_np, dtype=dtypes.float32).realize(),
+            beta=Tensor(beta_np, dtype=dtypes.float32).realize(),
+            bulk_density_a3=Tensor(rho_np, dtype=dtypes.float32).realize(),
+            bulk_mu=Tensor(mu_np, dtype=dtypes.float32).realize(),
+            slit_width_a=Tensor(slit_np, dtype=dtypes.float32).realize(),
+            conditioning=Tensor(cond_np, dtype=dtypes.float32).realize(),
         )

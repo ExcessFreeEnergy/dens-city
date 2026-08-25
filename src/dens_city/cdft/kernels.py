@@ -1,12 +1,7 @@
-"""
-Anti-aliased kernel builders for Classical Density Functional Theory (cDFT).
-Computes analytically integrated weight functions, scale-invariant WCA/Lennard-Jones dispersion,
-Coulomb Green's functions, and exact steric confining wall potentials.
-"""
-
 import math
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
+import numpy as np
 from tinygrad import Tensor
 
 
@@ -14,72 +9,76 @@ class KernelBuilder:
     """Builds analytically cell-integrated kernels to eliminate grid aliasing and ringing."""
 
     @staticmethod
-    def build_fmt_planar_kernels(sigma: float, dz: float) -> Dict[str, Tensor]:
+    def build_fmt_planar_kernels_np(sigma: float, dz: float) -> Dict[str, Any]:
         """
         Analytically integrates Rosenfeld Fundamental Measure Theory (FMT) 1D planar
-        weight functions w_3, w_2, w_1, w_0, w_v2, w_v1 across each grid cell [z - dz/2, z + dz/2].
-
-        Returns:
-            Dict containing tinygrad Tensors of shape (1, 1, K, 1) ready for conv2d.
+        weight functions w_3, w_2, w_1, w_0, w_v2, w_v1 across each grid cell [z - dz/2, z + dz/2] in pure NumPy.
         """
         R = sigma / 2.0
-        # Kernel half-width in bins
         k_half = int(math.ceil(R / dz)) + 1
         k_size = 2 * k_half + 1
 
-        w3_vals = []
-        w2_vals = []
-        wv2_vals = []
+        w3_arr = np.zeros(k_size, dtype=np.float32)
+        w2_arr = np.zeros(k_size, dtype=np.float32)
+        wv2_arr = np.zeros(k_size, dtype=np.float32)
 
-        for i in range(-k_half, k_half + 1):
+        for idx, i in enumerate(range(-k_half, k_half + 1)):
             z_center = i * dz
             z_left = z_center - dz / 2.0
             z_right = z_center + dz / 2.0
 
-            # Clamp integration interval to [-R, R]
             z1 = max(-R, z_left)
             z2 = min(R, z_right)
 
             if z1 < z2:
-                # \int \pi(R^2 - z^2) dz = \pi [ R^2(z2 - z1) - (z2^3 - z1^3)/3 ]
                 int_w3 = math.pi * (R * R * (z2 - z1) - (z2**3 - z1**3) / 3.0)
-                # \int 2\pi R dz = 2\pi R (z2 - z1)
                 int_w2 = 2.0 * math.pi * R * (z2 - z1)
-                # \int 2\pi z dz = \pi (z2^2 - z1^2)
                 int_wv2 = math.pi * (z2**2 - z1**2)
 
-                w3_vals.append(int_w3 / dz)
-                w2_vals.append(int_w2 / dz)
-                wv2_vals.append(int_wv2 / dz)
-            else:
-                w3_vals.append(0.0)
-                w2_vals.append(0.0)
-                wv2_vals.append(0.0)
+                w3_arr[idx] = int_w3 / dz
+                w2_arr[idx] = int_w2 / dz
+                wv2_arr[idx] = int_wv2 / dz
 
-        w1_vals = [w / (4.0 * math.pi * R) for w in w2_vals]
-        w0_vals = [w / (4.0 * math.pi * R * R) for w in w2_vals]
-        wv1_vals = [w / (4.0 * math.pi * R) for w in wv2_vals]
-
-        # Reshape to (1, 1, K, 1) for tinygrad conv2d
-        def to_tensor(vals):
-            return Tensor(vals).reshape(1, 1, k_size, 1).contiguous()
+        denom_4piR = 4.0 * math.pi * R
+        denom_4piR2 = 4.0 * math.pi * R * R
+        w1_arr = w2_arr / denom_4piR
+        w0_arr = w2_arr / denom_4piR2
+        wv1_arr = wv2_arr / denom_4piR
 
         return {
-            "w3": to_tensor(w3_vals),
-            "w2": to_tensor(w2_vals),
-            "w1": to_tensor(w1_vals),
-            "w0": to_tensor(w0_vals),
-            "wv2": to_tensor(wv2_vals),
-            "wv1": to_tensor(wv1_vals),
+            "w3": w3_arr,
+            "w2": w2_arr,
+            "w1": w1_arr,
+            "w0": w0_arr,
+            "wv2": wv2_arr,
+            "wv1": wv1_arr,
             "pad": k_half,
         }
 
     @staticmethod
-    def build_wca_attraction_kernel(
+    def build_fmt_planar_kernels(sigma: float, dz: float) -> Dict[str, Tensor]:
+        """
+        Analytically integrates Rosenfeld Fundamental Measure Theory (FMT) 1D planar
+        weight functions returning tinygrad Tensors.
+        """
+        np_dict = KernelBuilder.build_fmt_planar_kernels_np(sigma, dz)
+        k_size = len(np_dict["w3"])
+        return {
+            "w3": Tensor(np_dict["w3"]).reshape(1, 1, k_size, 1).contiguous(),
+            "w2": Tensor(np_dict["w2"]).reshape(1, 1, k_size, 1).contiguous(),
+            "w1": Tensor(np_dict["w1"]).reshape(1, 1, k_size, 1).contiguous(),
+            "w0": Tensor(np_dict["w0"]).reshape(1, 1, k_size, 1).contiguous(),
+            "wv2": Tensor(np_dict["wv2"]).reshape(1, 1, k_size, 1).contiguous(),
+            "wv1": Tensor(np_dict["wv1"]).reshape(1, 1, k_size, 1).contiguous(),
+            "pad": np_dict["pad"],
+        }
+
+    @staticmethod
+    def build_wca_attraction_kernel_np(
         sigma: float, epsilon_k: float, dz: float, r_cut: Optional[float] = None
-    ) -> Tuple[Tensor, int]:
+    ) -> Tuple[np.ndarray, int]:
         r"""
-        Analytically cell-integrates 1D planar WCA attractive dispersion potential across each grid bin [z - dz/2, z + dz/2]:
+        Analytically cell-integrates 1D planar WCA attractive dispersion potential across each grid bin [z - dz/2, z + dz/2] in pure NumPy:
         \bar{v}_att(i) = \frac{1}{dz} \int_{z - dz/2}^{z + dz/2} v_att,1D(z') dz'
         where v_att,1D(z) = \int_{|z|}^{r_cut} 2\pi r v_att(r) dr.
         """
@@ -88,8 +87,6 @@ class KernelBuilder:
         k_half = int(math.ceil(cutoff / dz)) + 1
         k_size = 2 * k_half + 1
 
-        # Indefinite integral V(r) = \int_0^r 2\pi r' v_att(r') dr'
-        # and secondary anti-derivative W(r) = \int_0^r V(u) du
         def eval_v_and_w(r: float) -> Tuple[float, float]:
             if r <= 0.0:
                 return 0.0, 0.0
@@ -98,12 +95,9 @@ class KernelBuilder:
                 w_val = -(math.pi * epsilon_k / 3.0) * (r**3)
                 return v_val, w_val
             else:
-                # Core value at r_min
                 v_rmin = -math.pi * epsilon_k * (r_min**2)
                 w_rmin = -(math.pi * epsilon_k / 3.0) * (r_min**3)
 
-                # Antiderivative of 8\pi \epsilon [ \sigma^12 / u^11 - \sigma^6 / u^5 ]
-                # \int [ \sigma^12 / u^11 - \sigma^6 / u^5 ] du = -\sigma^12 / (10 u^10) + \sigma^6 / (4 u^4)
                 anti_v_rmin = (
                     8.0 * math.pi * epsilon_k * (-(sigma**12) / (10.0 * (r_min**10)) + (sigma**6) / (4.0 * (r_min**4)))
                 )
@@ -111,8 +105,6 @@ class KernelBuilder:
 
                 v_val = 8.0 * math.pi * epsilon_k * (-(sigma**12) / (10.0 * (r**10)) + (sigma**6) / (4.0 * (r**4))) - c1
 
-                # Second antiderivative \int [ -\sigma^12 / (10 u^10) + \sigma^6 / (4 u^4) ] du
-                # = \sigma^12 / (90 u^9) - \sigma^6 / (12 u^3)
                 anti_w_rmin = (
                     8.0 * math.pi * epsilon_k * ((sigma**12) / (90.0 * (r_min**9)) - (sigma**6) / (12.0 * (r_min**3)))
                 )
@@ -123,15 +115,13 @@ class KernelBuilder:
 
         v_rcut, _ = eval_v_and_w(cutoff)
 
-        kernel_vals = []
-        for i in range(-k_half, k_half + 1):
+        kernel_vals = np.zeros(k_size, dtype=np.float32)
+        for idx, i in enumerate(range(-k_half, k_half + 1)):
             if i == 0:
-                # Symmetric cell [-dz/2, dz/2]
                 z_right = min(cutoff, 0.5 * dz)
                 _, w_right = eval_v_and_w(z_right)
-                # \int_{-dz/2}^{dz/2} v_1D(z) dz = 2 * [ z_right * V(r_cut) - W(z_right) ]
                 int_cell = 2.0 * (z_right * v_rcut - w_right)
-                kernel_vals.append(int_cell / dz)
+                kernel_vals[idx] = int_cell / dz
             else:
                 z_center = abs(i * dz)
                 z1 = max(0.0, z_center - 0.5 * dz)
@@ -141,12 +131,56 @@ class KernelBuilder:
                     _, w1 = eval_v_and_w(z1)
                     _, w2 = eval_v_and_w(z2)
                     int_cell = (z2 - z1) * v_rcut - (w2 - w1)
-                    kernel_vals.append(int_cell / dz)
-                else:
-                    kernel_vals.append(0.0)
+                    kernel_vals[idx] = int_cell / dz
 
-        kernel_tensor = Tensor(kernel_vals).reshape(1, 1, k_size, 1).contiguous()
-        return kernel_tensor, k_half
+        return kernel_vals, k_half
+
+    @staticmethod
+    def build_wca_attraction_kernel(
+        sigma: float, epsilon_k: float, dz: float, r_cut: Optional[float] = None
+    ) -> Tuple[Tensor, int]:
+        """Analytically cell-integrates 1D planar WCA attractive dispersion potential returning tinygrad Tensor."""
+        kernel_vals, k_half = KernelBuilder.build_wca_attraction_kernel_np(sigma, epsilon_k, dz, r_cut)
+        k_size = len(kernel_vals)
+        return Tensor(kernel_vals).reshape(1, 1, k_size, 1).contiguous(), k_half
+
+    @staticmethod
+    def build_slit_wall_potential_np(
+        n_grid: int,
+        dz: float,
+        fluid_sigma: Optional[float] = None,
+        wall_sigma: float = 3.4,
+        wall_epsilon_k: float = 50.0,
+        wall_type: str = "stele93",
+    ) -> np.ndarray:
+        """
+        Constructs the external confining slit wall potential V_ext(z) in pure NumPy.
+        """
+        l_z = n_grid * dz
+        v_vals = np.zeros(n_grid, dtype=np.float32)
+        f_sig = fluid_sigma if fluid_sigma is not None else wall_sigma
+        sigma_wf = 0.5 * (wall_sigma + f_sig)
+        prefactor = (2.0 * math.pi * wall_epsilon_k * (sigma_wf**3)) / 3.0
+        steric_radius = 0.5 * sigma_wf
+        v_wall_inf = 1e6
+
+        for i in range(n_grid):
+            z = (i + 0.5) * dz
+            z_l = z
+            z_r = l_z - z
+
+            if z_l <= steric_radius or z_r <= steric_radius:
+                v_vals[i] = v_wall_inf
+            elif wall_type == "stele93":
+                s_l = sigma_wf / z_l
+                s_r = sigma_wf / z_r
+                v_l = prefactor * ((2.0 / 15.0) * (s_l**9) - (s_l**3))
+                v_r = prefactor * ((2.0 / 15.0) * (s_r**9) - (s_r**3))
+                v_vals[i] = min(v_wall_inf, v_l + v_r)
+            else:
+                v_vals[i] = v_wall_inf if (z_l < sigma_wf or z_r < sigma_wf) else 0.0
+
+        return v_vals
 
     @staticmethod
     def build_slit_wall_potential(
@@ -158,38 +192,16 @@ class KernelBuilder:
         wall_type: str = "stele93",
     ) -> Tensor:
         """
-        Constructs the external confining slit wall potential V_ext(z) with exact physical divergence.
-        Computes Lorentz-Berthelot collision diameter sigma_wf = 0.5 * (wall_sigma + fluid_sigma).
-        For steric hard boundary overlap (z <= 0.5 * sigma_wf or z >= L_z - 0.5 * sigma_wf),
-        V_ext(z) = 1e6 (exact impenetrable brick wall potential in units of k_B * T).
+        Constructs the external confining slit wall potential V_ext(z) returning tinygrad Tensor.
         """
-        l_z = n_grid * dz
-        v_vals = []
-        f_sig = fluid_sigma if fluid_sigma is not None else wall_sigma
-        sigma_wf = 0.5 * (wall_sigma + f_sig)
-        prefactor = (2.0 * math.pi * wall_epsilon_k * (sigma_wf**3)) / 3.0
-        steric_radius = 0.5 * sigma_wf
-        v_wall_inf = 1e6  # Massive physical potential barrier (avoids IEEE 754 0 * inf NaN)
-
-        for i in range(n_grid):
-            z = (i + 0.5) * dz
-            z_l = z
-            z_r = l_z - z
-
-            # Exact steric exclusion boundary
-            if z_l <= steric_radius or z_r <= steric_radius:
-                v_vals.append(v_wall_inf)
-            elif wall_type == "stele93":
-                s_l = sigma_wf / z_l
-                s_r = sigma_wf / z_r
-                v_l = prefactor * ((2.0 / 15.0) * (s_l**9) - (s_l**3))
-                v_r = prefactor * ((2.0 / 15.0) * (s_r**9) - (s_r**3))
-                v_total = min(v_wall_inf, v_l + v_r)
-                v_vals.append(v_total)
-            else:
-                # Hard wall
-                v_vals.append(v_wall_inf if (z_l < sigma_wf or z_r < sigma_wf) else 0.0)
-
+        v_vals = KernelBuilder.build_slit_wall_potential_np(
+            n_grid=n_grid,
+            dz=dz,
+            fluid_sigma=fluid_sigma,
+            wall_sigma=wall_sigma,
+            wall_epsilon_k=wall_epsilon_k,
+            wall_type=wall_type,
+        )
         return Tensor(v_vals).reshape(1, 1, n_grid, 1).contiguous()
 
     @staticmethod

@@ -152,32 +152,41 @@ class MicroscopicEnergy:
 
         idx = Tensor.arange(self.n_particles)
         if getattr(self, "is_batched_energy", False):
-            # Precompute Lorentz-Berthelot 3D combining matrices (B, N, N)
-            self.s_ij = (0.5 * (self.sigmas.unsqueeze(2) + self.sigmas.unsqueeze(1))).realize()
-            self.e_ij = ((self.epsilons.unsqueeze(2) * self.epsilons.unsqueeze(1)).sqrt()).realize()
-            self.q_ij = (self.charges.unsqueeze(2) * self.charges.unsqueeze(1)).realize()
+            self.s_ij = 0.5 * (self.sigmas.unsqueeze(2) + self.sigmas.unsqueeze(1))
+            self.e_ij = (self.epsilons.unsqueeze(2) * self.epsilons.unsqueeze(1)).sqrt()
+            self.q_ij = self.charges.unsqueeze(2) * self.charges.unsqueeze(1)
             atom_mask_3d = self.is_real_atom.unsqueeze(2) * self.is_real_atom.unsqueeze(1)  # (B, N, N)
             triu_base = (idx.unsqueeze(1) < idx.unsqueeze(0)).float().unsqueeze(0)  # (1, N, N)
-            self.triu_mask = (triu_base * atom_mask_3d * self.molecule_mask.reshape(-1, 1, 1)).realize()
+            self.triu_mask = triu_base * atom_mask_3d * self.molecule_mask.reshape(-1, 1, 1)
         else:
-            # Precompute Lorentz-Berthelot pairwise combining matrices (1, N, N) as realized device buffers
             s_ij_2d = 0.5 * (self.sigmas.unsqueeze(1) + self.sigmas.unsqueeze(0))
             e_ij_2d = (self.epsilons.unsqueeze(1) * self.epsilons.unsqueeze(0)).sqrt()
             q_ij_2d = self.charges.unsqueeze(1) * self.charges.unsqueeze(0)
-            self.s_ij = s_ij_2d.unsqueeze(0).realize()
-            self.e_ij = e_ij_2d.unsqueeze(0).realize()
-            self.q_ij = q_ij_2d.unsqueeze(0).realize()
-            self.triu_mask = ((idx.unsqueeze(1) < idx.unsqueeze(0)).float() * atom_mask_2d).unsqueeze(0).realize()
+            self.s_ij = s_ij_2d.unsqueeze(0)
+            self.e_ij = e_ij_2d.unsqueeze(0)
+            self.q_ij = q_ij_2d.unsqueeze(0)
+            self.triu_mask = ((idx.unsqueeze(1) < idx.unsqueeze(0)).float() * atom_mask_2d).unsqueeze(0)
 
         # Precompute cutoff potential shifts and force gradients at r = r_cut for Shifted-Force (SF)
         sr_cut = self.s_ij / self.r_cut
         sr2_cut = sr_cut * sr_cut
         sr6_cut = sr2_cut * sr2_cut * sr2_cut
         sr12_cut = sr6_cut * sr6_cut
-        self.u_lj_cut = (4.0 * self.e_ij * (sr12_cut - sr6_cut)).realize()
-        self.du_lj_cut = (-(24.0 * self.e_ij / self.r_cut) * (2.0 * sr12_cut - sr6_cut)).realize()
-        self.u_coul_cut = ((self.q_ij * self.c_coul) / self.r_cut).realize()
-        self.du_coul_cut = (-(self.q_ij * self.c_coul) / (self.r_cut * self.r_cut)).realize()
+        self.u_lj_cut = 4.0 * self.e_ij * (sr12_cut - sr6_cut)
+        self.du_lj_cut = -(24.0 * self.e_ij / self.r_cut) * (2.0 * sr12_cut - sr6_cut)
+        self.u_coul_cut = (self.q_ij * self.c_coul) / self.r_cut
+        self.du_coul_cut = -(self.q_ij * self.c_coul) / (self.r_cut * self.r_cut)
+
+        Tensor.realize(
+            self.s_ij,
+            self.e_ij,
+            self.q_ij,
+            self.triu_mask,
+            self.u_lj_cut,
+            self.du_lj_cut,
+            self.u_coul_cut,
+            self.du_coul_cut,
+        )
 
         self.eye = Tensor.eye(self.n_particles).unsqueeze(0).realize()
 
