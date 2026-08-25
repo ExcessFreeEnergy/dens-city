@@ -18,18 +18,20 @@ class EGNNLayer:
     Single E(n)-invariant message passing layer.
     Computes edge interaction messages from node embeddings, relative squared distances,
     and edge masks, then updates node embeddings with residual connections.
+    Uses decomposed linear projections to avoid materializing huge (B, N, N, 2F+2) tensors in memory.
     """
 
-    def __init__(self, hidden_dim: int = 128, edge_in_dim: int = 258):
+    def __init__(self, hidden_dim: int = 128, edge_in_dim: Optional[int] = None):
         self.hidden_dim = hidden_dim
 
-        # Edge Message MLP: phi_e: R^(258) -> R^(128) -> R^(128) with Swish (SiLU)
-        self.edge_mlp: List[Callable[[Tensor], Tensor]] = [
-            nn.Linear(edge_in_dim, hidden_dim),
-            Tensor.silu,
-            nn.Linear(hidden_dim, hidden_dim),
-            Tensor.silu,
-        ]
+        # Decomposed first linear projection of edge features
+        self.edge_hi = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        self.edge_hj = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        self.edge_d = nn.Linear(1, hidden_dim, bias=False)
+        self.edge_a = nn.Linear(1, hidden_dim, bias=True)
+
+        # Second linear layer of edge MLP
+        self.edge_l2 = nn.Linear(hidden_dim, hidden_dim)
 
         # Node Update MLP: phi_h: R^(256) -> R^(128) -> R^(128) with Swish (SiLU)
         self.node_mlp: List[Callable[[Tensor], Tensor]] = [
@@ -54,20 +56,22 @@ class EGNNLayer:
         """
         B, N, F = h.shape
 
-        # 1. Expand node features to pairwise combinations (B, N, N, F)
-        h_i = h.reshape(B, N, 1, F).expand(B, N, N, F)
-        h_j = h.reshape(B, 1, N, F).expand(B, N, N, F)
+        # 1. Project node features directly on (B, N, F) before spatial broadcast
+        h_i_proj = self.edge_hi(h).reshape(B, N, 1, F)
+        h_j_proj = self.edge_hj(h).reshape(B, 1, N, F)
+        d_proj = self.edge_d(d_sq)
+        a_proj = self.edge_a(edge_mask)
 
-        # 2. Assemble Edge Features: [h_i, h_j, d_sq, edge_mask] -> (B, N, N, 2F + 2)
-        edge_inputs = Tensor.cat(h_i, h_j, d_sq, edge_mask, dim=-1)
+        # 2. Sum linear projections and apply SiLU
+        e_hidden = (h_i_proj + h_j_proj + d_proj + a_proj).silu()
 
-        # 3. Message Generation via phi_e
-        m_ij = edge_inputs.sequential(self.edge_mlp) * edge_mask
+        # 3. Message generation via second linear layer & masking
+        m_ij = self.edge_l2(e_hidden).silu() * edge_mask
 
-        # 4. Message Aggregation: m_i = sum_{j != i} m_ij -> (B, N, F)
+        # 4. Message aggregation over neighbors
         m_i = m_ij.sum(axis=2)
 
-        # 5. Node Update via phi_h with Residual Connection
+        # 5. Node update with residual connection
         node_inputs = Tensor.cat(h, m_i, dim=-1)
         h_delta = node_inputs.sequential(self.node_mlp)
         h_next = (h + h_delta) * atom_mask
@@ -98,7 +102,7 @@ class EGNNForceField:
         self.embedding = nn.Linear(max_atomic_number, hidden_dim)
 
         # 7 sequential message-passing layers
-        self.layers = [EGNNLayer(hidden_dim=hidden_dim, edge_in_dim=hidden_dim * 2 + 2) for _ in range(num_layers)]
+        self.layers = [EGNNLayer(hidden_dim=hidden_dim) for _ in range(num_layers)]
 
         # Readout MLP: node-wise energy contribution eps_i
         self.readout_mlp: List[Callable[[Tensor], Tensor]] = [

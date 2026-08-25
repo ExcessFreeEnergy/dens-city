@@ -111,6 +111,7 @@ def print_banner(
     beam: int,
     skip_bg: bool,
     benchmark: bool,
+    energy_engine: str = "classical",
 ) -> None:
     print("=" * 88)
     print(colored("  dens-city: Molecular Classical Density Functional Theory & Generative Platform", "cyan"))
@@ -118,6 +119,9 @@ def print_banner(
     print(f"  Target Materials  : {num_materials} items")
     print(f"  Parallel Workers  : {workers} isolated processes (Batch Size = {batch_size} molecules/tensor)")
     print(f"  Compiler BEAM     : BEAM={beam}")
+    print(
+        f"  Physics Engine    : {colored('EGNN 7-Layer MLFF (Quantum E(n)-Invariant)', 'magenta') if energy_engine == 'egnn' else 'Classical (GAFF LJ + Coulomb)'}"
+    )
     print(f"  Thermodynamics    : T = {temp_k:.1f} K" + (f", P = {pressure_bar:.2f} bar" if pressure_bar else ""))
     print(f"  Execution Mode    : {'cDFT Fast Screening (No BG)' if skip_bg else 'Coupled cDFT + Boltzmann Generator'}")
     if benchmark:
@@ -341,8 +345,26 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=False,
         help="Skip Boltzmann Generator phase and halt after cDFT screening",
     )
+    parser.add_argument(
+        "--energy-engine",
+        choices=["classical", "egnn"],
+        default="classical",
+        help="Microscopic Hamiltonian physics engine: 'classical' (GAFF LJ+Coulomb, default) or 'egnn' (7-layer E(n)-equivariant MLFF)",
+    )
 
     args = parser.parse_args(argv)
+
+    # Auto-throttle batch size for EGNN to prevent GPU VRAM exhaustion from (B, 128, 128, 128) message tensors
+    if args.energy_engine == "egnn" and "--batch-size" not in argv and "-b" not in argv:
+        args.batch_size = 32
+        print(
+            colored(
+                "[ENGINE] Routing to EGNN MLFF engine (auto-throttling batch size to 32 to optimize message passing VRAM)",
+                "cyan",
+            )
+        )
+    elif args.energy_engine == "egnn":
+        print(colored(f"[ENGINE] Routing to EGNN MLFF engine (batch size: {args.batch_size})", "cyan"))
 
     # Configure tinygrad compiler environment
     if args.beam:
@@ -386,6 +408,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         beam=args.beam,
         skip_bg=args.skip_bg,
         benchmark=args.benchmark,
+        energy_engine=args.energy_engine,
     )
 
     tasks = [
@@ -408,6 +431,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             skip_bg=args.skip_bg,
             debug=args.debug,
             debug_log_path=str(debug_log_dir / f"{Path(m).stem}.log") if debug_log_dir else None,
+            energy_engine=args.energy_engine,
         )
         for m in materials
     ]
@@ -421,6 +445,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         task_chunks=task_chunks,
         batch_size=args.batch_size,
         prefetch_depth=2,
+        energy_engine=args.energy_engine,
     ).start()
 
     try:

@@ -21,7 +21,7 @@ import numpy as np
 from tinygrad import nn
 
 from dens_city.boltzmann.bijectors import Base2CartesianFlow
-from dens_city.boltzmann.energy import MicroscopicEnergy
+from dens_city.boltzmann.energy import EGNNMicroscopicEnergy, MicroscopicEnergy
 from dens_city.boltzmann.generator import BoltzmannGenerator
 from dens_city.boltzmann.prior import CDFTBaseDistribution
 from dens_city.cdft.cdft import BatchedTinyCDFT, TinyCDFT
@@ -65,6 +65,7 @@ class MaterialPipelineTask:
     debug: bool = False
     debug_log_path: Optional[str] = None
     r_cut: Optional[float] = None
+    energy_engine: str = "classical"
 
 
 @dataclass
@@ -272,14 +273,20 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
         box_xy = (30.0, 30.0)
         box_size_3d = (30.0, 30.0, slit_w)
 
-        # Microscopic Hamiltonian with Shifted-Force boundary condition & Fixed 128-Site Padding
-        energy_fn = MicroscopicEnergy(
-            material=material,
-            box_size=box_size_3d,
-            r_cut=task.r_cut,
-            pad_to_128=True,
-            target_n_particles=128,
-        )
+        # Microscopic Hamiltonian: Classical or EGNN MLFF
+        if task.energy_engine == "egnn":
+            energy_fn = EGNNMicroscopicEnergy(
+                material=material,
+                box_size=box_size_3d,
+            )
+        else:
+            energy_fn = MicroscopicEnergy(
+                material=material,
+                box_size=box_size_3d,
+                r_cut=task.r_cut,
+                pad_to_128=True,
+                target_n_particles=128,
+            )
         n_pad_sites = energy_fn.n_particles
 
         # 4-Channel Base-2 Cartesian Flow (dim = 128 * 4 = 512)
@@ -552,10 +559,12 @@ class AsyncBatchPrefetcher:
         batch_size: int = 512,
         max_workers: Optional[int] = None,
         prefetch_depth: int = 2,
+        energy_engine: str = "classical",
     ):
         self.task_chunks = task_chunks
         self.batch_size = batch_size
         self.max_workers = max_workers or min(32, os.cpu_count() or 4)
+        self.energy_engine = energy_engine
         self.queue: queue.Queue = queue.Queue(maxsize=prefetch_depth)
         self._shutdown_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -711,11 +720,21 @@ def execute_prepared_batch(
         )
     )
 
-    energy_fn = (
-        prepared_batch.energy_fn
-        if prepared_batch.energy_fn is not None
-        else MicroscopicEnergy(material=mol_batch, pad_to_128=True)
+    engine_type = (
+        batch_tasks[0].energy_engine if batch_tasks and hasattr(batch_tasks[0], "energy_engine") else "classical"
     )
+    if engine_type == "egnn":
+        energy_fn = (
+            prepared_batch.energy_fn
+            if prepared_batch.energy_fn is not None
+            else EGNNMicroscopicEnergy(material=mol_batch)
+        )
+    else:
+        energy_fn = (
+            prepared_batch.energy_fn
+            if prepared_batch.energy_fn is not None
+            else MicroscopicEnergy(material=mol_batch, pad_to_128=True)
+        )
 
     # 1. Batched cDFT Screening Phase
     t_c0 = time.perf_counter()
