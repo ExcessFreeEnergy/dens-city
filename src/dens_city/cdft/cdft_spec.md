@@ -8,41 +8,77 @@ This document specifies the architecture, statistical mechanical foundations, ma
 
 ### 1.1 The Lineage: From Hamiltonian to Continuous Free Energy Functional
 In microscopic statistical mechanics, an open classical fluid of $N$ particles is defined by its microscopic $N$-body Hamiltonian:
-$$H(\mathbf{p}^N, \mathbf{q}^N) = \sum_{i=1}^N \frac{\mathbf{p}_i^2}{2m} + \sum_{i=1}^N V_{\rm ext}(\mathbf{q}_i) + \sum_{i < j} V_{\rm int}(\mathbf{q}_i, \mathbf{q}_j)$$
+
+$$
+H(\mathbf{p}^N, \mathbf{q}^N) = \sum_{i=1}^N \frac{\mathbf{p}_i^2}{2m} + \sum_{i=1}^N V_{\rm ext}(\mathbf{q}_i) + \sum_{i < j} V_{\rm int}(\mathbf{q}_i, \mathbf{q}_j)
+$$
 
 Rather than computing intractable $10^{23}$-particle deterministic trajectories, statistical mechanics introduces temperature $T$ and the Grand Canonical Partition Function $\Xi$:
-$$\Xi = \sum_{N=0}^{\infty} \frac{1}{h^{3N} N!} \exp(\beta \mu N) \int d\mathbf{p}^N d\mathbf{q}^N \exp(-\beta H)$$
+
+$$
+\Xi = \sum_{N=0}^{\infty} \frac{1}{h^{3N} N!} \exp(\beta \mu N) \int d\mathbf{p}^N d\mathbf{q}^N \exp(-\beta H)
+$$
 
 By the **Hohenberg-Kohn-Mermin (HKM) theorem**, the grand potential $\Omega$ is a unique functional of the continuous one-body spatial density field $\rho(\mathbf{r})$. The equilibrium density distribution $\rho_{\rm eq}(\mathbf{r})$ is the exact variational minimizer of $\Omega[\rho]$:
-$$\left. \frac{\delta \Omega[\rho]}{\delta \rho(\mathbf{r})} \right|_{\rho_{\rm eq}} = 0, \quad \Omega[\rho_{\rm eq}] = -P_{\rm bulk} V$$
+
+$$
+\left. \frac{\delta \Omega[\rho]}{\delta \rho(\mathbf{r})} \right|_{\rho_{\rm eq}} = 0, \quad \Omega[\rho_{\rm eq}] = -P_{\rm bulk} V
+$$
 
 ### 1.2 Grand Potential Functional Decomposition
 The grand potential functional is split into four distinct physical terms:
-$$\Omega[\rho] = \mathcal{F}_{\rm ideal}[\rho] + \mathcal{F}_{\rm FMT}^{\rm ex}[\rho] + \mathcal{F}_{\rm att}^{\rm ex}[\rho] + \int d\mathbf{r} \, \rho(\mathbf{r}) [V_{\rm ext}(\mathbf{r}) - \mu]$$
+
+$$
+\Omega[\rho] = \mathcal{F}_{\rm ideal}[\rho] + \mathcal{F}_{\rm FMT}^{\rm ex}[\rho] + \mathcal{F}_{\rm att}^{\rm ex}[\rho] + \int d\mathbf{r} \, \rho(\mathbf{r}) [V_{\rm ext}(\mathbf{r}) - \mu]
+$$
 
 1. **Ideal Gas Entropic Functional (Log-Free Latent Field Parameterization)**:
    To strictly guarantee density positivity ($\rho(z) \ge 0$) and eliminate numerical $\ln(\rho)$ NaN traps, density is parameterized via a latent potential field $\psi(z)$:
-   $$\rho(z) = \rho_{\rm bulk} \exp(\psi(z))$$
-   $$\mathcal{F}_{\rm ideal}[\psi] = k_B T \int dz \, \left[ \rho(z) \psi(z) - (\rho(z) - \rho_{\rm bulk}) \right]$$
+
+   $$
+   \rho(z) = \rho_{\rm bulk} \exp(\psi(z))
+   $$
+
+   $$
+   \mathcal{F}_{\rm ideal}[\psi] = k_B T \int dz \, \left[ \rho(z) \psi(z) - (\rho(z) - \rho_{\rm bulk}) \right]
+   $$
 
 2. **Rosenfeld Fundamental Measure Theory (FMT) Hard-Sphere Excess**:
    Represents short-range hard-core exclusion using 6 scalar and vector weighted densities $n_\alpha(z) = (\rho * w_\alpha)(z)$:
-   $$\mathcal{F}_{\rm FMT}^{\rm ex}[\rho] = k_B T \int dz \, \Phi_{\rm FMT}(\{n_\alpha(z)\})$$
-   $$\Phi_{\rm FMT} = -n_0 \ln(1 - n_3^*) + \frac{n_1 n_2 - \mathbf{n}_{v1} \cdot \mathbf{n}_{v2}}{1 - n_3^*} + \frac{n_2^3 - 3 n_2 |\mathbf{n}_{v2}|^2}{24\pi(1 - n_3^*)^2}$$
+
+   $$
+   \mathcal{F}_{\rm FMT}^{\rm ex}[\rho] = k_B T \int dz \, \Phi_{\rm FMT}(\{n_\alpha(z)\})
+   $$
+
+   $$
+   \Phi_{\rm FMT} = -n_0 \ln(1 - n_3^*) + \frac{n_1 n_2 - \mathbf{n}_{v1} \cdot \mathbf{n}_{v2}}{1 - n_3^*} + \frac{n_2^3 - 3 n_2 |\mathbf{n}_{v2}|^2}{24\pi(1 - n_3^*)^2}
+   $$
+
    where $n_3^* = \min(n_3, 1 - 10^{-5})$ prevents unphysical close-packing singularities. Planar weight functions $w_\alpha(z)$ are analytically cell-integrated over $[z - \Delta z/2, z + \Delta z/2]$.
 
 3. **WCA / Lennard-Jones Attractive Dispersion Excess**:
    Represents long-range van der Waals attractive interactions via mean-field perturbation:
-   $$\mathcal{F}_{\rm att}^{\rm ex}[\rho] = \frac{1}{2} \int dz \int dz' \, \rho(z) v_{\rm att, 1D}(|z - z'|) \rho(z') = \frac{1}{2} \int dz \, \rho(z) (\rho * v_{\rm att, 1D})(z)$$
+
+   $$
+   \mathcal{F}_{\rm att}^{\rm ex}[\rho] = \frac{1}{2} \int dz \int dz' \, \rho(z) v_{\rm att, 1D}(|z - z'|) \rho(z') = \frac{1}{2} \int dz \, \rho(z) (\rho * v_{\rm att, 1D})(z)
+   $$
+
    where $v_{\rm att, 1D}(z) = \int_{|z|}^{r_{\rm cut}} 2\pi r v_{\rm att}(r) dr$ is evaluated using exact anti-derivatives.
 
 4. **External Slit Confinement & Chemical Potential**:
-   $$\Omega_{\rm ext}[\rho] = \int dz \, \rho(z) [V_{\rm ext}(z) - \mu]$$
+
+   $$
+   \Omega_{\rm ext}[\rho] = \int dz \, \rho(z) [V_{\rm ext}(z) - \mu]
+   $$
+
    where $V_{\rm ext}(z)$ describes confining walls (e.g. Steele 9-3 graphite slit or steric hard walls) with true asymptotic divergence ($V_{\max} = 10^6 k_B T$) at steric boundaries.
 
 5. **Exact Mechanical Balance (Irving-Kirkwood Virial Theorem)**:
    Wall contact pressure is evaluated via the exact momentum balance integral over the external potential gradient:
-   $$P_{\rm wall} = -\int_0^{L_z/2} \rho(z) \frac{d V_{\rm ext}(z)}{dz} \, dz$$
+
+   $$
+   P_{\rm wall} = -\int_0^{L_z/2} \rho(z) \frac{d V_{\rm ext}(z)}{dz} \, dz
+   $$
 
 ---
 
@@ -112,7 +148,11 @@ flowchart TD
   - `list_available_materials()`: Discovers registered benchmark fluids.
 - **Thermodynamic Consistency & Percus-Yevick EOS**:
   - Because the spatial density engine minimizes the Rosenfeld Fundamental Measure Theory (FMT) free energy functional, the reservoir Equation of State (EOS) must be derived from the **Percus-Yevick (PY) compressibility route**:
-    $$Z_{\rm PY}(\eta) = \frac{P_{\rm bulk}}{\rho_{\rm bulk} k_B T} = \frac{1 + \eta + \eta^2}{(1 - \eta)^3}$$
+
+    $$
+    Z_{\rm PY}(\eta) = \frac{P_{\rm bulk}}{\rho_{\rm bulk} k_B T} = \frac{1 + \eta + \eta^2}{(1 - \eta)^3}
+    $$
+
     where $\eta = \frac{\pi}{6} \rho_{\rm bulk} \sigma_{\rm eff}^3$ is the packing fraction.
   - Using empirical cubic EOS models (such as Peng-Robinson) or Carnahan-Starling for the bulk reservoir creates an artificial thermodynamic mismatch against Rosenfeld FMT, which causes the density profile to drift away from physical equilibrium during gradient descent.
   - `solve_eos_bulk_density(temp_k, pressure_bar, sigma, epsilon_k, model="percus_yevick")`: Solves the Percus-Yevick compressibility EOS for true bulk density $\rho_{\rm bulk}$.

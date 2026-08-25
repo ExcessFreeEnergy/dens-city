@@ -8,13 +8,21 @@ This document specifies the architecture, statistical mechanics, deep generative
 
 ### 1.1 The Generative Bridge: Mean-Field cDFT to Atomistic Sampling
 While 1D/3D Classical Density Functional Theory computes the continuous single-body equilibrium density profile $\rho(\mathbf{r})$, atomistic molecular dynamics and thermodynamic validation require sampling uncorrelated many-body configurations $\mathbf{x} = (\mathbf{r}_1, \dots, \mathbf{r}_N)$ from the Boltzmann distribution:
-$$p(\mathbf{x}) = \frac{1}{Z} \exp(-\beta U(\mathbf{x}))$$
+
+$$
+p(\mathbf{x}) = \frac{1}{Z} \exp(-\beta U(\mathbf{x}))
+$$
+
 where $U(\mathbf{x}) = U_{\rm pair}(\mathbf{x}) + U_{\rm wall}(\mathbf{x})$ is the exact microscopic Hamiltonian, and $\beta = 1 / (k_B T)$.
 
 ### 1.2 Variational Reverse Kullback-Leibler (KL) Training
 The Boltzmann Generator uses an invertible normalizing flow $f_\theta: \mathcal{Z} \to \mathcal{X}$ mapping a base latent distribution $p_z(\mathbf{z})$ to Cartesian molecular coordinates $\mathbf{x} = f_\theta(\mathbf{z})$.
 The parameters $\theta$ are optimized by minimizing the reverse KL divergence between the generated density $q_\theta(\mathbf{x})$ and the unnormalized Boltzmann target $e^{-\beta U(\mathbf{x})}$:
-$$\mathcal{L}(\theta) = D_{\rm KL}(q_\theta \parallel p) = \mathbb{E}_{\mathbf{z} \sim p_z} \left[ \beta U(f_\theta(\mathbf{z})) - \log p_z(\mathbf{z}) - \log \left| \det J_{f_\theta}(\mathbf{z}) \right| \right]$$
+
+$$
+\mathcal{L}(\theta) = D_{\rm KL}(q_\theta \parallel p) = \mathbb{E}_{\mathbf{z} \sim p_z} \left[ \beta U(f_\theta(\mathbf{z})) - \log p_z(\mathbf{z}) - \log \left| \det J_{f_\theta}(\mathbf{z}) \right| \right]
+$$
+
 where $\log \left| \det J_{f_\theta}(\mathbf{z}) \right|$ is the exact analytical Jacobian log-determinant accumulated across flow layers.
 
 ---
@@ -69,7 +77,10 @@ flowchart TD
   - `__init__(rho_z, l_z, box_size_xy=(30.0, 30.0), n_particles=1, n_grid=None)`: Constructs 1D cumulative distribution function (CDF) from $\rho_{\rm cDFT}(z)$.
   - `sample(n_samples=1, as_4channel=False)`: Generates configurations with uniform transverse $(x, y) \in [0, L_x] \times [0, L_y]$ and piecewise-linear inverse-CDF interpolation along $z$.
   - `log_prob(pos)`: Vectorized tinygrad tensor evaluation of exact base prior log probability:
-    $$\log p_0(\mathbf{r}_1 \dots \mathbf{r}_N) = \sum_{i=1}^N \left[ -\ln(L_x L_y) + \ln(\rho_{\rm cDFT}(z_i)) - \ln\left(\int \rho_{\rm cDFT}(z) dz\right) \right]$$
+
+    $$
+    \log p_0(\mathbf{r}_1 \dots \mathbf{r}_N) = \sum_{i=1}^N \left[ -\ln(L_x L_y) + \ln(\rho_{\rm cDFT}(z_i)) - \ln\left(\int \rho_{\rm cDFT}(z) dz\right) \right]
+    $$
 
 ### 3.2 `energy.py` — Shifted-Force Microscopic Hamiltonian & Energy Regularization
 - **`regularize_energy(energy, e_high=1e4, e_max=1e20)`**:
@@ -84,7 +95,7 @@ flowchart TD
 
 ### 3.3 `bijectors.py` — Normalizing Flows, Invertible Bijectors & Torsional Kinematics
 - **`AffineCouplingLayer`**:
-  - Dyadic partitioning ($\text{dim}_a = \text{dim} // 2, \text{dim}_b = \text{dim} // 2$) with power-of-2 hidden dimensions.
+  - Dyadic partitioning (`dim_a = dim // 2, dim_b = dim // 2`) with power-of-2 hidden dimensions.
   - Exact analytical forward, inverse, and Jacobian log-determinant $\sum s(x_A)$.
 - **`RealNVPFlow`**:
   - Stacked sequence of alternating affine coupling layers.
@@ -114,9 +125,17 @@ flowchart TD
   While normalizing flows generate one-shot configurations rapidly, high-dimensional target distributions inevitably contain rare steric overlap outliers. Rather than running costly gradient descent in 3D configuration space, MCMC is performed directly in the Gaussian latent space $\mathcal{Z}$.
 - **Target Latent Distribution & Metropolis Criterion**:
   The exact Boltzmann equilibrium distribution in latent space is $p_Z(\mathbf{z}) \propto \exp(-E_{\rm eff}(\mathbf{z}))$, where:
-  $$E_{\rm eff}(\mathbf{z}) = \beta U(f_\theta(\mathbf{z})) - \log p_0(\mathbf{z}) - \log \left| \det J_{f_\theta}(\mathbf{z}) \right|$$
+
+  $$
+  E_{\rm eff}(\mathbf{z}) = \beta U(f_\theta(\mathbf{z})) - \log p_0(\mathbf{z}) - \log \left| \det J_{f_\theta}(\mathbf{z}) \right|
+  $$
+
   Perturbations $\mathbf{z}' = \mathbf{z} + s \, \boldsymbol{\eta}$ ($\boldsymbol{\eta} \sim \mathcal{N}(\mathbf{0}, \mathbf{I})$) are accepted with exact Metropolis probability:
-  $$p_{\rm acc} = \min(1, \exp(-\Delta E)) = \exp\left(\min(0, -(E_{\rm eff}(\mathbf{z}') - E_{\rm eff}(\mathbf{z})))\right)$$
+
+  $$
+  p_{\rm acc} = \min(1, \exp(-\Delta E)) = \exp\left(\min(0, -(E_{\rm eff}(\mathbf{z}') - E_{\rm eff}(\mathbf{z})))\right)
+  $$
+
 - **Numerical Protections & Dyadic Architecture**:
   - **IEEE 754 Exponent Capping**: Uses `(-delta_e).minimum(0.0).exp()` to eliminate `inf` overflow on massive energy relief steps ($\Delta E \ll 0$).
   - **Dynamic Stochasticity**: Preserves unjitted outer Python Markov loops to avoid freezing pseudo-random number generator buffers.

@@ -15,7 +15,7 @@ Equilibrium structure, pore adsorption, and 3D molecular conformations emerge st
 ```
                     ┌────────────────────────────────────────────────────────┐
                     │               Material Ingestion Stage                 │
-                    │   674 .mol2 files + Force Field Parameter DB           │
+                    │   Arbitrary .mol2 files + Force Field Parameter DB     │
                     └───────────────────────────┬────────────────────────────┘
                                                 │
                                                 ▼
@@ -58,14 +58,20 @@ Equilibrium structure, pore adsorption, and 3D molecular conformations emerge st
 
 ### 1.1 Variational Classical Density Functional Theory (cDFT)
 Equilibrium density profiles are determined by minimizing the grand potential functional $\Omega[\psi]$ in latent potential space ($\rho(z) = \rho_{\rm bulk} \exp(\psi(z))$):
-$$\Omega[\psi] = \mathcal{F}_{\rm ideal}[\psi] + \mathcal{F}_{\rm FMT}^{\rm ex}[\rho] + \mathcal{F}_{\rm att}^{\rm ex}[\rho] + \int dz \, \rho(z) [V_{\rm ext}(z) - \mu]$$
+
+$$
+\Omega[\psi] = \mathcal{F}_{\rm ideal}[\psi] + \mathcal{F}_{\rm FMT}^{\rm ex}[\rho] + \mathcal{F}_{\rm att}^{\rm ex}[\rho] + \int dz \, \rho(z) [V_{\rm ext}(z) - \mu]
+$$
 
 - **Ideal Gas Free Energy**: Log-free formulation eliminating $\ln(\rho)$ singularities.
 - **Rosenfeld Fundamental Measure Theory (FMT)**: Hard-sphere excess functional $\Phi_{\rm FMT}(\{n_\alpha(z)\})$ with anti-aliased, analytically cell-integrated planar convolution kernels.
 - **WCA / Lennard-Jones Dispersion**: Mean-field 1D integrated attractive dispersion kernel $v_{\rm att, 1D}(|z - z'|)$.
 - **Thermodynamic Consistency**: State variables $(\rho_{\rm bulk}, \mu, P)$ derive dynamically from the Rosenfeld FMT / Percus-Yevick compressibility Equation of State (EOS) root solver.
 - **Exact Mechanical Observables**: Wall contact pressures evaluate via exact Irving-Kirkwood momentum balance integrals:
-  $$P_{\rm wall} = -\int_0^{z_{\rm bulk}} \rho(z) \frac{d V_{\rm ext}(z)}{dz} \, dz$$
+
+$$
+P_{\rm wall} = -\int_0^{z_{\rm bulk}} \rho(z) \frac{d V_{\rm ext}(z)}{dz} \, dz
+$$
 
 ### 1.2 Microscopic Hamiltonian & Boltzmann Generator Flow
 - **Shifted-Force (SF) Pairwise Energy**: Pairwise Lennard-Jones 12-6 and Coulomb electrostatics with Minimum Image Convention in $X/Y$ and exact boundary continuity at $r_{\rm cut}$.
@@ -131,18 +137,30 @@ Grand Canonical Monte Carlo (GCMC) simulates discrete particles through stochast
 
 ### Why cDFT Solves This for Free
 In cDFT, there are no particles, no trial moves, and no discrete insertions. The system contains only a continuous, smooth charge density field:
-$$\rho_q(\mathbf{r}) = \sum_i q_i \rho_i(\mathbf{r})$$
+
+$$
+\rho_q(\mathbf{r}) = \sum_i q_i \rho_i(\mathbf{r})
+$$
 
 The long-range electrostatic energy is the double integral:
-$$\mathcal{F}_{\text{coul}}[\rho] = \frac{1}{2} \iint \frac{\rho_q(\mathbf{r}) \rho_q(\mathbf{r}')}{4\pi \varepsilon_0 \varepsilon_r |\mathbf{r} - \mathbf{r}'|} \, d\mathbf{r} \, d\mathbf{r}'$$
+
+$$
+\mathcal{F}_{\text{coul}}[\rho] = \frac{1}{2} \iint \frac{\rho_q(\mathbf{r}) \rho_q(\mathbf{r}')}{4\pi \varepsilon_0 \varepsilon_r |\mathbf{r} - \mathbf{r}'|} \, d\mathbf{r} \, d\mathbf{r}'
+$$
 
 Instead of pairwise sums over periodic images, this integral is mathematically identical to the classical Poisson equation:
-$$\nabla^2 \phi(\mathbf{r}) = -\frac{\rho_q(\mathbf{r})}{\varepsilon_0 \varepsilon_r}$$
+
+$$
+\nabla^2 \phi(\mathbf{r}) = -\frac{\rho_q(\mathbf{r})}{\varepsilon_0 \varepsilon_r}
+$$
 
 ### Map to tinygrad
 - **1D Slit Pores**: A planar sheet of charge has a constant electric field. The 1D Green's function is $v_C(z) = -2\pi |z|$, which reduces to a 1D convolution or direct cumulative integral across the grid tensor.
 - **3D Grids**: Poisson solves in a single step in Fourier space. In $k$-space, the Laplacian $\nabla^2$ becomes $-k^2$:
-  $$\tilde{\phi}(\mathbf{k}) = \frac{4\pi}{\varepsilon_0 \varepsilon_r k^2} \tilde{\rho}_q(\mathbf{k})$$
+
+$$
+\tilde{\phi}(\mathbf{k}) = \frac{4\pi}{\varepsilon_0 \varepsilon_r k^2} \tilde{\rho}_q(\mathbf{k})
+$$
   A forward 3D FFT, element-wise vector division by $k^2$, and an inverse 3D FFT solve the exact, infinite long-range field across the full periodic box in milliseconds on GPU.
 
 ---
