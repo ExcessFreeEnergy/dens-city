@@ -125,6 +125,16 @@ uv run dens-city --materials all --skip-bg
 uv run dens-city --materials argon benzene --debug
 ```
 
+### 1-Line End-to-End Simulation & FreeSolv Verification
+To automatically initialize test data if missing, run the complete 674-molecule end-to-end benchmark, and cross-reference thermodynamic observables against experimental and calculated FreeSolv hydration energies in a single command:
+```bash
+uv run python scripts/verify_e2e_against_freesolv.py --run-e2e --all
+```
+To verify the most recent simulation run without re-running the full benchmark:
+```bash
+uv run python scripts/verify_e2e_against_freesolv.py
+```
+
 ---
 
 ## 4. Notes on Long-Range Forces

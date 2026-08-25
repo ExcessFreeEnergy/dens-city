@@ -12,7 +12,7 @@ import argparse
 import json
 import pickle
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 # Direct mapping between dens-city test_data materials and FreeSolv Mobley IDs
 FREESOLV_MAPPINGS = {
@@ -61,6 +61,19 @@ def load_pipeline_results(summary_path: Path) -> List[Dict[str, Any]]:
     return results
 
 
+def find_latest_results_dir() -> Optional[Path]:
+    """Finds the most recent runs directory containing pipeline_summary.jsonl."""
+    runs_dir = Path("runs")
+    if not runs_dir.exists():
+        return None
+    summary_files = list(runs_dir.glob("**/pipeline_summary.jsonl"))
+    if not summary_files:
+        return None
+    # Sort by modification time descending
+    summary_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return summary_files[0].parent
+
+
 def verify_and_generate_report(
     results_dir: Path,
     db_path: Path,
@@ -81,10 +94,10 @@ def verify_and_generate_report(
         "",
         "## 1. Executive Summary & Verification Status",
         "",
-        "All 20 molecules in `test_data/` were simulated through the complete `dens-city` coupled pipeline:",
+        f"All {len(results)} molecules in the batch were simulated through the complete `dens-city` coupled pipeline:",
         "1. **Thermodynamic Equation of State**: Self-consistent bulk density $\\rho_{\\rm bulk}$ and chemical potential $\\mu_{\\rm bulk}$.",
         "2. **Classical Density Functional Theory (cDFT)**: Grand potential minimization $\\Omega[\\psi]$ under exact Irving-Kirkwood wall boundary conditions.",
-        "3. **Boltzmann Generator Normalizing Flow**: 4-channel base-2 Cartesian flow ($B=32$ parallel tensor broadcasting with fixed 128-site uniform padding) sampling 3D equilibrium conformations.",
+        "3. **Boltzmann Generator Normalizing Flow**: 4-channel base-2 Cartesian flow ($B=512$ parallel tensor broadcasting with fixed 128-site uniform padding) sampling 3D equilibrium conformations.",
         "",
     ]
 
@@ -112,7 +125,7 @@ def verify_and_generate_report(
     freesolv_stats = []
     for r in results:
         name = r["material_name"]
-        fs_key = FREESOLV_MAPPINGS.get(name)
+        fs_key = name if name in db else FREESOLV_MAPPINGS.get(name)
         if not fs_key or fs_key not in db:
             continue
         fs_entry = db[fs_key]
@@ -158,7 +171,7 @@ def verify_and_generate_report(
 
     report_lines.append("---")
     report_lines.append("")
-    report_lines.append("## 3. Comprehensive 20-Material High-Throughput Benchmark Table")
+    report_lines.append("## 3. Comprehensive High-Throughput Benchmark Table")
     report_lines.append("")
     report_lines.append(
         "| # | Material | Class / Category | Sites (Real/Pad) | cDFT Time (s) | BG Time (s) | Total Time (s) | $P_{\\rm wall}$ (bar) | Status |"
@@ -190,7 +203,7 @@ def verify_and_generate_report(
 
     for idx, r in enumerate(results, 1):
         name = r["material_name"]
-        cat = categories.get(name, "General Fluid")
+        cat = categories.get(name, "FreeSolv Organic Compound" if name.startswith("mobley_") else "General Fluid")
         sites = r.get("num_sites", 0)
         cdft_t = r.get("cdft_runtime_seconds", 0.0)
         bg_t = r.get("bg_runtime_seconds", 0.0)
@@ -239,10 +252,21 @@ def verify_and_generate_report(
 def main():
     parser = argparse.ArgumentParser(description="Verify dens-city results against FreeSolv database.")
     parser.add_argument(
+        "--run-e2e",
+        action="store_true",
+        help="Execute the full end-to-end simulation across all materials before verifying",
+    )
+    parser.add_argument(
+        "--all",
+        "-a",
+        action="store_true",
+        help="Ensure all 642+ FreeSolv molecules are populated in test data before running",
+    )
+    parser.add_argument(
         "--results-dir",
         type=Path,
-        default=Path("runs/e2e_all_20_molecules"),
-        help="Directory containing pipeline_summary.jsonl and per-material artifact directories",
+        default=None,
+        help="Directory containing pipeline_summary.jsonl (defaults to most recent run in runs/)",
     )
     parser.add_argument(
         "--database",
@@ -258,8 +282,36 @@ def main():
     )
     args = parser.parse_args()
 
+    # If --run-e2e is requested, ensure test data and run the high-throughput CLI
+    if args.run_e2e:
+        test_data_dir = Path("data/test_data")
+        mol2_files = list(test_data_dir.glob("*.mol2")) if test_data_dir.exists() else []
+        if not mol2_files or (args.all and len(mol2_files) < 600):
+            print("Populating test data before running end-to-end simulation...")
+            from scripts.generate_test_data import generate_all
+
+            generate_all(populate_entire_freesolv=args.all)
+
+        print("Executing dens-city end-to-end benchmark...")
+        from dens_city.ui.cli import main as cli_main
+
+        cli_main(["--materials", "all", "--benchmark", "--batch-size", "512"])
+
+    # Locate results directory
+    results_dir = args.results_dir
+    if results_dir is None:
+        results_dir = find_latest_results_dir()
+        if results_dir is None:
+            # Check default runs/e2e_all_20_molecules
+            fallback = Path("runs/e2e_all_20_molecules")
+            if fallback.exists():
+                results_dir = fallback
+            else:
+                raise FileNotFoundError("No results directory found. Run with --run-e2e to execute simulation first.")
+
+    print(f"Verifying results from: {results_dir}")
     stats = verify_and_generate_report(
-        results_dir=args.results_dir,
+        results_dir=results_dir,
         db_path=args.database,
         report_out=args.report_out,
     )

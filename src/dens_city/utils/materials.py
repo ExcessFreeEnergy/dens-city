@@ -278,6 +278,13 @@ class MaterialLoader:
     def get_forcefield_database(cls) -> Dict[str, Any]:
         if cls._ff_cache is None:
             if not FF_JSON_PATH.exists():
+                try:
+                    from scripts.generate_test_data import generate_all
+
+                    generate_all(populate_entire_freesolv=True)
+                except Exception:
+                    pass
+            if not FF_JSON_PATH.exists():
                 raise FileNotFoundError(f"Missing forcefield parameters file at {FF_JSON_PATH}")
             with open(FF_JSON_PATH, "r") as f:
                 cls._ff_cache = json.load(f)
@@ -497,6 +504,13 @@ class MaterialLoader:
     @classmethod
     def list_available_materials(cls) -> List[str]:
         """Returns all available .mol2 files in test_data/."""
+        if not TEST_DATA_DIR.exists() or not list(TEST_DATA_DIR.glob("*.mol2")):
+            try:
+                from scripts.generate_test_data import generate_all
+
+                generate_all(populate_entire_freesolv=True)
+            except Exception:
+                pass
         return sorted([p.stem for p in TEST_DATA_DIR.glob("*.mol2")])
 
 
