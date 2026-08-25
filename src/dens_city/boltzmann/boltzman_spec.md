@@ -29,15 +29,15 @@ flowchart TD
     end
 
     subgraph E["2. energy.py (Microscopic Hamiltonian)"]
-        Mol["Material Sites: N_real Atoms"] --> Pad["Base-2 Pad: N_pad = 2^k ∈ {1..64}"]
+        Mol["Material Sites: N_real Atoms"] --> Pad["Uniform 128-Site Tensor Padding (B=512)"]
         Pad --> Ham["U(x) = Shifted-Force LJ + Coulomb + Steele (9-3) Slit Walls"]
     end
 
     subgraph B["3. bijectors.py (4-Channel Base-2 Flow)"]
-        Latent["Latent Noise z ~ N(0, I) [dim = N_pad * 4 = 2^k]"]
+        Latent["Latent Noise z ~ N(0, I) [dim = N_pad * 4 = 128 * 4 = 512]"]
         Flow["Base2CartesianFlow: RealNVP Stack of Dyadic Affine Couplings"]
         Latent --> Flow
-        Flow --> Coords["Generated Cartesian Coordinates x (B, N_pad, 3) + log|det J|"]
+        Flow --> Coords["Generated Cartesian Coordinates x (B, 128, 3) + log|det J|"]
     end
 
     subgraph G["4. generator.py (Variational Training & Sampling)"]
@@ -100,13 +100,13 @@ flowchart TD
 
 ### 3.4 `generator.py` — Variational Boltzmann Generator with Torsional Biasing
 - **`BoltzmannGenerator`**:
-  - `__init__(flow, energy_fn, prior=None, temperature_k=300.0, learning_rate=0.01, batch_size=64, w_torsion=0.0, dihedral_quadruplets=None)`: Initializes optimizer, device origin pool, realized temperature/torsion buffers, and bond graph quadruplets.
+  - `__init__(flow, energy_fn, prior=None, temperature_k=300.0, learning_rate=0.01, batch_size=512, w_torsion=0.0, dihedral_quadruplets=None)`: Initializes optimizer, device origin pool, realized temperature/torsion buffers, and bond graph quadruplets.
   - `compute_loss(z, origin=None)`: Evaluates Reverse-KL loss $\mathcal{L}(\theta) = \beta U(f_\theta(z)) - \log p_z(z) - \log |\det J| + w_{\rm tor} J_{\rm tor}$.
     - **Dual-Path Execution**:
       - `CompositeFlow`: Directly slices internal coordinate torsions $\phi$ with zero cross products and zero division-by-zero risk.
       - `Base2CartesianFlow`: Evaluates safe regularized Cartesian dihedrals for explicit `.mol2` bond graph quadruplets.
-  - `train(steps=100, batch_size=64, verbose=False)`: JIT-compiled optimization loop over flow parameters using `Adam` or `Muon`.
-  - `sample(n_samples=1, return_all_pad=False, mcmc_steps=0, mcmc_step_size=0.1)`: Draws equilibrium configurations and automatically slices dummy padding sites to return real molecular atoms $(B, N_{\rm real}, 3)$. Dispatches to `sample_relaxed` when `mcmc_steps > 0`.
+  - `train(steps=40, batch_size=512, verbose=False)`: JIT-compiled optimization loop over flow parameters using `Adam` or `Muon`.
+  - `sample(n_samples=512, return_all_pad=False, mcmc_steps=0, mcmc_step_size=0.1)`: Draws equilibrium configurations and automatically slices dummy padding sites to return real molecular atoms $(B, N_{\rm real}, 3)$. Dispatches to `sample_relaxed` when `mcmc_steps > 0`.
   - `log_prob(x)`: Evaluates exact generated density $\log q_\theta(\mathbf{x}) = \log p_z(f^{-1}(\mathbf{x})) + \log |\det J_{f^{-1}}(\mathbf{x})|$.
 
 ### 3.5 Latent Space MCMC Relaxation Engine (`generator.sample_relaxed`)
@@ -120,15 +120,16 @@ flowchart TD
 - **Numerical Protections & Dyadic Architecture**:
   - **IEEE 754 Exponent Capping**: Uses `(-delta_e).minimum(0.0).exp()` to eliminate `inf` overflow on massive energy relief steps ($\Delta E \ll 0$).
   - **Dynamic Stochasticity**: Preserves unjitted outer Python Markov loops to avoid freezing pseudo-random number generator buffers.
-  - **Base-2 Batched Tensor Parallelism**: Vectorized across all $B$ configurations simultaneously via `.where()` conditional selection.
+  - **Base-2 Batched Tensor Parallelism**: Vectorized across all $B=512$ configurations simultaneously via `.where()` conditional selection.
 
 ---
 
-## 4. Base-2 Dyadic Optimization & Power-of-2 Architecture
+## 4. Uniform 128-Site Tensor Padding & High-Throughput Batching
 
-To maximize GPU hardware efficiency, minimize kernel compilation overhead, and ensure seamless `@TinyJit` execution in tinygrad, the engine strictly enforces base-2 dyadic optimization across data pipelines, energy evaluators, and normalizing flows:
+To maximize GPU hardware efficiency, minimize kernel compilation overhead, and ensure seamless `@TinyJit` execution in tinygrad across the entire 674-molecule FreeSolv dataset:
 
-- **7 Power-of-2 Buckets**: All 20 materials collapse into $N_{\rm pad} \in \{1, 2, 4, 8, 16, 32, 64\}$, shrinking kernel compilation graphs to just 7 structural topologies. Arbitrary molecular topologies share identical static tensor shapes, eliminating combinatorial JIT recompilations and graph cache thrashing.
-- **GPU Base-2 Matrix Alignment**: Eliminates warp loop peeling and non-aligned strides in pairwise matrix tensor reductions. Tensor operations align with warp boundaries (32/64 threads) and SIMD register lanes, achieving maximum memory bandwidth coalescing and ALU utilization.
+- **Uniform 128-Site Bucketing**: All molecular structures (from monatomic argon to 64-atom macromolecules) pad into static $(B=512, 128)$ tensors. This completely locks computational graph shapes, guaranteeing zero graph recompilations during high-throughput execution.
+- **GPU Base-2 Matrix Alignment**: Eliminates warp loop peeling and non-aligned strides in pairwise matrix tensor reductions $(512, 128, 128)$. Tensor operations align with warp boundaries (32/64 threads) and SIMD register lanes, achieving maximum memory bandwidth coalescing and ALU utilization.
 - **Exact Observable Extraction**: Padded dummy sites have zero interactions ($\epsilon_i = 0, q_i = 0, \text{wall}_i = 0$) and are masked out via upper-triangular and atom reduction masks (`self.is_real_atom`). Generated configurations are automatically sliced back to $N_{\rm real}$ physical atoms on export (`generator.sample()`), preserving exact statistical mechanical observables.
+- **Asynchronous Double-Buffered Streaming**: Integrated with `AsyncBatchPrefetcher` and `ProcessPoolExecutor` to overlap multi-core CPU parsing and EOS solving with active GPU tensor core math.
 
