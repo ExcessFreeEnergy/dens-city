@@ -104,6 +104,7 @@ class CurriculumSweepRunner:
 
         # Time-series metric streams for Constellation
         metric_streams: Dict[str, List[float]] = {
+            "SPS": [],
             "agent_steps": [],
             "uptime": [],
             "env/score": [],
@@ -119,6 +120,7 @@ class CurriculumSweepRunner:
         try:
             for epoch in range(1, epochs + 1):
                 metrics = trainer.train_epoch()
+                metric_streams["SPS"].append(float(metrics["SPS"]))
                 metric_streams["agent_steps"].append(int(metrics["global_step"]))
                 metric_streams["uptime"].append(float(time.time() - trial_start))
                 metric_streams["env/score"].append(float(metrics["env/score"]))
@@ -136,6 +138,25 @@ class CurriculumSweepRunner:
         experiment_record = {
             "trial_id": trial_id,
             "spec_name": spec_path.stem,
+            "train": {
+                "learning_rate": hypers["learning_rate"],
+                "ent_coef": hypers["ent_coef"],
+                "gamma": hypers["gamma"],
+                "gae_lambda": hypers["gae_lambda"],
+                "clip_coef": hypers["clip_coef"],
+                "vf_coef": hypers["vf_coef"],
+                "max_grad_norm": hypers["max_grad_norm"],
+                "horizon": hypers["horizon"],
+                "minibatch_size": hypers["minibatch_size"],
+                "total_timesteps": total_timesteps,
+            },
+            "policy": {
+                "hidden_size": hypers["hidden_size"],
+                "recurrent": 1 if hypers["recurrent"] else 0,
+            },
+            "vec": {
+                "total_agents": num_envs,
+            },
             "args": {
                 "env_name": "cdft_swarm",
                 "train": {
@@ -152,10 +173,31 @@ class CurriculumSweepRunner:
                 },
                 "policy": {
                     "hidden_size": hypers["hidden_size"],
-                    "recurrent": hypers["recurrent"],
+                    "recurrent": 1 if hypers["recurrent"] else 0,
                 },
                 "vec": {
                     "total_agents": num_envs,
+                },
+            },
+            "sweep": {
+                "train": {
+                    "learning_rate": {"min": 1e-5, "max": 1e-2, "distribution": "log_uniform"},
+                    "ent_coef": {"min": 1e-4, "max": 1e-1, "distribution": "log_uniform"},
+                    "gamma": {"min": 0.90, "max": 0.999, "distribution": "uniform"},
+                    "gae_lambda": {"min": 0.90, "max": 0.99, "distribution": "uniform"},
+                    "clip_coef": {"min": 0.1, "max": 0.3, "distribution": "uniform"},
+                    "vf_coef": {"min": 0.25, "max": 1.0, "distribution": "uniform"},
+                    "max_grad_norm": {"min": 0.5, "max": 5.0, "distribution": "uniform"},
+                    "horizon": {"min": 8, "max": 24, "distribution": "uniform"},
+                    "minibatch_size": {"min": 32, "max": 128, "distribution": "uniform"},
+                    "total_timesteps": {"min": 1000, "max": 100000, "distribution": "uniform"},
+                },
+                "policy": {
+                    "hidden_size": {"min": 128, "max": 384, "distribution": "uniform"},
+                    "recurrent": {"min": 0, "max": 1, "distribution": "uniform"},
+                },
+                "vec": {
+                    "total_agents": {"min": 2, "max": 32, "distribution": "uniform"},
                 },
             },
             "metrics": metric_streams,
