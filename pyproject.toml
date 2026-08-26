@@ -25,6 +25,7 @@ dependencies = [
     "raylib>=5.0.0",
     "pyzmq>=25.0.0",
     "rdkit>=2023.9.1",
+    "torch>=2.0.0",
 ]
 
 [project.scripts]

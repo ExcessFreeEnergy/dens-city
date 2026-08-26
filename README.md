@@ -1,79 +1,98 @@
-# dens-city: Molecular Classical Density Functional Theory & Boltzmann Generative Platform in tinygrad
+# dens-city: Stage 1 Multi-Objective RL Molecular Swarm & High-Throughput cDFT Boltzmann Platform
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10+-brightgreen.svg)](https://python.org)
 [![tinygrad: >=0.13.0](https://img.shields.io/badge/tinygrad-0.13.0+-orange.svg)](https://github.com/tinygrad/tinygrad)
+[![PufferLib: >=0.4.0](https://img.shields.io/badge/PufferLib-4.0-red.svg)](https://github.com/PufferAI/PufferLib)
+[![PyTorch: >=2.0.0](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org)
 
-`dens-city` bridges rigorous statistical mechanics and GPU tensor compilation in pure `tinygrad`. It combines variational Classical Density Functional Theory (cDFT) mean-field screening with Boltzmann Generator normalizing flows to sample exact 3D equilibrium molecular conformations in confined pore geometries.
+`dens-city` is a statistical mechanics molecular design and simulation platform. It couples a **Stage 1 Multi-Objective Reinforcement Learning Molecular Swarm** (`PufferLib` 4.0 + parallel C-FFI engines) with **Stage 2 High-Throughput Variational Classical Density Functional Theory (cDFT)** and **Boltzmann Generator Normalizing Flows** in pure `tinygrad`.
 
 ---
 
-## 1. First-Principles Physics & Generative Architecture
-
-Equilibrium structure, pore adsorption, and 3D molecular conformations emerge strictly from first-principles statistical mechanics without hardcoded parameters or empirical fudge factors:
+## 1. End-to-End Molecular Discovery Pipeline
 
 ```
-                    ┌────────────────────────────────────────────────────────┐
-                    │               Material Ingestion Stage                 │
-                    │   Arbitrary .mol2 files + Force Field Parameter DB     │
-                    └───────────────────────────┬────────────────────────────┘
-                                                │
-                                                ▼
-                    ┌────────────────────────────────────────────────────────┐
-                    │      AsyncBatchPrefetcher & ProcessPool (B=512)        │
-                    │  - Multi-process CPU regex, GAFF & EOS root-finding    │
-                    │  - Pre-computed 1D NumPy FMT/WCA planar kernels        │
-                    │  - Double-buffered prefetch queue (0.000s GPU wait)    │
-                    │  - Uniform 128-site tensor padding (B=512)             │
-                    └───────────────────────────┬────────────────────────────┘
-                                                │
-                       ┌────────────────────────┴────────────────────────┐
-                       ▼                                                 ▼
-        ┌─────────────────────────────┐                   ┌─────────────────────────────┐
-        │   Batched TinyCDFT (B=512)  │                   │  Batched Microscopic Energy │
-        │  rho(z) = rho_bulk exp(psi) │                   │  Pairwise LJ 12-6 (SF)      │
-        │  Rosenfeld FMT Hard-Sphere  │                   │  Coulomb Electrostatics     │
-        │  WCA Attractive Dispersion  │                   │  Steele 9-3 Wall Potential  │
-        │  Grouped conv2d in 1 JIT    │                   │  Noé Energy Regularization  │
-        └──────────────┬──────────────┘                   └──────────────┬──────────────┘
-                       │                                                 │
-                       └────────────────────────┬────────────────────────┘
-                                                │
-                                                ▼
-                    ┌────────────────────────────────────────────────────────┐
-                    │            Batched Boltzmann Generator                 │
-                    │  - 4-Channel Base-2 Cartesian Flow (RealNVP Bijectors) │
-                    │  - Invertible Z-Matrix coordinate transformation       │
-                    │  - Reverse KL Divergence training in 1 JIT graph       │
-                    │  - Latent MCMC equilibrium relaxation                  │
-                    └───────────────────────────┬────────────────────────────┘
-                                                │
-                                                ▼
-                    ┌────────────────────────────────────────────────────────┐
-                    │        Asynchronous Export & 3D Visualization          │
-                    │  - Non-blocking AsyncArtifactWriter (.xyz, .npy, .npz) │
-                    │  - High-performance 3D Raylib Interactive Visualizer   │
-                    └────────────────────────────────────────────────────────┘
+ ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │                    STAGE 1: MULTI-OBJECTIVE REINFORCEMENT LEARNING SWARM                         │
+ │                                (Billions -> Millions)                                            │
+ └────────────────────────────────────────────────┬─────────────────────────────────────────────────┘
+                                                  │
+                                                  ▼
+ ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ Target Material Specification YAMLs (tests/data/)                                                │
+ │ • OLED Semiconductors  • Battery Electrolytes  • Drug Inhibitors  • Sponges  • Toughness Resins  │
+ └────────────────────────────────────────────────┬─────────────────────────────────────────────────┘
+                                                  │
+                                                  ▼
+ ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ PufferLib 4.0 Molecular Swarm Policy (PyTorch)                                                   │
+ │ • MolecularPortEncoder: Geometric entity encoder over 16 3D port orientation vectors             │
+ │ • MolecularActionDecoder: MultiDiscrete [16, 13] heads with -1e9 invalid action masking          │
+ │ • Modular Backbones: MLPBackbone & recurrent MinGRUBackbone                                      │
+ └────────────────────────────────────────────────┬─────────────────────────────────────────────────┘
+                                                  │
+                                                  ▼
+ ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ Vectorized Parallel C-FFI Swarm Engine (ocean/cdft_swarm/) [> 1,500 SPS]                         │
+ │ • SE(3) Rigid-Body Conformer Assembly & Non-Bonded Steric Collision Detection                   │
+ │ • Hyper-Fast C-cDFT Solver (Picard density relaxation, pore wetting P_wall, solvation DeltaOmega)│
+ │ • Exact Microscopic Mechanics (Jacobi PMI linearity, aromatic density, FFV, sacrificial H-bonds) │
+ │ • 3-Stage Curriculum Scheduler with direct C-Memory TargetSpec ctypes broadcast                  │
+ └────────────────────────────────────────────────┬─────────────────────────────────────────────────┘
+                                                  │
+                                                  ▼
+ ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ PufferLib Constellation 3D Sweep Exporter & Pareto-Optimal Candidate .mol2 Output                │
+ └────────────────────────────────────────────────┬─────────────────────────────────────────────────┘
+                                                  │
+                                                  ▼
+ ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │                 STAGE 2: HIGH-THROUGHPUT cDFT & BOLTZMANN GENERATIVE SCREENING                   │
+ └────────────────────────────────────────────────┬─────────────────────────────────────────────────┘
+                                                  │
+                                                  ▼
+ ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ AsyncBatchPrefetcher & ProcessPool (B=512)                                                       │
+ │ • Multi-process CPU regex, GAFF & EOS root-finding                                               │
+ │ • Pre-computed 1D NumPy FMT/WCA planar kernels                                                   │
+ │ • Double-buffered prefetch queue (0.000s GPU wait)                                               │
+ │ • Uniform 128-site tensor padding (B=512)                                                        │
+ └────────────────────────────────────────────────┬─────────────────────────────────────────────────┘
+                                                  │
+                       ┌──────────────────────────┴──────────────────────────┐
+                       ▼                                                     ▼
+        ┌─────────────────────────────┐                       ┌─────────────────────────────┐
+        │   Batched TinyCDFT (B=512)  │                       │  Batched Microscopic Energy │
+        │  rho(z) = rho_bulk exp(psi) │                       │  Pairwise LJ 12-6 (SF)      │
+        │  Rosenfeld FMT Hard-Sphere  │                       │  Coulomb Electrostatics     │
+        │  WCA Attractive Dispersion  │                       │  Steele 9-3 Wall Potential  │
+        │  Grouped conv2d in 1 JIT    │                       │  Noé Energy Regularization  │
+        └──────────────┬──────────────┘                       └──────────────┬──────────────┘
+                       │                                                     │
+                       └──────────────────────────┬──────────────────────────┘
+                                                  │
+                                                  ▼
+ ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ Batched Boltzmann Generator (tinygrad)                                                           │
+ │ • 4-Channel Base-2 Cartesian Flow (RealNVP Bijectors)                                            │
+ │ • Invertible Z-Matrix coordinate transformation                                                  │
+ │ • Reverse KL Divergence training in 1 JIT graph                                                  │
+ │ • Latent MCMC equilibrium relaxation                                                             │
+ └────────────────────────────────────────────────┬─────────────────────────────────────────────────┘
+                                                  │
+                                                  ▼
+ ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ Asynchronous Export & Single-Material 3D Raylib Visualization                                    │
+ │ • Non-blocking AsyncArtifactWriter (.xyz, .npy, .npz)                                            │
+ │ • High-performance 3D Raylib Interactive Visualizer (Single material inspection)                │
+ └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1.1 Variational Classical Density Functional Theory (cDFT)
-Equilibrium density profiles are determined by minimizing the grand potential functional $\Omega[\psi]$ in latent potential space ($\rho(z) = \rho_{\rm bulk} \exp(\psi(z))$):
+---
 
-$$
-\Omega[\psi] = \mathcal{F}_{\rm ideal}[\psi] + \mathcal{F}_{\rm FMT}^{\rm ex}[\rho] + \mathcal{F}_{\rm att}^{\rm ex}[\rho] + \int dz \, \rho(z) [V_{\rm ext}(z) - \mu]
-$$
+## 2. Microscopic Hamiltonian & Boltzmann Generator Flow
 
-- **Ideal Gas Free Energy**: Log-free formulation eliminating $\ln(\rho)$ singularities.
-- **Rosenfeld Fundamental Measure Theory (FMT)**: Hard-sphere excess functional $\Phi_{\rm FMT}(\{n_\alpha(z)\})$ with anti-aliased, analytically cell-integrated planar convolution kernels.
-- **WCA / Lennard-Jones Dispersion**: Mean-field 1D integrated attractive dispersion kernel $v_{\rm att, 1D}(|z - z'|)$.
-- **Thermodynamic Consistency**: State variables $(\rho_{\rm bulk}, \mu, P)$ derive dynamically from the Rosenfeld FMT / Percus-Yevick compressibility Equation of State (EOS) root solver.
-- **Exact Mechanical Observables**: Wall contact pressures evaluate via exact Irving-Kirkwood momentum balance integrals:
-
-$$
-P_{\rm wall} = -\int_0^{z_{\rm bulk}} \rho(z) \frac{d V_{\rm ext}(z)}{dz} \, dz
-$$
-
-### 1.2 Microscopic Hamiltonian & Boltzmann Generator Flow
 - **Shifted-Force (SF) Pairwise Energy**: Pairwise Lennard-Jones 12-6 and Coulomb electrostatics with Minimum Image Convention in $X/Y$ and exact boundary continuity at $r_{\rm cut}$.
 - **Steele 9-3 Confinement**: Impenetrable confining planar walls in $Z$ with asymptotic hard boundaries.
 - **Frank Noé Energy Regularization**: Soft logarithmic ceiling for overlapping atom pairs ($E \ge E_{\rm high}$) to prevent numerical gradient explosions.
@@ -81,7 +100,7 @@ $$
 
 ---
 
-## 2. High-Throughput Tensor Batching & Decoupled Async Prefetching
+## 3. High-Throughput Tensor Batching & Decoupled Async Prefetching
 
 `dens-city` implements a decoupled, double-buffered batch prefetch pipeline where target molecules are pre-parsed and stacked along Axis 0 into fixed batches of size $B=512$ (`MolecularBatch`).
 
@@ -93,7 +112,7 @@ $$
 
 ---
 
-## 3. Quickstart & CLI Usage
+## 4. Quickstart & CLI Usage
 
 ### Installation
 Sync dependencies with `uv`:
@@ -101,19 +120,43 @@ Sync dependencies with `uv`:
 uv sync
 ```
 
-### 3D Interactive Raylib Visualizer
-Launch the real-time molecular visualizer with dynamic vdW surfaces, real-time cDFT density profile graphing, and Boltzmann Generator discovery:
+### Stage 1: RL Molecular Swarm Training
+Train the PufferLib 4.0 policy on arbitrary material YAML specifications with 3-stage curriculum broadcasting:
 ```bash
-# Visualize single or multiple materials
-uv run dens-city --interactive --materials argon
-uv run dens-city --interactive --materials water benzene 5cb
+# Train on Conjugated OLED Semiconductors
+uv run python scripts/train_swarm.py --spec tests/data/conjugated_oled_semiconductors.yaml --num-envs 16 --total-timesteps 50000 --export-dir runs/candidates
+
+# Train on Fluorinated Battery Electrolytes
+uv run python scripts/train_swarm.py --spec tests/data/fluorinated_battery_electrolytes.yaml --num-envs 16 --total-timesteps 50000 --export-dir runs/candidates
+
+# Train with recurrent MinGRU backbone
+uv run python scripts/train_swarm.py --spec tests/data/ultra_lightweight_aliphatic_sponges.yaml --num-envs 16 --total-timesteps 50000 --recurrent
 ```
 
-### High-Throughput Batch Pipeline
-Run the coupled cDFT + Boltzmann Generator execution pipeline:
+### Constellation Curriculum Sweeps
+Run hyperparameter sweeps and serialize trial trajectories directly into the PufferLib Constellation schema:
 ```bash
-# Standard batch run with default batch size 512
-uv run dens-city --materials argon water methane --batch-size 512
+# Launch multi-trial curriculum sweep across all material specifications
+uv run python scripts/run_curriculum_sweep.py --num-trials-per-spec 3 --steps-per-trial 10000 --num-envs 8 --output-dir runs/constellation_sweeps
+```
+
+### 3D Interactive Raylib Visualizer (Single Material)
+> [!NOTE]
+> The interactive 3D visualizer is designed for detailed inspection of a **single material** at a time. To benchmark or screen multiple materials simultaneously, use the batch pipeline below.
+
+Launch the real-time single-material visualizer with dynamic vdW surfaces, real-time cDFT density profile graphing, and Boltzmann Generator discovery:
+```bash
+# Launch interactive visualizer for a single material
+uv run dens-city --interactive --materials argon
+uv run dens-city --interactive --materials water
+uv run dens-city --interactive --materials benzene
+```
+
+### High-Throughput Batch Pipeline (Multiple Materials)
+Run the high-throughput coupled cDFT + Boltzmann Generator batch screening pipeline:
+```bash
+# Multi-material batch screening (default batch size 512)
+uv run dens-city --materials argon water methane 5cb --batch-size 512
 
 # Full 674-material high-throughput benchmark across FreeSolv (< 30 seconds)
 uv run dens-city --materials all --benchmark
@@ -121,7 +164,7 @@ uv run dens-city --materials all --benchmark
 # Fast cDFT screening only (skips generative flow)
 uv run dens-city --materials all --skip-bg
 
-# Debug mode with detailed compiler execution traces
+# Debug mode with compiler execution traces
 uv run dens-city --materials argon benzene --debug
 ```
 
@@ -137,7 +180,7 @@ uv run python scripts/verify_e2e_against_freesolv.py
 
 ---
 
-## 4. Notes on Long-Range Forces
+## 5. Notes on Long-Range Forces
 
 ### Why GCMC Chokes on Long-Range Forces
 Grand Canonical Monte Carlo (GCMC) simulates discrete particles through stochastic atom insertions, deletions, and displacements:
@@ -171,14 +214,15 @@ $$
 $$
 \tilde{\phi}(\mathbf{k}) = \frac{4\pi}{\varepsilon_0 \varepsilon_r k^2} \tilde{\rho}_q(\mathbf{k})
 $$
-  A forward 3D FFT, element-wise vector division by $k^2$, and an inverse 3D FFT solve the exact, infinite long-range field across the full periodic box in milliseconds on GPU.
+
+A forward 3D FFT, element-wise vector division by $k^2$, and an inverse 3D FFT solve the exact, infinite long-range field across the full periodic box in milliseconds on GPU.
 
 ---
 
-## 5. Automated Tests & Code Quality
+## 6. Automated Tests & Code Quality
 
 ```bash
-# Run complete test suite (97 tests)
+# Run complete test suite (133 tests)
 uv run pytest tests/ -v
 
 # Run linting and code formatting checks
@@ -188,7 +232,7 @@ uv run ruff format --check src/ tests/ scripts/
 
 ---
 
-## 6. Citations
+## 7. Citations
 
 - A. T. Bui, S. J. Cox, "Dielectrocapillarity for exquisite control of fluids", *arXiv:2503.09855* (2025).
 - A. T. Bui, S. J. Cox, "Learning classical density functionals for ionic fluids", *Phys. Rev. Lett.* **134**, 148001 (2025). [doi:10.1103/PhysRevLett.134.148001](https://doi.org/10.1103/PhysRevLett.134.148001)
@@ -199,6 +243,6 @@ uv run ruff format --check src/ tests/ scripts/
 
 ---
 
-## 7. License
+## 8. License
 
 GNU General Public License v3.0. See [LICENSE](LICENSE) for details.

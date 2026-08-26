@@ -177,24 +177,34 @@ class CDFTSwarmEnv:
             target_spec = SwarmSpecLoader.derive_target_spec(spec_data)
 
         if target_spec is not None:
-            self.lib.env_set_targets(
-                self._env_ptr,
-                ctypes.c_float(target_spec.get("target_elasticity", 0.25)),
-                ctypes.c_float(target_spec.get("target_tensile", 0.25)),
-                ctypes.c_float(target_spec.get("target_toughness", 0.25)),
-                ctypes.c_float(target_spec.get("target_lightweight", 0.25)),
-                ctypes.c_float(target_spec.get("max_solvation_kcal", -3.0)),
-                ctypes.c_float(target_spec.get("min_wall_pressure_bar", 15.0)),
-                ctypes.c_float(target_spec.get("max_molecular_weight", 850.0)),
-                ctypes.c_int(target_spec.get("min_valency", 2)),
-            )
+            self.set_targets(target_spec)
 
         self.reset()
 
-    def __del__(self):
+    def set_targets(self, targets: Dict[str, float]) -> None:
+        """Sets or updates the TargetSpec struct directly in C memory."""
+        if not hasattr(self, "_env_ptr") or self._env_ptr is None:
+            return
+        self.lib.env_set_targets(
+            self._env_ptr,
+            ctypes.c_float(targets.get("target_elasticity", 0.25)),
+            ctypes.c_float(targets.get("target_tensile", 0.25)),
+            ctypes.c_float(targets.get("target_toughness", 0.25)),
+            ctypes.c_float(targets.get("target_lightweight", 0.25)),
+            ctypes.c_float(targets.get("max_solvation_kcal", -3.0)),
+            ctypes.c_float(targets.get("min_wall_pressure_bar", 15.0)),
+            ctypes.c_float(targets.get("max_molecular_weight", 850.0)),
+            ctypes.c_int(targets.get("min_valency", 2)),
+        )
+
+    def close(self) -> None:
+        """Frees C environment pointer."""
         if hasattr(self, "_env_ptr") and self._env_ptr:
             self.lib.env_free(self._env_ptr)
             self._env_ptr = None
+
+    def __del__(self):
+        self.close()
 
     def reset(self) -> Tuple[np.ndarray, Dict[str, Any]]:
         """Resets the environment and returns the initial observation."""

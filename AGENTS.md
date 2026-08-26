@@ -62,9 +62,9 @@ The `dens-city` codebase is modularized under `src/dens_city/`:
 # Sync dependencies
 uv sync
 
-# Run 3D Interactive Raylib Visualizer
+# Run 3D Interactive Raylib Visualizer (Single material)
 uv run dens-city --interactive --materials argon
-uv run dens-city --interactive --materials water benzene 5cb
+uv run dens-city --interactive --materials water
 
 # Run standard high-throughput coupled pipeline with parallel batch size 32
 uv run dens-city --materials argon water --batch-size 32

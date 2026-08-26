@@ -997,7 +997,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"  Chemical Group      : {group_name}")
     print(f"  Target Molecule Set : {target:,} molecules")
     print(f"  Parallel Workers    : {args.workers} CPU cores (OpenMP C-Engine active)")
-    print(f"  Execution Mode      : {'In-Memory Benchmarking (--skip-write)' if args.skip_write else 'Full Export (.mol2)'}")
+    print(
+        f"  Execution Mode      : {'In-Memory Benchmarking (--skip-write)' if args.skip_write else 'Full Export (.mol2)'}"
+    )
     if not args.skip_write:
         print(f"  Target Output Path  : {out_dir}")
     print("=" * 84)
