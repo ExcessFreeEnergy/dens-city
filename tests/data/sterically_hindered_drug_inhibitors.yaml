@@ -1,0 +1,74 @@
+group_name: "sterically_hindered_drug_inhibitors"
+version: "1.1.0"
+description: "Dense, bulky multi-substituted scaffolds for testing Pauli repulsion, steric occlusion, and short-range torsional potential boundaries."
+
+rl_reward_targets:
+  target_elasticity: 0.30
+  target_tensile: 0.40
+  target_toughness: 0.30
+  target_lightweight: 0.00      # Force dense, occluded packing (low FFV)
+  max_solvation_kcal: -4.5
+  min_wall_pressure_bar: 12.0
+  max_molecular_weight: 650.0
+  min_valency: 2
+
+tensor_limits:
+  max_sites: 128
+  allowed_atomic_numbers: [1, 6, 7, 8, 9, 17, 35] # H, C, N, O, F, Cl, Br
+  max_molecular_weight: 650.0
+  min_rotatable_bonds: 2
+  max_rotatable_bonds: 10
+
+scaffolds:
+  - id: "adamantane_core"
+    smarts: "C12CC3CC(C1)(CC(C3)([*:1])C2)[*:2]"
+    name: "1,3-disubstituted adamantane"
+    attachment_points: 2
+  - id: "cubane_core"
+    smarts: "C123C45C16C2([*:1])C34C56[*:2]"
+    name: "1,4-disubstituted cubane"
+    attachment_points: 2
+  - id: "piperazine_rigid_scaffold"
+    smarts: "C1CN([*:1])CCN1[*:2]"
+    name: "piperazine bridge"
+    attachment_points: 2
+  - id: "ortho_terphenyl_core"
+    smarts: "c1ccc(c(c1)c2ccccc2[*:1])c3ccccc3[*:2]"
+    name: "ortho-terphenyl congested core"
+    attachment_points: 2
+
+building_blocks:
+  bulky_substituents:
+    - id: "tert_butyl"
+      smiles: "C(C)(C)(C)[*:1]"
+    - id: "adamantyl"
+      smiles: "C12CC3CC(C1)CC(C2)C3[*:1]"
+    - id: "2_6_dimethylphenyl"
+      smiles: "Cc1cccc(C)c1[*:1]"
+    - id: "biphenyl_bulky"
+      smiles: "c1ccc(cc1)c2cccc([*:1])c2"
+    - id: "trifluoromethyl_aryl"
+      smiles: "c1cc(C(F)(F)F)ccc1[*:1]"
+    - id: "morpholino_cap"
+      smiles: "C1COCCN1[*:1]"
+    - id: "hydrogen_cap"
+      smiles: "[H][*:1]"
+
+assembly_rules:
+  reaction_type: "amidation_and_c_c_coupling"
+  smarts_transform: "[C:1](=O)[Cl].[N:2][H]>>[C:1](=O)[N:2]"
+  min_quaternary_carbons: 2
+  max_sp3_fraction: 0.85
+  min_sp3_fraction: 0.30
+
+generation_spec:
+  target_molecules: 50000
+  random_seed: 2026
+  deterministic_enumeration: true
+  conformer_embedding:
+    algorithm: "distance_geometry_gpu"
+    num_conformations_per_molecule: 10
+    vdw_overlap_threshold_angstrom: 0.35
+  jackhammer_mining:
+    max_fragment_nodes: 32
+    target_fragment_budget: 15000

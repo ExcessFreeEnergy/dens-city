@@ -1,0 +1,70 @@
+group_name: "ultra_lightweight_aliphatic_sponges"
+version: "1.0.0"
+description: "Highly flexible, low-density aliphatic chains designed to test maximum rotatable bond fractions and fractional free volume (FFV)."
+
+rl_reward_targets:
+  target_elasticity: 0.95       # Maximize rotatable bonds, minimize Kuhn length
+  target_tensile: 0.00          # No aromatics
+  target_toughness: 0.05
+  target_lightweight: 0.95      # Maximize FFV, penalize heavy atoms
+  max_solvation_kcal: -3.5
+  min_wall_pressure_bar: 8.0
+  max_molecular_weight: 350.0
+  min_valency: 3                # Needs high valency to form a 3D sponge network
+
+tensor_limits:
+  max_sites: 128
+  allowed_atomic_numbers: [1, 6, 8] # H, C, O
+  max_molecular_weight: 350.0
+  min_rotatable_bonds: 4
+  max_rotatable_bonds: 16
+  max_aromatic_rings: 0
+
+scaffolds:
+  - id: "neopentyl_tri_core"
+    smarts: "CC(C)(C[*:1])(C[*:2])C[*:3]"
+    name: "neopentyl 3-arm branched core"
+    attachment_points: 3
+  - id: "pentaerythrityl_tetra_core"
+    smarts: "C(C[*:1])(C[*:2])(C[*:3])C[*:4]"
+    name: "pentaerythrityl 4-arm core"
+    attachment_points: 4
+  - id: "tripropyl_methane_core"
+    smarts: "C(CCC[*:1])(CCC[*:2])CCC[*:3]"
+    name: "tripropylmethane flexible core"
+    attachment_points: 3
+
+building_blocks:
+  aliphatic_chains:
+    - id: "ethylene_linker"
+      smiles: "CC([*:1])[*:2]"
+    - id: "propylene_linker"
+      smiles: "CCC([*:1])[*:2]"
+    - id: "diethyl_ether_linker"
+      smiles: "CCOCC([*:1])[*:2]"
+    - id: "methyl_cap"
+      smiles: "C[*:1]"
+    - id: "ethyl_cap"
+      smiles: "CC[*:1]"
+    - id: "isopropyl_cap"
+      smiles: "CC(C)[*:1]"
+    - id: "hydrogen_cap"
+      smiles: "[H][*:1]"
+
+assembly_rules:
+  reaction_type: "aliphatic_ether_and_c_c_coupling"
+  smarts_transform: "[C:1][Br].[C:2][Li]>>[C:1][C:2]"
+  min_sp3_fraction: 0.90
+  max_aromatic_rings: 0
+
+generation_spec:
+  target_molecules: 50000
+  random_seed: 777
+  deterministic_enumeration: true
+  conformer_embedding:
+    algorithm: "distance_geometry_gpu"
+    num_conformations_per_molecule: 10
+    clash_cutoff_angstrom: 0.85
+  jackhammer_mining:
+    max_fragment_nodes: 32
+    target_fragment_budget: 15000

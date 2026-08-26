@@ -5,6 +5,10 @@ __pycache__/
 *.so
 *.dylib
 *.dll
+*.o
+*.a
+*.bin
+*_bin
 
 # Virtual environment
 .venv/
@@ -32,9 +36,9 @@ output.xyz*
 *.npz
 *.dat
 # Data directories
-data/
 /data/
 runs/
+!tests/data/
 
 # macOS metadata
 .DS_Store

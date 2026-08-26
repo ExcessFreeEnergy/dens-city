@@ -1,0 +1,70 @@
+group_name: "sacrificial_h_bond_toughness_resins"
+version: "1.0.0"
+description: "Dense networks of hydrogen bond donors and acceptors designed to test fracture toughness and sacrificial energy dissipation."
+
+rl_reward_targets:
+  target_elasticity: 0.20
+  target_tensile: 0.20
+  target_toughness: 0.95        # Maximize matched HBA/HBD pairs at 2.5-3.5 Å
+  target_lightweight: 0.10
+  max_solvation_kcal: -6.0      # High solubility due to dense polar groups
+  min_wall_pressure_bar: 15.0
+  max_molecular_weight: 550.0
+  min_valency: 4                # Heavy crosslinking required
+
+tensor_limits:
+  max_sites: 128
+  allowed_atomic_numbers: [1, 6, 7, 8] # H, C, N, O
+  max_molecular_weight: 550.0
+  min_hba_count: 4
+  min_hbd_count: 4
+
+scaffolds:
+  - id: "urea_tetra_core"
+    smarts: "O=C(N([*:1])[*:2])N([*:3])[*:4]"
+    name: "urea 4-arm crosslinker core"
+    attachment_points: 4
+  - id: "pentaerythritol_ether_core"
+    smarts: "C(CO[*:1])(CO[*:2])(CO[*:3])CO[*:4]"
+    name: "pentaerythritol 4-arm ether core"
+    attachment_points: 4
+  - id: "melamine_tri_core"
+    smarts: "c1(nc(nc(n1)N[*:1])N[*:2])N[*:3]"
+    name: "melamine 3-arm core"
+    attachment_points: 3
+  - id: "cyanuric_acid_core"
+    smarts: "O=C1NC(=O)N([*:1])C(=O)N1[*:2]"
+    name: "cyanuric acid 2-arm core"
+    attachment_points: 2
+
+building_blocks:
+  polar_hbond_units:
+    - id: "hydroxyl_cap"
+      smiles: "O[*:1]"
+    - id: "amine_cap"
+      smiles: "N[*:1]"
+    - id: "urea_cap"
+      smiles: "NC(=O)N[*:1]"
+    - id: "amide_linker"
+      smiles: "NC(=O)CCNC(=O)[*:1]"
+    - id: "ethylene_glycol_linker"
+      smiles: "OCCO[*:1]"
+    - id: "hydrogen_cap"
+      smiles: "[H][*:1]"
+
+assembly_rules:
+  reaction_type: "condensation_and_urethane_coupling"
+  smarts_transform: "[N:1][H].[C:2](=O)[O][H]>>[N:1][C:2](=O)"
+  min_h_bonds_per_molecule: 6
+
+generation_spec:
+  target_molecules: 50000
+  random_seed: 999
+  deterministic_enumeration: true
+  conformer_embedding:
+    algorithm: "distance_geometry_gpu"
+    num_conformations_per_molecule: 10
+    clash_cutoff_angstrom: 0.85
+  jackhammer_mining:
+    max_fragment_nodes: 32
+    target_fragment_budget: 15000

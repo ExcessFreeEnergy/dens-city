@@ -171,6 +171,7 @@ from dens_city.boltzmann.egnn import EGNNForceField
 model = EGNNForceField(num_layers=7, hidden_dim=128, max_atomic_number=128, n_particles=128)
 opt = nn.optim.Adam(nn.state.get_parameters(model), lr=1e-3)
 
+
 # 2. Training Loop on DFT Mini-Batches
 def train_step(coords_np, z_np, atom_mask_np, energy_dft_np, forces_dft_np):
     Tensor.training = True
@@ -195,6 +196,7 @@ def train_step(coords_np, z_np, atom_mask_np, energy_dft_np, forces_dft_np):
     total_loss.backward()
     opt.step()
     return float(total_loss.item())
+
 
 # 3. Save Checkpoint to Standard NPZ Archive
 def export_weights(model, filepath="egnn_weights.npz"):

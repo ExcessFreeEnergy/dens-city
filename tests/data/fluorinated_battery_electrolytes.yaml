@@ -1,0 +1,74 @@
+group_name: "fluorinated_battery_electrolytes"
+version: "1.1.0"
+description: "High-dielectric, fluorinated cyclic/acyclic carbonates, ethers, and sulfones for extreme local field and induction testing."
+
+rl_reward_targets:
+  target_elasticity: 0.40
+  target_tensile: 0.10
+  target_toughness: 0.10
+  target_lightweight: 0.80      # High fractional free volume, low mass
+  max_solvation_kcal: -8.0      # Extreme solvation required
+  min_wall_pressure_bar: 25.0   # Extreme pore wetting
+  max_molecular_weight: 450.0
+  min_valency: 1
+
+tensor_limits:
+  max_sites: 128
+  allowed_atomic_numbers: [1, 6, 8, 9, 15, 16] # H, C, O, F, P, S
+  max_molecular_weight: 450.0
+  min_fluorine_count: 1
+  max_fluorine_count: 12
+
+scaffolds:
+  - id: "cyclic_carbonate_core"
+    smarts: "O=C1OC([*:1])([*:2])C([*:3])([*:4])O1"
+    name: "1,3-dioxolan-2-one core"
+    attachment_points: 4
+  - id: "linear_carbonate_core"
+    smarts: "O=C(O[*:1])O[*:2]"
+    name: "dialkyl carbonate core"
+    attachment_points: 2
+  - id: "sulfone_core"
+    smarts: "O=S(=O)([*:1])[*:2]"
+    name: "sulfone core"
+    attachment_points: 2
+  - id: "fluorinated_ether_core"
+    smarts: "[*:1]O[*:2]"
+    name: "dialkyl ether core"
+    attachment_points: 2
+
+building_blocks:
+  fluorinated_radicals:
+    - id: "fluoro_methyl"
+      smiles: "C(F)([H])([H])[*:1]"
+    - id: "difluoro_methyl"
+      smiles: "C(F)(F)[*:1]"
+    - id: "trifluoromethyl"
+      smiles: "C(F)(F)(F)[*:1]"
+    - id: "tetrafluoro_ethyl"
+      smiles: "C(F)(F)C(F)(F)[*:1]"
+    - id: "pentafluoro_ethyl"
+      smiles: "C(F)(F)(F)C(F)(F)[*:1]"
+    - id: "fluorinated_vinyl"
+      smiles: "C(F)=C(F)[*:1]"
+    - id: "hydrogen"
+      smiles: "[H][*:1]"
+
+assembly_rules:
+  reaction_type: "monovalent_substitution"
+  smarts_transform: "[*:1][H].[*:2][H]>>[*:1][*:2]"
+  max_ring_count: 2
+  min_dipole_debye: 3.5
+  max_dipole_debye: 7.5
+
+generation_spec:
+  target_molecules: 50000
+  random_seed: 42
+  deterministic_enumeration: true
+  conformer_embedding:
+    algorithm: "distance_geometry_gpu"
+    num_conformations_per_molecule: 10
+    clash_cutoff_angstrom: 0.85
+  jackhammer_mining:
+    max_fragment_nodes: 32
+    target_fragment_budget: 15000

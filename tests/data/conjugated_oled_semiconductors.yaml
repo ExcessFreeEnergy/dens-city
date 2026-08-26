@@ -1,0 +1,72 @@
+group_name: "conjugated_oled_semiconductors"
+version: "1.1.0"
+description: "Extended pi-conjugated aromatic and heteroaromatic backbones for delocalized electron transfer and message-passing radius stress testing."
+
+rl_reward_targets:
+  target_elasticity: 0.05       # Extremely rigid
+  target_tensile: 0.85          # Highly rod-like (PMI), max aromatic density
+  target_toughness: 0.60        # Maximize pi-pi stacking
+  target_lightweight: 0.10
+  max_solvation_kcal: -2.0      # Low solubility required
+  min_wall_pressure_bar: 5.0
+  max_molecular_weight: 850.0
+  min_valency: 2                # Ensure it polymerizes
+
+tensor_limits:
+  max_sites: 128
+  allowed_atomic_numbers: [1, 6, 7, 8, 14, 16] # H, C, N, O, Si, S
+  max_molecular_weight: 850.0
+  min_aromatic_rings: 3
+  max_aromatic_rings: 8
+
+scaffolds:
+  - id: "carbazole_donor"
+    smarts: "c1ccc2c(c1)c3ccccc3n2[*:1]"
+    name: "carbazole donor"
+    attachment_points: 1
+  - id: "triphenylamine_core"
+    smarts: "c1ccc(cc1)N(c2ccc([*:1])cc2)c3ccc([*:2])cc3"
+    name: "triphenylamine branch"
+    attachment_points: 2
+  - id: "anthracene_bridge"
+    smarts: "c1ccc2cc3c([*:1])cccc3cc2c1[*:2]"
+    name: "9,10-anthracene bridge"
+    attachment_points: 2
+  - id: "triazine_acceptor"
+    smarts: "n1c([*:1])nc([*:2])nc1[*:3]"
+    name: "1,3,5-triazine acceptor"
+    attachment_points: 3
+
+building_blocks:
+  linkers_and_caps:
+    - id: "para_phenylene"
+      smiles: "c1cc([*:1])ccc1[*:2]"
+    - id: "thiophene_bridge"
+      smiles: "c1cc([*:1])sc1[*:2]"
+    - id: "fluorene_unit"
+      smiles: "c1cc2c(cc1[*:1])C(C)(C)c3cc([*:2])ccc23"
+    - id: "cyanovinyl_cap"
+      smiles: 'C(=C/C#N)\[*:1]'
+    - id: "diphenylamino_cap"
+      smiles: "c1ccc(cc1)N(c2ccccc2)[*:1]"
+    - id: "hydrogen_cap"
+      smiles: "[H][*:1]"
+
+assembly_rules:
+  reaction_type: "bivalent_aromatic_coupling"
+  smarts_transform: "[c:1][Br].[c:2][B](O)O>>[c:1][c:2]"
+  max_aliphatic_chain_length: 2
+  min_conjugated_pathway_atoms: 12
+  require_donor_acceptor_pair: true
+
+generation_spec:
+  target_molecules: 50000
+  random_seed: 1337
+  deterministic_enumeration: true
+  conformer_embedding:
+    algorithm: "distance_geometry_gpu"
+    num_conformations_per_molecule: 10
+    planarity_tolerance_deg: 15.0
+  jackhammer_mining:
+    max_fragment_nodes: 32
+    target_fragment_budget: 15000

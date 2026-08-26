@@ -24,6 +24,7 @@ dependencies = [
     "ruff>=0.4.0",
     "raylib>=5.0.0",
     "pyzmq>=25.0.0",
+    "rdkit>=2023.9.1",
 ]
 
 [project.scripts]
