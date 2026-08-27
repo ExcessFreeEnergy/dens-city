@@ -406,28 +406,21 @@ class MaterialLoader:
         return "3D_MOLECULAR"
 
     @classmethod
-    def load_material(
+    def from_mol2_string(
         cls,
-        material_name_or_path: str,
+        mol2_text: str,
+        identifier: str = "dynamic_mol",
         temperature_k: Optional[float] = None,
         bulk_density_a3: Optional[float] = None,
         pressure_bar: Optional[float] = None,
         chemical_potential_kbt: Optional[float] = None,
     ) -> Material:
         """
-        Ingests arbitrary .mol2 dataset, dynamically derives force field parameters,
-        and solves the bulk Equation of State without hardcoded tables or aliases.
+        Parses Tripos .mol2 string content directly in memory, resolving force field
+        parameters and bulk EOS states without intermediate disk I/O.
         """
         ff_db = cls.get_forcefield_database()
-
-        mol2_path = Path(material_name_or_path)
-        if not mol2_path.exists():
-            mol2_path = TEST_DATA_DIR / f"{material_name_or_path}.mol2"
-        if not mol2_path.exists():
-            raise FileNotFoundError(f"Mol2 file does not exist: {mol2_path}")
-
-        # Parse .mol2 file
-        lines = mol2_path.read_text().splitlines()
+        lines = mol2_text.splitlines()
         sites: List[AtomSite] = []
         bonds: List[Tuple[int, int, str]] = []
         in_atom = False
@@ -480,17 +473,15 @@ class MaterialLoader:
             elif in_bond and line.strip():
                 parts = line.split()
                 if len(parts) >= 4:
-                    # bond_id, origin_atom_id, target_atom_id, bond_type
-                    # Convert 1-indexed atom IDs to 0-indexed site indices
                     a1 = int(parts[1]) - 1
                     a2 = int(parts[2]) - 1
                     b_type = parts[3]
                     bonds.append((a1, a2, b_type))
 
         if not sites:
-            raise ValueError(f"No valid atom sites found in {mol2_path}")
+            raise ValueError(f"No valid atom sites found in mol2 string for {identifier}")
 
-        # Extract explicit dihedral quadruplets (a, b, c, d) from bond graph connectivity
+        # Extract explicit dihedral quadruplets (a, b, c, d)
         dihedral_quadruplets: List[Tuple[int, int, int, int]] = []
         if bonds:
             adj: Dict[int, List[int]] = {}
@@ -499,7 +490,6 @@ class MaterialLoader:
                     adj.setdefault(a1, []).append(a2)
                     adj.setdefault(a2, []).append(a1)
 
-            # Find all simple paths of length 3: a - b - c - d
             seen_dihedrals = set()
             for b in adj:
                 for a in adj[b]:
@@ -509,24 +499,19 @@ class MaterialLoader:
                         for d in adj.get(c, []):
                             if d == b or d == a:
                                 continue
-                            # Canonical ordering a < d to avoid (a,b,c,d) and (d,c,b,a) duplicate counting
                             quad = (a, b, c, d) if a < d else (d, c, b, a)
                             if quad not in seen_dihedrals:
                                 seen_dihedrals.add(quad)
                                 dihedral_quadruplets.append(quad)
 
-        # Derive molecular Lennard-Jones parameters directly from atomic sites:
+        # Derive effective LJ parameters
         if len(sites) == 1:
             eff_sigma = sites[0].sigma
             eff_eps_k = sites[0].epsilon_k
         else:
-            # Volume-equivalent hard sphere diameter: sigma_eff = ( \sum sigma_i^3 )^(1/3)
             valid_sigmas = [s.sigma for s in sites if s.sigma > 0.0]
             eff_sigma = sum(s**3 for s in valid_sigmas) ** (1.0 / 3.0) if valid_sigmas else sites[0].sigma
 
-            # Exact molecular WCA dispersion volume integral matching:
-            # \int v_att,eff(r) d^3r = \sum_i \sum_j \int v_att,ij(r) d^3r
-            # => eps_eff * sigma_eff^3 = \sum_i \sum_j \sqrt{eps_i * eps_j} * ((sigma_i + sigma_j)/2)^3
             att_vol_sum = 0.0
             for s1 in sites:
                 for s2 in sites:
@@ -537,7 +522,6 @@ class MaterialLoader:
 
         temp = temperature_k if temperature_k is not None else 300.0
 
-        # Dynamically derive bulk density from Equation of State without hardcoded fallbacks:
         if bulk_density_a3 is not None:
             density = bulk_density_a3
         elif chemical_potential_kbt is not None:
@@ -555,7 +539,6 @@ class MaterialLoader:
                 epsilon_k=eff_eps_k,
             )
         else:
-            # Default dynamic thermodynamic reservoir: dimensionless chemical potential beta * mu = -8.0
             density = solve_bulk_density_from_chemical_potential(
                 mu_kbt=-8.0,
                 temp_k=temp,
@@ -566,8 +549,8 @@ class MaterialLoader:
         dim_mode = cls.classify_dimension_mode(sites)
 
         mat = Material(
-            name=mol2_path.stem,
-            identifier=mol2_path.stem,
+            name=identifier,
+            identifier=identifier,
             dimension_mode=dim_mode,
             sites=sites,
             bonds=bonds,
@@ -580,6 +563,130 @@ class MaterialLoader:
         mat.compute_bulk_mu()
         mat.compute_bulk_pressure()
         return mat
+
+    @classmethod
+    def from_raw_arrays(
+        cls,
+        coords: np.ndarray,
+        sigmas: np.ndarray,
+        epsilons_k: np.ndarray,
+        charges: np.ndarray,
+        atomic_numbers: np.ndarray,
+        bonds: Optional[List[Tuple[int, int, str]]] = None,
+        identifier: str = "raw_mol",
+        temperature_k: Optional[float] = None,
+        bulk_density_a3: Optional[float] = None,
+    ) -> Material:
+        """
+        Bypass mode: Directly instantiates a Material from pre-extracted C physical parameter arrays
+        without running topological force-field resolvers or external disk I/O.
+        """
+        n_atoms = len(coords)
+        sites: List[AtomSite] = []
+        for i in range(n_atoms):
+            z_num = int(atomic_numbers[i])
+            s_name = f"A{i + 1}"
+            at_type = (
+                "C"
+                if z_num == 6
+                else (
+                    "H"
+                    if z_num == 1
+                    else ("O" if z_num == 8 else ("N" if z_num == 7 else ("F" if z_num == 9 else "X")))
+                )
+            )
+            mass_val = (
+                12.011
+                if z_num == 6
+                else (
+                    1.008
+                    if z_num == 1
+                    else (15.999 if z_num == 8 else (14.007 if z_num == 7 else (18.998 if z_num == 9 else 12.0)))
+                )
+            )
+            sites.append(
+                AtomSite(
+                    site_name=s_name,
+                    atom_type=at_type,
+                    x=float(coords[i, 0]),
+                    y=float(coords[i, 1]),
+                    z=float(coords[i, 2]),
+                    charge=float(charges[i]),
+                    sigma=float(sigmas[i]),
+                    epsilon_kcal=float(epsilons_k[i] * 0.001987204),
+                    epsilon_k=float(epsilons_k[i]),
+                    mass=mass_val,
+                    atomic_number=z_num,
+                )
+            )
+
+        if not sites:
+            raise ValueError(f"No valid atom sites provided for {identifier}")
+
+        valid_sigmas = [s.sigma for s in sites if s.sigma > 0.0]
+        eff_sigma = sum(s**3 for s in valid_sigmas) ** (1.0 / 3.0) if valid_sigmas else sites[0].sigma
+        att_vol_sum = sum(
+            math.sqrt(max(0.0, s1.epsilon_k * s2.epsilon_k)) * ((0.5 * (s1.sigma + s2.sigma)) ** 3)
+            for s1 in sites
+            for s2 in sites
+        )
+        eff_eps_k = att_vol_sum / (eff_sigma**3) if eff_sigma > 0.0 else sites[0].epsilon_k
+
+        temp = temperature_k if temperature_k is not None else 300.0
+        if bulk_density_a3 is not None:
+            density = bulk_density_a3
+        else:
+            density = solve_bulk_density_from_chemical_potential(
+                mu_kbt=-8.0,
+                temp_k=temp,
+                sigma=eff_sigma,
+                epsilon_k=eff_eps_k,
+            )
+
+        mat = Material(
+            name=identifier,
+            identifier=identifier,
+            dimension_mode=cls.classify_dimension_mode(sites),
+            sites=sites,
+            bonds=bonds or [],
+            dihedral_quadruplets=[],
+            effective_sigma=eff_sigma,
+            effective_epsilon_k=eff_eps_k,
+            temperature_k=temp,
+            bulk_density_a3=density,
+        )
+        mat.compute_bulk_mu()
+        mat.compute_bulk_pressure()
+        return mat
+
+    @classmethod
+    def load_material(
+        cls,
+        material_name_or_path: str,
+        temperature_k: Optional[float] = None,
+        bulk_density_a3: Optional[float] = None,
+        pressure_bar: Optional[float] = None,
+        chemical_potential_kbt: Optional[float] = None,
+    ) -> Material:
+        """
+        Ingests arbitrary .mol2 dataset, dynamically derives force field parameters,
+        and solves the bulk Equation of State without hardcoded tables or aliases.
+        """
+        mol2_path = Path(material_name_or_path)
+        if not mol2_path.exists():
+            mol2_path = TEST_DATA_DIR / f"{material_name_or_path}.mol2"
+        if not mol2_path.exists():
+            raise FileNotFoundError(f"Mol2 file does not exist: {mol2_path}")
+
+        mol2_text = mol2_path.read_text(encoding="utf-8")
+        return cls.from_mol2_string(
+            mol2_text=mol2_text,
+            identifier=mol2_path.stem,
+            temperature_k=temperature_k,
+            bulk_density_a3=bulk_density_a3,
+            pressure_bar=pressure_bar,
+            chemical_potential_kbt=chemical_potential_kbt,
+        )
 
     @classmethod
     def list_available_materials(cls) -> List[str]:
@@ -619,10 +726,65 @@ class MolecularBatch:
     bulk_mu: Any = None  # Tensor of shape (B,)
     slit_width_a: Any = None  # Tensor of shape (B,)
     conditioning: Any = None  # Tensor of shape (B, 5) [sigma_eff, eps_eff, T, rho_bulk, mu]
+    exclusions: Any = None  # Tensor of shape (B, N, N) - 1.0 for excluded pairs, 0.0 for non-bonded
 
     @property
     def num_active_materials(self) -> int:
         return sum(1 for m in self.materials if m is not None)
+
+    @classmethod
+    def from_contiguous_arrays(
+        cls,
+        sigmas: np.ndarray,
+        epsilons: np.ndarray,
+        charges: np.ndarray,
+        atomic_numbers: np.ndarray,
+        atom_mask: np.ndarray,
+        molecule_mask: np.ndarray,
+        temperature_k: np.ndarray,
+        bulk_density_a3: np.ndarray,
+        bulk_mu: np.ndarray,
+        slit_width_a: np.ndarray,
+        conditioning: np.ndarray,
+        exclusions: Optional[np.ndarray] = None,
+        materials: Optional[List[Optional[Material]]] = None,
+    ) -> MolecularBatch:
+        """
+        Instantiates a MolecularBatch directly from contiguous NumPy array views,
+        streaming straight into device tensors with zero Python object fragmentation.
+        """
+        from tinygrad import Tensor, dtypes
+
+        b_size = sigmas.shape[0]
+        n_particles = sigmas.shape[1]
+        temp_np = temperature_k.astype(np.float32)
+        beta_np = 1.0 / np.maximum(1e-6, temp_np)
+
+        mats = materials if materials is not None else [None] * b_size
+        excl_np = (
+            exclusions.astype(np.float32)
+            if exclusions is not None
+            else np.zeros((b_size, n_particles, n_particles), dtype=np.float32)
+        )
+
+        return MolecularBatch(
+            materials=mats,
+            batch_size=b_size,
+            n_particles=n_particles,
+            sigmas=Tensor(sigmas.astype(np.float32), dtype=dtypes.float32).realize(),
+            epsilons=Tensor(epsilons.astype(np.float32), dtype=dtypes.float32).realize(),
+            charges=Tensor(charges.astype(np.float32), dtype=dtypes.float32).realize(),
+            atomic_numbers=Tensor(atomic_numbers.astype(np.float32), dtype=dtypes.float32).realize(),
+            atom_mask=Tensor(atom_mask.astype(np.float32), dtype=dtypes.float32).realize(),
+            molecule_mask=Tensor(molecule_mask.astype(np.float32), dtype=dtypes.float32).realize(),
+            temperature_k=Tensor(temp_np, dtype=dtypes.float32).realize(),
+            beta=Tensor(beta_np, dtype=dtypes.float32).realize(),
+            bulk_density_a3=Tensor(bulk_density_a3.astype(np.float32), dtype=dtypes.float32).realize(),
+            bulk_mu=Tensor(bulk_mu.astype(np.float32), dtype=dtypes.float32).realize(),
+            slit_width_a=Tensor(slit_width_a.astype(np.float32), dtype=dtypes.float32).realize(),
+            conditioning=Tensor(conditioning.astype(np.float32), dtype=dtypes.float32).realize(),
+            exclusions=Tensor(excl_np, dtype=dtypes.float32).realize(),
+        )
 
     @classmethod
     def create_batch(
@@ -638,7 +800,6 @@ class MolecularBatch:
         with zeroed dummy molecules.
         """
         import numpy as np
-        from tinygrad import Tensor, dtypes
 
         mats_padded: List[Optional[Material]] = []
         sigmas_np = np.zeros((batch_size, target_n_particles), dtype=np.float32)
@@ -648,7 +809,6 @@ class MolecularBatch:
         atom_mask_np = np.zeros((batch_size, target_n_particles), dtype=np.float32)
         molecule_mask_np = np.zeros(batch_size, dtype=np.float32)
         temp_np = np.full(batch_size, default_temp_k, dtype=np.float32)
-        beta_np = np.full(batch_size, 1.0 / default_temp_k, dtype=np.float32)
         rho_np = np.zeros(batch_size, dtype=np.float32)
         mu_np = np.zeros(batch_size, dtype=np.float32)
         slit_np = np.full(batch_size, 40.0, dtype=np.float32)
@@ -675,7 +835,6 @@ class MolecularBatch:
 
             temp_val = mat.temperature_k
             temp_np[b] = temp_val
-            beta_np[b] = 1.0 / max(1e-6, temp_val)
             rho_np[b] = mat.bulk_density_a3
             mu_np[b] = mat.bulk_mu
             slit_np[b] = max(40.0, 12.0 * mat.effective_sigma)
@@ -684,20 +843,17 @@ class MolecularBatch:
         for b in range(n_mats, batch_size):
             mats_padded.append(None)
 
-        return MolecularBatch(
+        return cls.from_contiguous_arrays(
+            sigmas=sigmas_np,
+            epsilons=epsilons_np,
+            charges=charges_np,
+            atomic_numbers=atomic_numbers_np,
+            atom_mask=atom_mask_np,
+            molecule_mask=molecule_mask_np,
+            temperature_k=temp_np,
+            bulk_density_a3=rho_np,
+            bulk_mu=mu_np,
+            slit_width_a=slit_np,
+            conditioning=cond_np,
             materials=mats_padded,
-            batch_size=batch_size,
-            n_particles=target_n_particles,
-            sigmas=Tensor(sigmas_np, dtype=dtypes.float32).realize(),
-            epsilons=Tensor(epsilons_np, dtype=dtypes.float32).realize(),
-            charges=Tensor(charges_np, dtype=dtypes.float32).realize(),
-            atomic_numbers=Tensor(atomic_numbers_np, dtype=dtypes.float32).realize(),
-            atom_mask=Tensor(atom_mask_np, dtype=dtypes.float32).realize(),
-            molecule_mask=Tensor(molecule_mask_np, dtype=dtypes.float32).realize(),
-            temperature_k=Tensor(temp_np, dtype=dtypes.float32).realize(),
-            beta=Tensor(beta_np, dtype=dtypes.float32).realize(),
-            bulk_density_a3=Tensor(rho_np, dtype=dtypes.float32).realize(),
-            bulk_mu=Tensor(mu_np, dtype=dtypes.float32).realize(),
-            slit_width_a=Tensor(slit_np, dtype=dtypes.float32).realize(),
-            conditioning=Tensor(cond_np, dtype=dtypes.float32).realize(),
         )

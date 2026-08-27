@@ -4,7 +4,7 @@ via variational Reverse Kullback-Leibler (KL) divergence minimization in pure ti
 """
 
 import math
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from tinygrad import Tensor, TinyJit, dtypes, nn
 from tinygrad.helpers import getenv, trange
@@ -561,3 +561,122 @@ class BoltzmannGenerator:
 
             log_qx = log_pz + log_det_inv
             return (log_qx if is_batched else log_qx.squeeze(0)).realize()
+
+    def compute_log_likelihood(
+        self,
+        z: Tensor,
+        origin: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor, Tensor]:
+        """
+        Evaluates coordinates x, exact log probability density log p_X(x),
+        and microscopic potential energy U(x) for latent sample z:
+        log p_X(x) = log p_Z(z) - log |det J_f(z)|
+        """
+        B = z.shape[0]
+        if self.is_base2_cartesian:
+            z_flat = z.reshape(B, self.dim)
+            x, log_det = self.flow.forward(z_flat, origin=origin)
+            log_pz_internal = -0.5 * (z_flat * z_flat + self.log_2pi).sum(axis=-1)
+            if self.prior is not None and origin is not None:
+                log_pz_origin = self.prior.log_prob(origin)
+                log_pz = log_pz_internal + log_pz_origin
+            else:
+                log_pz = log_pz_internal
+        elif self.is_composite:
+            z_flat = z.reshape(B, self.dim) if len(z.shape) > 2 else z
+            ic_flat, log_det_flow = self.flow.flow.forward(z_flat)
+            n_bonds = self.flow.n_bonds
+            n_angles = self.flow.n_angles
+            n_torsions = self.flow.n_torsions
+            bonds = ic_flat[:, :n_bonds]
+            angles = ic_flat[:, n_bonds : (n_bonds + n_angles)] if n_angles > 0 else None
+            torsions = ic_flat[:, (n_bonds + n_angles) : self.flow.dim] if n_torsions > 0 else None
+            x, log_det_zmat = self.flow.zmat.forward(bonds=bonds, angles=angles, torsions=torsions, origin=origin)
+            log_det = log_det_flow + log_det_zmat
+            log_pz_internal = -0.5 * (z_flat * z_flat + self.log_2pi).sum(axis=-1)
+            if self.prior is not None and origin is not None:
+                log_pz_origin = self.prior.log_prob(origin)
+                log_pz = log_pz_internal + log_pz_origin
+            else:
+                log_pz = log_pz_internal
+        else:
+            z_flat = z.reshape(B, self.dim)
+            x_flat, log_det = self.flow.forward(z_flat)
+            if self.dim % 3 == 0:
+                n_particles = self.dim // 3
+                x = x_flat.reshape(B, n_particles, 3)
+                if self.prior is not None:
+                    z_3d = z.reshape(B, n_particles, 3)
+                    log_pz = self.prior.log_prob(z_3d)
+                else:
+                    log_pz = -0.5 * (z_flat * z_flat + self.log_2pi).sum(axis=-1)
+            else:
+                x = x_flat
+                if self.prior is not None:
+                    log_pz = self.prior.log_prob(z)
+                else:
+                    log_pz = -0.5 * (z_flat * z_flat + self.log_2pi).sum(axis=-1)
+
+        log_px = log_pz - log_det
+        u_exact = self.energy_fn(x)
+        return x, log_px, u_exact
+
+    def evaluate_conformer_ensemble(
+        self,
+        n_samples: int = 128,
+        mcmc_steps: int = 0,
+    ) -> Dict[str, Any]:
+        """
+        Samples an ensemble of conformers and computes per-molecule statistics:
+        - coords: (S, B, N, 3) or (S, N, 3)
+        - mean_energy: (B,) average 3D microscopic potential energy <U_3D>
+        - var_energy: (B,) energy variance Var(U)
+        - mean_log_px: (B,) average log probability density <log p_X(x)>
+        """
+        import numpy as np
+
+        B = self.batch_size
+        all_coords = []
+        all_log_px = []
+        all_energies = []
+
+        Tensor.training = False
+        n_batches = max(1, n_samples // B) if n_samples >= B else 1
+
+        for _ in range(n_batches):
+            if self.is_base2_cartesian:
+                z = Tensor.randn(B, self.dim)
+                origin = None
+                if self.prior is not None:
+                    p_samp = self.prior.sample(n_samples=B)
+                    origin = p_samp[:, 0, :].reshape(B, 3) if len(p_samp.shape) == 3 else p_samp.reshape(B, 3)
+                x, log_px, u_val = self.compute_log_likelihood(z, origin=origin)
+            elif self.is_composite:
+                z = Tensor.randn(B, self.dim)
+                origin = None
+                if self.prior is not None:
+                    p_samp = self.prior.sample(n_samples=B)
+                    origin = p_samp[:, 0, :].reshape(B, 3) if len(p_samp.shape) == 3 else p_samp.reshape(B, 3)
+                x, log_px, u_val = self.compute_log_likelihood(z, origin=origin)
+            else:
+                z = Tensor.randn(B, self.dim)
+                x, log_px, u_val = self.compute_log_likelihood(z)
+
+            all_coords.append(x.numpy())
+            all_log_px.append(log_px.numpy())
+            all_energies.append(u_val.numpy())
+
+        coords_arr = np.concatenate(all_coords, axis=0)
+        log_px_arr = np.array(all_log_px)
+        energies_arr = np.array(all_energies)
+
+        mean_energy = np.mean(energies_arr, axis=0)
+        var_energy = np.var(energies_arr, axis=0)
+        mean_log_px = np.mean(log_px_arr, axis=0)
+
+        return {
+            "coords": coords_arr,
+            "mean_energy": mean_energy,
+            "var_energy": var_energy,
+            "mean_log_px": mean_log_px,
+        }

@@ -83,6 +83,11 @@ typedef struct CDFT_Swarm_Env {
     CDFT_Env_Context ctx;
     CDFT_Result cdft_res;
 
+    // Completed episode snapshots
+    MolecularGraph terminal_graph;
+    MechanicsProfile terminal_mechanics;
+    CDFT_Result terminal_cdft_res;
+
     TargetSpec targets;
     int step_count;
     int current_scaffold_idx;
@@ -125,8 +130,12 @@ static inline void compute_action_mask(Env* env) {
     }
 
     // 3. Finalize action mask (index 28)
-    // Allowed ONLY if the molecule has at least min_valency open reactive ports
-    if (empty_port_count >= env->targets.min_valency && env->graph.num_atoms >= 6) {
+    // Allowed ONLY if the molecule has grown past bare scaffold (>=16 atoms, >=2 attached fragments, MW >= 180)
+    // and has at least min_valency open reactive ports
+    if (empty_port_count >= env->targets.min_valency &&
+        env->graph.num_atoms >= 16 &&
+        env->graph.num_attached_fragments >= 2 &&
+        env->mechanics.molecular_weight >= 180.0f) {
         frag_mask[NUM_FRAGMENT_CHOICES] = 1; // Can finalize
     } else {
         frag_mask[NUM_FRAGMENT_CHOICES] = 0;
@@ -325,6 +334,15 @@ static inline void c_step(Env* env) {
             r_penalties += 10.0f * (float)(env->targets.min_valency - active_valency);
         }
 
+        // Under-size penalty for failing to grow beyond scaffold
+        if (env->graph.num_atoms < 16 || env->graph.num_attached_fragments < 2) {
+            r_elasticity = 0.0f;
+            r_tensile = 0.0f;
+            r_toughness = 0.0f;
+            r_lightweight = 0.0f;
+            r_penalties += 15.0f * (1.0f - (float)env->graph.num_atoms / 16.0f);
+        }
+
         // Steep Quadratic Overweight Penalty
         if (env->mechanics.molecular_weight > env->targets.max_molecular_weight) {
             float mw_excess = env->mechanics.molecular_weight - env->targets.max_molecular_weight;
@@ -350,9 +368,11 @@ static inline void c_step(Env* env) {
             env->log.valid_molecules += 1.0f;
         }
 
-        CDFT_Result final_res = env->cdft_res;
+        env->terminal_graph = env->graph;
+        env->terminal_mechanics = env->mechanics;
+        env->terminal_cdft_res = env->cdft_res;
         c_reset(env);
-        env->cdft_res = final_res;
+        env->cdft_res = env->terminal_cdft_res;
     }
 
     compute_observations(env);

@@ -15,6 +15,7 @@ from dens_city.boltzmann.bijectors import (
 from dens_city.boltzmann.egnn import EGNNForceField, EGNNLayer
 from dens_city.boltzmann.energy import EGNNMicroscopicEnergy, MicroscopicEnergy, regularize_energy
 from dens_city.boltzmann.generator import BoltzmannGenerator
+from dens_city.boltzmann.lbfgs import BatchedLBFGS, LBFGSResult
 from dens_city.boltzmann.prior import CDFTBaseDistribution
 
 __all__ = [
@@ -23,6 +24,8 @@ __all__ = [
     "EGNNForceField",
     "EGNNLayer",
     "regularize_energy",
+    "BatchedLBFGS",
+    "LBFGSResult",
     "ZMatrixBijector",
     "AffineCouplingLayer",
     "RealNVPFlow",

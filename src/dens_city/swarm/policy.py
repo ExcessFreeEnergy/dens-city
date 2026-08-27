@@ -306,3 +306,23 @@ class MolecularSwarmPolicy(nn.Module):
             "port_logits": port_logits,
             "frag_logits": frag_logits,
         }
+
+    def sample_action(
+        self,
+        obs: torch.Tensor,
+        action_masks: Optional[torch.Tensor] = None,
+        hidden_state: Any = None,
+        deterministic: bool = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Any]:
+        """
+        Samples an action for evaluation or inference rollouts.
+        Returns (actions, logprobs, values, next_hidden_state).
+        """
+        res = self.get_action_and_value(
+            obs=obs,
+            action_mask=action_masks,
+            deterministic=deterministic,
+        )
+        if hidden_state is not None:
+            return res["action"], res["logprob"], res["value"], hidden_state
+        return res["action"], res["logprob"], res["value"]

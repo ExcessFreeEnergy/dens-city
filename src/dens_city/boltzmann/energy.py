@@ -136,9 +136,14 @@ class MicroscopicEnergy:
             atom_mask_2d = self.is_real_atom.unsqueeze(1) * self.is_real_atom.unsqueeze(0)  # (N, N)
 
         # Box dimensions as realized device buffers
+        lz_val = (
+            float(material.slit_width_a.numpy().max())
+            if material is not None and hasattr(material, "slit_width_a") and material.slit_width_a is not None
+            else float(box_size[2])
+        )
         self.lx = Tensor([float(box_size[0])], dtype=dtypes.float32).realize()
         self.ly = Tensor([float(box_size[1])], dtype=dtypes.float32).realize()
-        self.lz = Tensor([float(box_size[2])], dtype=dtypes.float32).realize()
+        self.lz = Tensor([lz_val], dtype=dtypes.float32).realize()
         self.box_xy = Tensor([float(box_size[0]), float(box_size[1])], dtype=dtypes.float32).realize()
         max_valid_rcut = 0.5 * min(float(box_size[0]), float(box_size[1]))
         r_cut_val = min(float(r_cut), max_valid_rcut) if r_cut is not None else max_valid_rcut
@@ -157,7 +162,12 @@ class MicroscopicEnergy:
             self.q_ij = self.charges.unsqueeze(2) * self.charges.unsqueeze(1)
             atom_mask_3d = self.is_real_atom.unsqueeze(2) * self.is_real_atom.unsqueeze(1)  # (B, N, N)
             triu_base = (idx.unsqueeze(1) < idx.unsqueeze(0)).float().unsqueeze(0)  # (1, N, N)
-            self.triu_mask = triu_base * atom_mask_3d * self.molecule_mask.reshape(-1, 1, 1)
+            if hasattr(material, "exclusions") and material.exclusions is not None:
+                excl_3d = material.exclusions.realize()
+                non_excl = (1.0 - excl_3d).maximum(0.0)
+                self.triu_mask = triu_base * atom_mask_3d * self.molecule_mask.reshape(-1, 1, 1) * non_excl
+            else:
+                self.triu_mask = triu_base * atom_mask_3d * self.molecule_mask.reshape(-1, 1, 1)
         else:
             s_ij_2d = 0.5 * (self.sigmas.unsqueeze(1) + self.sigmas.unsqueeze(0))
             e_ij_2d = (self.epsilons.unsqueeze(1) * self.epsilons.unsqueeze(0)).sqrt()
@@ -165,7 +175,14 @@ class MicroscopicEnergy:
             self.s_ij = s_ij_2d.unsqueeze(0)
             self.e_ij = e_ij_2d.unsqueeze(0)
             self.q_ij = q_ij_2d.unsqueeze(0)
-            self.triu_mask = ((idx.unsqueeze(1) < idx.unsqueeze(0)).float() * atom_mask_2d).unsqueeze(0)
+            excl_2d = getattr(material, "exclusions", None) if material is not None else None
+            if excl_2d is not None:
+                non_excl = (1.0 - excl_2d).maximum(0.0)
+                self.triu_mask = (((idx.unsqueeze(1) < idx.unsqueeze(0)).float() * atom_mask_2d) * non_excl).unsqueeze(
+                    0
+                )
+            else:
+                self.triu_mask = ((idx.unsqueeze(1) < idx.unsqueeze(0)).float() * atom_mask_2d).unsqueeze(0)
 
         # Precompute cutoff potential shifts and force gradients at r = r_cut for Shifted-Force (SF)
         sr_cut = self.s_ij / self.r_cut
@@ -253,8 +270,9 @@ class MicroscopicEnergy:
         dz = diff[..., 2]
 
         r_sq = dx * dx + dy * dy + dz * dz
-        # Regularize diagonal self-interaction and overlapping particles to eliminate 0/0 NaN singularities
-        r = (r_sq + self.eye + 1e-4).sqrt()  # (B, N, N)
+        # Regularize diagonal self-interaction and clamp minimum distance to 0.5 Angstrom (r_sq >= 0.25)
+        # to eliminate 0/0 NaN singularities and unphysical nuclear collapse
+        r = (r_sq + self.eye + 1e-4).maximum(0.25).sqrt()  # (B, N, N)
         dr = r - self.r_cut
 
         # 1. Lennard-Jones 12-6 pairwise Shifted-Force term via native ALU products
@@ -266,9 +284,12 @@ class MicroscopicEnergy:
         u_lj_sf = u_lj_bare - self.u_lj_cut - self.du_lj_cut * dr
         u_lj = u_lj_sf if shift else u_lj_bare
 
-        # 2. Coulomb pairwise electrostatic Shifted-Force term (unified ALU arithmetic, zero for non-polar)
-        u_coul_bare = (self.q_ij * self.c_coul) / r
-        u_coul_sf = u_coul_bare - self.u_coul_cut - self.du_coul_cut * dr
+        # 2. Coulomb pairwise electrostatic Shifted-Force term with Reaction-Field Soft-Core Damping
+        # (r_soft = 0.60 A, r_soft^2 = 0.36; prevents 1/r -> infty singularity when sigma = 0)
+        r_coul = (r_sq + self.eye + 0.36).sqrt()
+        dr_coul = r_coul - self.r_cut
+        u_coul_bare = (self.q_ij * self.c_coul) / r_coul
+        u_coul_sf = u_coul_bare - self.u_coul_cut - self.du_coul_cut * dr_coul
         u_coul = u_coul_sf if shift else u_coul_bare
         u_pair_ij = u_lj + u_coul
 
@@ -308,9 +329,10 @@ class MicroscopicEnergy:
         z_l = z
         z_r = self.lz - z
 
-        # Distance ratios safely bounded by steric radius to eliminate float32 (s_l**9) overflow
-        s_l = self.sigma_wf / z_l.maximum(self.steric_radius)
-        s_r = self.sigma_wf / z_r.maximum(self.steric_radius)
+        # Distance ratios safely bounded by steric radius (floored at 0.5 for autodiff safety on dummy atoms)
+        steric_rad_safe = self.steric_radius.maximum(0.5)
+        s_l = self.sigma_wf / z_l.maximum(steric_rad_safe)
+        s_r = self.sigma_wf / z_r.maximum(steric_rad_safe)
 
         if self.wall_type == "stele93":
             s3_l = s_l * s_l * s_l

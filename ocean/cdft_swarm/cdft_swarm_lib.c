@@ -70,28 +70,85 @@ unsigned char* env_get_action_mask(Env* env) {
 }
 
 // Telemetry getters
-float env_get_p_wall(Env* env) { return env ? env->cdft_res.p_wall_bar : 0.0f; }
-float env_get_omega_solv(Env* env) { return env ? env->cdft_res.omega_solv_kcal : 0.0f; }
-int env_get_converged(Env* env) { return env ? env->cdft_res.converged : 0; }
-float env_get_molecular_weight(Env* env) { return env ? env->mechanics.molecular_weight : 0.0f; }
-float env_get_rotatable_fraction(Env* env) { return env ? env->mechanics.rotatable_bond_fraction : 0.0f; }
-float env_get_aromatic_density(Env* env) { return env ? env->mechanics.aromatic_density : 0.0f; }
-float env_get_pmi_linearity(Env* env) { return env ? env->mechanics.pmi_linearity : 0.0f; }
-int env_get_hbd_count(Env* env) { return env ? env->mechanics.hbd_count : 0; }
-int env_get_hba_count(Env* env) { return env ? env->mechanics.hba_count : 0; }
+float env_get_p_wall(Env* env) {
+    if (!env) return 0.0f;
+    return (env->terminal_graph.num_atoms > 0) ? env->terminal_cdft_res.p_wall_bar : env->cdft_res.p_wall_bar;
+}
+float env_get_omega_solv(Env* env) {
+    if (!env) return 0.0f;
+    return (env->terminal_graph.num_atoms > 0) ? env->terminal_cdft_res.omega_solv_kcal : env->cdft_res.omega_solv_kcal;
+}
+int env_get_converged(Env* env) {
+    if (!env) return 0;
+    return (env->terminal_graph.num_atoms > 0) ? env->terminal_cdft_res.converged : env->cdft_res.converged;
+}
+float env_get_molecular_weight(Env* env) {
+    if (!env) return 0.0f;
+    return (env->terminal_graph.num_atoms > 0) ? env->terminal_mechanics.molecular_weight : env->mechanics.molecular_weight;
+}
+float env_get_rotatable_fraction(Env* env) {
+    if (!env) return 0.0f;
+    return (env->terminal_graph.num_atoms > 0) ? env->terminal_mechanics.rotatable_bond_fraction : env->mechanics.rotatable_bond_fraction;
+}
+float env_get_aromatic_density(Env* env) {
+    if (!env) return 0.0f;
+    return (env->terminal_graph.num_atoms > 0) ? env->terminal_mechanics.aromatic_density : env->mechanics.aromatic_density;
+}
+float env_get_pmi_linearity(Env* env) {
+    if (!env) return 0.0f;
+    return (env->terminal_graph.num_atoms > 0) ? env->terminal_mechanics.pmi_linearity : env->mechanics.pmi_linearity;
+}
+int env_get_hbd_count(Env* env) {
+    if (!env) return 0;
+    return (env->terminal_graph.num_atoms > 0) ? env->terminal_mechanics.hbd_count : env->mechanics.hbd_count;
+}
+int env_get_hba_count(Env* env) {
+    if (!env) return 0;
+    return (env->terminal_graph.num_atoms > 0) ? env->terminal_mechanics.hba_count : env->mechanics.hba_count;
+}
 
 // Molecular Graph getters
-int env_get_num_atoms(Env* env) { return env ? env->graph.num_atoms : 0; }
-int env_get_num_bonds(Env* env) { return env ? env->graph.num_bonds : 0; }
-int env_get_num_ports(Env* env) { return env ? env->graph.num_ports : 0; }
+static inline MolecularGraph* get_active_graph(Env* env) {
+    if (!env) return NULL;
+    return (env->terminal_graph.num_atoms > 0) ? &env->terminal_graph : &env->graph;
+}
 
-float env_get_atom_pos_x(Env* env, int i) { return env ? env->graph.atoms[i].pos.x : 0.0f; }
-float env_get_atom_pos_y(Env* env, int i) { return env ? env->graph.atoms[i].pos.y : 0.0f; }
-float env_get_atom_pos_z(Env* env, int i) { return env ? env->graph.atoms[i].pos.z : 0.0f; }
-int env_get_atom_z(Env* env, int i) { return env ? env->graph.atoms[i].atomic_number : 0; }
-int env_get_atom_is_aromatic(Env* env, int i) { return env ? (env->graph.atoms[i].is_aromatic ? 1 : 0) : 0; }
-float env_get_atom_charge(Env* env, int i) { return env ? env->graph.atoms[i].charge : 0.0f; }
+int env_get_num_atoms(Env* env) { MolecularGraph* g = get_active_graph(env); return g ? g->num_atoms : 0; }
+int env_get_num_bonds(Env* env) { MolecularGraph* g = get_active_graph(env); return g ? g->num_bonds : 0; }
+int env_get_num_ports(Env* env) { MolecularGraph* g = get_active_graph(env); return g ? g->num_ports : 0; }
 
-int env_get_bond_u(Env* env, int b) { return env ? env->graph.bonds[b].atom_u : 0; }
-int env_get_bond_v(Env* env, int b) { return env ? env->graph.bonds[b].atom_v : 0; }
-int env_get_bond_order(Env* env, int b) { return env ? env->graph.bonds[b].bond_order : 0; }
+float env_get_atom_pos_x(Env* env, int i) { MolecularGraph* g = get_active_graph(env); return g ? g->atoms[i].pos.x : 0.0f; }
+float env_get_atom_pos_y(Env* env, int i) { MolecularGraph* g = get_active_graph(env); return g ? g->atoms[i].pos.y : 0.0f; }
+float env_get_atom_pos_z(Env* env, int i) { MolecularGraph* g = get_active_graph(env); return g ? g->atoms[i].pos.z : 0.0f; }
+int env_get_atom_z(Env* env, int i) { MolecularGraph* g = get_active_graph(env); return g ? g->atoms[i].atomic_number : 0; }
+int env_get_atom_is_aromatic(Env* env, int i) { MolecularGraph* g = get_active_graph(env); return g ? (g->atoms[i].is_aromatic ? 1 : 0) : 0; }
+float env_get_atom_charge(Env* env, int i) { MolecularGraph* g = get_active_graph(env); return g ? g->atoms[i].charge : 0.0f; }
+float env_get_atom_sigma(Env* env, int i) { MolecularGraph* g = get_active_graph(env); return g ? g->atoms[i].sigma : 3.4f; }
+float env_get_atom_epsilon_k(Env* env, int i) { MolecularGraph* g = get_active_graph(env); return g ? g->atoms[i].epsilon_k : 120.0f; }
+
+int env_get_atoms_block(Env* env, float* coords_out, float* sigmas_out, float* epsilons_out, float* charges_out, int* z_out) {
+    MolecularGraph* g = get_active_graph(env);
+    if (!g) return 0;
+    int n = g->num_atoms;
+    for (int i = 0; i < n; i++) {
+        coords_out[i * 3 + 0] = g->atoms[i].pos.x;
+        coords_out[i * 3 + 1] = g->atoms[i].pos.y;
+        coords_out[i * 3 + 2] = g->atoms[i].pos.z;
+        sigmas_out[i] = g->atoms[i].sigma;
+        epsilons_out[i] = g->atoms[i].epsilon_k;
+        charges_out[i] = g->atoms[i].charge;
+        z_out[i] = g->atoms[i].atomic_number;
+    }
+    return n;
+}
+
+int env_get_bond_u(Env* env, int b) { MolecularGraph* g = get_active_graph(env); return g ? g->bonds[b].atom_u : 0; }
+int env_get_bond_v(Env* env, int b) { MolecularGraph* g = get_active_graph(env); return g ? g->bonds[b].atom_v : 0; }
+int env_get_bond_order(Env* env, int b) { MolecularGraph* g = get_active_graph(env); return g ? g->bonds[b].bond_order : 0; }
+
+int env_get_atom_exclusions(Env* env, float* excl_out) {
+    MolecularGraph* g = get_active_graph(env);
+    if (!g) return 0;
+    compute_12_13_exclusions(g, excl_out);
+    return g->num_atoms;
+}

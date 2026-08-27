@@ -8,7 +8,7 @@ from __future__ import annotations
 import ctypes
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from rdkit import Chem
@@ -159,6 +159,22 @@ class CDFTSwarmEnv:
         self.lib.env_get_atom_charge.argtypes = [ctypes.c_void_p, ctypes.c_int]
         self.lib.env_get_atom_charge.restype = ctypes.c_float
 
+        self.lib.env_get_atom_sigma.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self.lib.env_get_atom_sigma.restype = ctypes.c_float
+
+        self.lib.env_get_atom_epsilon_k.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self.lib.env_get_atom_epsilon_k.restype = ctypes.c_float
+
+        self.lib.env_get_atoms_block.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_int),
+        ]
+        self.lib.env_get_atoms_block.restype = ctypes.c_int
+
         self.lib.env_get_bond_u.argtypes = [ctypes.c_void_p, ctypes.c_int]
         self.lib.env_get_bond_u.restype = ctypes.c_int
 
@@ -167,6 +183,9 @@ class CDFTSwarmEnv:
 
         self.lib.env_get_bond_order.argtypes = [ctypes.c_void_p, ctypes.c_int]
         self.lib.env_get_bond_order.restype = ctypes.c_int
+
+        self.lib.env_get_atom_exclusions.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float)]
+        self.lib.env_get_atom_exclusions.restype = ctypes.c_int
 
         # Create C environment
         self._env_ptr = self.lib.env_create(ctypes.c_uint(seed))
@@ -367,3 +386,66 @@ class CDFTSwarmEnv:
 
         lines.append("@<TRIPOS>SUBSTRUCTURE\n     1 MOL         1 TEMP              0 ****  ****    0 ROOT\n")
         return "\n".join(lines)
+
+    def get_raw_atom_arrays(self) -> Dict[str, Any]:
+        """
+        Extracts raw physical parameter arrays directly from C environment memory
+        without intermediate file parsing.
+        """
+        num_atoms = int(self.lib.env_get_num_atoms(self._env_ptr))
+        num_bonds = int(self.lib.env_get_num_bonds(self._env_ptr))
+        if num_atoms == 0:
+            return {
+                "num_atoms": 0,
+                "coords": np.zeros((0, 3), dtype=np.float32),
+                "sigmas": np.zeros((0,), dtype=np.float32),
+                "epsilons_k": np.zeros((0,), dtype=np.float32),
+                "charges": np.zeros((0,), dtype=np.float32),
+                "atomic_numbers": np.zeros((0,), dtype=np.int32),
+                "bonds": [],
+                "mw": 0.0,
+                "p_wall": 0.0,
+                "omega_solv": 0.0,
+            }
+
+        coords = np.zeros((num_atoms * 3,), dtype=np.float32)
+        sigmas = np.zeros((num_atoms,), dtype=np.float32)
+        epsilons_k = np.zeros((num_atoms,), dtype=np.float32)
+        charges = np.zeros((num_atoms,), dtype=np.float32)
+        atomic_numbers = np.zeros((num_atoms,), dtype=np.int32)
+        exclusions = np.zeros((num_atoms * num_atoms,), dtype=np.float32)
+
+        c_coords = coords.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        c_sigmas = sigmas.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        c_epsilons = epsilons_k.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        c_charges = charges.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        c_z = atomic_numbers.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+        c_excl = exclusions.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+
+        self.lib.env_get_atoms_block(self._env_ptr, c_coords, c_sigmas, c_epsilons, c_charges, c_z)
+        self.lib.env_get_atom_exclusions(self._env_ptr, c_excl)
+
+        bonds_list: List[Tuple[int, int, str]] = []
+        for b in range(num_bonds):
+            u = int(self.lib.env_get_bond_u(self._env_ptr, b))
+            v = int(self.lib.env_get_bond_v(self._env_ptr, b))
+            b_order = int(self.lib.env_get_bond_order(self._env_ptr, b))
+            b_str = "ar" if b_order == 4 else str(b_order)
+            bonds_list.append((u, v, b_str))
+
+        return {
+            "num_atoms": num_atoms,
+            "coords": coords.reshape((num_atoms, 3)),
+            "sigmas": sigmas,
+            "epsilons_k": epsilons_k,
+            "charges": charges,
+            "atomic_numbers": atomic_numbers,
+            "exclusions": exclusions.reshape((num_atoms, num_atoms)),
+            "bonds": bonds_list,
+            "mw": float(self.lib.env_get_molecular_weight(self._env_ptr)),
+            "p_wall": float(self.lib.env_get_p_wall(self._env_ptr)),
+            "omega_solv": float(self.lib.env_get_omega_solv(self._env_ptr)),
+            "pmi_linearity": float(self.lib.env_get_pmi_linearity(self._env_ptr)),
+            "aromatic_density": float(self.lib.env_get_aromatic_density(self._env_ptr)),
+            "rotatable_fraction": float(self.lib.env_get_rotatable_fraction(self._env_ptr)),
+        }

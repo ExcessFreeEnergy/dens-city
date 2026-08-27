@@ -282,29 +282,72 @@ class BatchedTinyCDFT:
 
         for b in range(self.batch_size):
             mat = self.materials[b]
-            if mat is not None:
-                p_data = getattr(mat, "precomputed_cdft_data", None)
-                if p_data is not None:
-                    slit_w_b = p_data["slit_w"]
-                    dz_b = p_data["dz"]
-                    temp_b = mat.temperature_k
-                    rho_b = mat.bulk_density_a3
-                    w3_arr = p_data["fmt_w3"]
-                    w2_arr = p_data["fmt_w2"]
-                    w1_arr = p_data["fmt_w1"]
-                    w0_arr = p_data["fmt_w0"]
-                    wv2_arr = p_data["fmt_wv2"]
-                    wv1_arr = p_data["fmt_wv1"]
-                    att_arr = p_data["att_arr"]
-                    v_ext_np = p_data["v_ext_np"]
-                else:
-                    sigma_b = mat.effective_sigma
-                    eps_b = mat.effective_epsilon_k
-                    slit_w_b = max(40.0, 12.0 * sigma_b)
-                    dz_b = slit_w_b / n_grid
-                    temp_b = mat.temperature_k
-                    rho_b = mat.bulk_density_a3
+            is_active = (mat is not None) or (
+                hasattr(batch, "molecule_mask") and float(batch.molecule_mask.numpy()[b]) > 0.5
+            )
+            if is_active:
+                if mat is not None:
+                    p_data = getattr(mat, "precomputed_cdft_data", None)
+                    if p_data is not None:
+                        slit_w_b = p_data["slit_w"]
+                        dz_b = p_data["dz"]
+                        temp_b = mat.temperature_k
+                        rho_b = mat.bulk_density_a3
+                        sigma_b = mat.effective_sigma
+                        w3_arr = p_data["fmt_w3"]
+                        w2_arr = p_data["fmt_w2"]
+                        w1_arr = p_data["fmt_w1"]
+                        w0_arr = p_data["fmt_w0"]
+                        wv2_arr = p_data["fmt_wv2"]
+                        wv1_arr = p_data["fmt_wv1"]
+                        att_arr = p_data["att_arr"]
+                        v_ext_np = p_data["v_ext_np"]
+                    else:
+                        sigma_b = mat.effective_sigma
+                        eps_b = mat.effective_epsilon_k
+                        slit_w_b = max(40.0, 12.0 * sigma_b)
+                        dz_b = slit_w_b / n_grid
+                        temp_b = mat.temperature_k
+                        rho_b = mat.bulk_density_a3
 
+                        fmt_dict = KernelBuilder.build_fmt_planar_kernels_np(sigma_b, dz_b)
+                        att_arr, att_pad = KernelBuilder.build_wca_attraction_kernel_np(sigma_b, eps_b, dz_b)
+                        v_ext_np = (
+                            KernelBuilder.build_slit_wall_potential_np(
+                                n_grid=n_grid,
+                                dz=dz_b,
+                                fluid_sigma=sigma_b,
+                                wall_sigma=wall_sigma,
+                                wall_epsilon_k=wall_epsilon_k,
+                            )
+                            / temp_b
+                        )
+                        w3_arr = fmt_dict["w3"]
+                        w2_arr = fmt_dict["w2"]
+                        w1_arr = fmt_dict["w1"]
+                        w0_arr = fmt_dict["w0"]
+                        wv2_arr = fmt_dict["wv2"]
+                        wv1_arr = fmt_dict["wv1"]
+                else:
+                    cond_np = (
+                        batch.conditioning.numpy()[b]
+                        if hasattr(batch, "conditioning") and batch.conditioning is not None
+                        else np.array([3.4, 120.0, 300.0, 0.02, -8.0], dtype=np.float32)
+                    )
+                    sigma_b = float(cond_np[0]) if cond_np[0] > 0.0 else 3.4
+                    eps_b = float(cond_np[1]) if cond_np[1] > 0.0 else 120.0
+                    temp_b = float(batch.temperature_k.numpy()[b]) if hasattr(batch, "temperature_k") else 300.0
+                    rho_b = (
+                        float(batch.bulk_density_a3.numpy()[b])
+                        if hasattr(batch, "bulk_density_a3")
+                        else float(cond_np[3])
+                    )
+                    slit_w_b = (
+                        float(batch.slit_width_a.numpy()[b])
+                        if hasattr(batch, "slit_width_a")
+                        else max(40.0, 12.0 * sigma_b)
+                    )
+                    dz_b = slit_w_b / n_grid
                     fmt_dict = KernelBuilder.build_fmt_planar_kernels_np(sigma_b, dz_b)
                     att_arr, att_pad = KernelBuilder.build_wca_attraction_kernel_np(sigma_b, eps_b, dz_b)
                     v_ext_np = (
@@ -324,7 +367,7 @@ class BatchedTinyCDFT:
                     wv2_arr = fmt_dict["wv2"]
                     wv1_arr = fmt_dict["wv1"]
 
-                eta_b = (math.pi / 6.0) * rho_b * (mat.effective_sigma**3)
+                eta_b = (math.pi / 6.0) * rho_b * (sigma_b**3)
                 one_minus_eta = max(1e-12, 1.0 - eta_b)
                 mu_fmt = -math.log(one_minus_eta) + (eta_b * (14.0 - 13.0 * eta_b + 5.0 * (eta_b**2))) / (
                     2.0 * (one_minus_eta**3)
@@ -492,7 +535,10 @@ class BatchedTinyCDFT:
         pressures = []
 
         for b in range(self.batch_size):
-            if self.materials[b] is None:
+            is_active = (self.materials[b] is not None) or (
+                hasattr(self.batch, "molecule_mask") and float(self.batch.molecule_mask.numpy()[b]) > 0.5
+            )
+            if not is_active:
                 pressures.append(0.0)
                 continue
             rho_arr = rho_profiles[b]
@@ -518,7 +564,10 @@ class BatchedTinyCDFT:
         rho_profiles = self.get_density_profiles()
         gammas = []
         for b in range(self.batch_size):
-            if self.materials[b] is None:
+            is_active = (self.materials[b] is not None) or (
+                hasattr(self.batch, "molecule_mask") and float(self.batch.molecule_mask.numpy()[b]) > 0.5
+            )
+            if not is_active:
                 gammas.append(0.0)
                 continue
             rho_arr = rho_profiles[b]

@@ -38,17 +38,25 @@ flowchart TD
 
     subgraph E["2. energy.py (Microscopic Hamiltonian)"]
         Mol["Material Sites: N_real Atoms"] --> Pad["Uniform 128-Site Tensor Padding (B=512)"]
-        Pad --> Ham["U(x) = Shifted-Force LJ + Coulomb + Steele (9-3) Slit Walls"]
+        Pad --> Ham["U(x) = Soft-Core Shifted-Force LJ + Damped Coulomb + Slit Walls"]
     end
 
-    subgraph B["3. bijectors.py (4-Channel Base-2 Flow)"]
+    subgraph OPT["3. lbfgs.py (Batched L-BFGS Geometry Relaxation)"]
+        RawCoords["Raw 3D Coordinates X_raw (B, N, 3)"] --> AutodiffForces["Autodiff: g = ∇_X U(X)"]
+        AutodiffForces --> TwoLoop["Two-Loop L-BFGS Recursion (m=6)"]
+        TwoLoop --> TrustRegion["Trust-Region Clamp (<= 0.2 Å) + Line Search"]
+        TrustRegion --> SIMDMask["SIMD Active Masking (||g||_RMS < tol)"]
+        SIMDMask --> RelaxedCoords["Relaxed Coordinates X_relaxed"]
+    end
+
+    subgraph B["4. bijectors.py (4-Channel Base-2 Flow)"]
         Latent["Latent Noise z ~ N(0, I) [dim = N_pad * 4 = 128 * 4 = 512]"]
         Flow["Base2CartesianFlow: RealNVP Stack of Dyadic Affine Couplings"]
         Latent --> Flow
         Flow --> Coords["Generated Cartesian Coordinates x (B, 128, 3) + log|det J|"]
     end
 
-    subgraph G["4. generator.py (Variational Training & Sampling)"]
+    subgraph G["5. generator.py (Variational Training & Sampling)"]
         subgraph LOOP["JIT Training Step (@TinyJit)"]
             Loss["Reverse-KL Loss: L = β * U(x) - log p_z(z) - log|det J|"]
             Grad["Autograd: ∇_θ L -> Optimizer Step (Adam / Muon)"]
@@ -56,16 +64,20 @@ flowchart TD
         end
         
         Sample["generator.sample() -> Slice Real Atoms -> Export trajectory.xyz"]
+        Stats["generator.evaluate_conformer_ensemble() -> <U_3D>, Var(U), <ln p(x)>"]
     end
 
     %% Data Flow Connections
     Origins --> Flow
     Coords --> Ham
+    RawCoords --> OPT
+    RelaxedCoords --> Ham
     Ham --> Loss
     Origins --> Loss
     Flow --> Loss
     Grad --> Flow
     Flow --> Sample
+    Flow --> Stats
 ```
 
 ---
@@ -82,18 +94,31 @@ flowchart TD
     \log p_0(\mathbf{r}_1 \dots \mathbf{r}_N) = \sum_{i=1}^N \left[ -\ln(L_x L_y) + \ln(\rho_{\rm cDFT}(z_i)) - \ln\left(\int \rho_{\rm cDFT}(z) dz\right) \right]
     $$
 
-### 3.2 `energy.py` — Shifted-Force Microscopic Hamiltonian & Energy Regularization
+### 3.2 `energy.py` — Shifted-Force Microscopic Hamiltonian, Soft-Core Protection & EGNN Force Fields
 - **`regularize_energy(energy, e_high=1e4, e_max=1e20)`**:
   - Continuous logarithmic regularization $E_{\rm reg} = E_{\rm high} + \log(E - E_{\rm high} + 1)$ for $E \ge E_{\rm high}$.
   - Autograd-safe: hard-bounds excess to $0.0$ before `.log()` evaluation to prevent NaN gradient poisoning.
 - **`MicroscopicEnergy`**:
   - `__init__(material, box_size, r_cut=None, pad_to_power_of_2=True, wall_type="stele93", e_high=1e4, e_max=1e20)`: Configures pairwise parameters $\sigma_{ij}, \epsilon_{ij}, q_{ij}$, minimum image periodic boundary conditions in $XY$, confining wall parameters, and Noé regularization thresholds.
-  - `compute_pair_energy(pos, shift=True)`: Pairwise shifted-force Lennard-Jones (12-6) + Coulomb electrostatic energy with periodic distance wrap. Supports both $(B, N, 3)$ and $(B, N, 4)$ inputs.
-  - `compute_wall_energy(pos)`: External Steele (9-3) or hard wall confining potential energy in $Z$.
+  - `compute_pair_energy(pos, shift=True)`: Pairwise shifted-force Lennard-Jones (12-6) + Coulomb electrostatic energy with periodic distance wrap.
+    - **Soft-Core Distance Flooring**: Enforces $r^2 \ge 0.25\text{ Å}^2 \implies r \ge 0.50\text{ Å}$ to eliminate $0/0$ division and unphysical nuclear collapse.
+    - **Reaction-Field Soft-Core Coulomb Damping**: Computes electrostatic distance via $r_{\rm coul} = \sqrt{r^2 + 0.36\text{ Å}^2}$ ($r_{\rm soft} = 0.60\text{ Å}$), eliminating infinite $-\nabla U$ singularities as $r \to 0$ when $\sigma_{ij} = 0$.
+  - `compute_wall_energy(pos)`: External Steele (9-3) or hard wall confining potential energy in $Z$, floored with autodiff-safe steric radii.
   - `regularize_energy(energy, e_high=None, e_max=None)`: Regularizes high-energy configurations using instance thresholds.
   - `eval_energy`: JIT-compiled function wrapper (`TinyJit(self.__call__)`).
+- **`EGNNMicroscopicEnergy` & `EGNNForceField`**:
+  - `EGNNForceField(n_layers=3, hidden_dim=64, in_node_features=6)`: $E(n)$-equivariant message passing neural network predicting SE(3)-invariant microscopic potential energies and equivariant analytical Cartesian forces.
 
-### 3.3 `bijectors.py` — Normalizing Flows, Invertible Bijectors & Torsional Kinematics
+### 3.3 `lbfgs.py` — Batched Quasi-Newton (L-BFGS) GPU Geometry Relaxation
+- **`BatchedLBFGS`**:
+  - `__init__(max_iter=50, grad_tol=1e-3, m=6, lr=1.0, c1=1e-4, backtrack_factor=0.5, max_line_search_steps=10, max_step=0.20, verbose=False)`:
+    - **Vectorized Two-Loop Recursion**: Maintains rolling deques of displacement vectors $s_k = x_{k+1} - x_k$ and gradient differences $y_k = g_{k+1} - g_k$ ($m=6$), reconstructing curvature-aware search directions $p_k = -H_k g_k$ in $O(m \cdot 3N)$ memory.
+    - **Reverse-Mode Autograd Forces**: Computes exact analytical forces $-\nabla_X U$ simultaneously across all atoms in batch $(B, N, 3)$ via `tinygrad` tensor backpropagation.
+    - **Trust-Region Clamping**: Restricts maximum single-atom displacement to $\Delta r_{\max} \le 0.20\text{ Å}$ per iteration, preventing atoms from jumping across Lennard-Jones repulsive cores.
+    - **SIMD Convergence Masking**: Evaluates root-mean-square force $\|g_b\|_{\rm RMS} = \sqrt{\frac{1}{N_{\rm real}} \sum_i \|g_{b,i}\|^2}$ per molecule, freezing converged candidates while unfinished molecules continue relaxing.
+  - `minimize(energy_fn, x_init, atom_mask=None) -> LBFGSResult`: Returns `x_relaxed`, `initial_energies`, `final_energies`, `rms_forces`, `converged`, and `energy_history`.
+
+### 3.4 `bijectors.py` — Normalizing Flows, Invertible Bijectors & Torsional Kinematics
 - **`AffineCouplingLayer`**:
   - Dyadic partitioning (`dim_a = dim // 2, dim_b = dim // 2`) with power-of-2 hidden dimensions.
   - Exact analytical forward, inverse, and Jacobian log-determinant $\sum s(x_A)$.
@@ -109,7 +134,7 @@ flowchart TD
   - Autograd-safe: applies regularized safe norms (`.maximum(1e-8).sqrt()`) on normal vectors to eliminate division-by-zero singularities on collinear $180^\circ$ bond angles.
   - Evaluates 3-fold Fourier rotamer potential $J_{\rm tor}(\phi) = \frac{1}{BK}\sum (1 + \cos(3\phi))$ with global minima at trans ($\pm 180^\circ$) and gauche ($\pm 60^\circ$).
 
-### 3.4 `generator.py` — Variational Boltzmann Generator with Torsional Biasing
+### 3.5 `generator.py` — Variational Boltzmann Generator with Torsional Biasing
 - **`BoltzmannGenerator`**:
   - `__init__(flow, energy_fn, prior=None, temperature_k=300.0, learning_rate=0.01, batch_size=512, w_torsion=0.0, dihedral_quadruplets=None)`: Initializes optimizer, device origin pool, realized temperature/torsion buffers, and bond graph quadruplets.
   - `compute_loss(z, origin=None)`: Evaluates Reverse-KL loss $\mathcal{L}(\theta) = \beta U(f_\theta(z)) - \log p_z(z) - \log |\det J| + w_{\rm tor} J_{\rm tor}$.
@@ -118,9 +143,10 @@ flowchart TD
       - `Base2CartesianFlow`: Evaluates safe regularized Cartesian dihedrals for explicit `.mol2` bond graph quadruplets.
   - `train(steps=40, batch_size=512, verbose=False)`: JIT-compiled optimization loop over flow parameters using `Adam` or `Muon`.
   - `sample(n_samples=512, return_all_pad=False, mcmc_steps=0, mcmc_step_size=0.1)`: Draws equilibrium configurations and automatically slices dummy padding sites to return real molecular atoms $(B, N_{\rm real}, 3)$. Dispatches to `sample_relaxed` when `mcmc_steps > 0`.
+  - `evaluate_conformer_ensemble(n_samples=512)`: Evaluates statistical mechanics ensemble properties ($\langle U_{3\rm D} \rangle, \text{Var}(U), \langle \ln p(x) \rangle$).
   - `log_prob(x)`: Evaluates exact generated density $\log q_\theta(\mathbf{x}) = \log p_z(f^{-1}(\mathbf{x})) + \log |\det J_{f^{-1}}(\mathbf{x})|$.
 
-### 3.5 Latent Space MCMC Relaxation Engine (`generator.sample_relaxed`)
+### 3.6 Latent Space MCMC Relaxation Engine (`generator.sample_relaxed`)
 - **Motivation & Principle**:
   While normalizing flows generate one-shot configurations rapidly, high-dimensional target distributions inevitably contain rare steric overlap outliers. Rather than running costly gradient descent in 3D configuration space, MCMC is performed directly in the Gaussian latent space $\mathcal{Z}$.
 - **Target Latent Distribution & Metropolis Criterion**:

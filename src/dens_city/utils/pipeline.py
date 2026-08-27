@@ -66,6 +66,7 @@ class MaterialPipelineTask:
     debug_log_path: Optional[str] = None
     r_cut: Optional[float] = None
     energy_engine: str = "classical"
+    material_obj: Optional[Material] = None
 
 
 @dataclass
@@ -89,6 +90,9 @@ class MaterialPipelineResult:
     excess_adsorption_a2: float = 0.0
     cdft_final_loss: float = 0.0
     bg_final_loss: Optional[float] = None
+    bg_log_likelihood: Optional[float] = None
+    bg_energy_mean: Optional[float] = None
+    bg_energy_var: Optional[float] = None
     solvation_free_energy_kcal_mol: Optional[float] = None
     artifact_dir: Optional[str] = None
     artifacts: List[str] = field(default_factory=list)
@@ -609,23 +613,31 @@ class AsyncBatchPrefetcher:
         loaded_materials: List[Material] = []
         task_indices: List[int] = []
 
-        worker_args = [
-            (
-                idx,
-                task.material_path_or_name,
-                task.temperature_k,
-                task.bulk_density_a3,
-                task.pressure_bar,
-                task.chemical_potential_kbt,
-            )
-            for idx, task in enumerate(chunk)
-        ]
+        worker_args = []
+        direct_results = []
+        for idx, task in enumerate(chunk):
+            if task.material_obj is not None:
+                direct_results.append((idx, task.material_obj, None))
+            else:
+                worker_args.append(
+                    (
+                        idx,
+                        task.material_path_or_name,
+                        task.temperature_k,
+                        task.bulk_density_a3,
+                        task.pressure_bar,
+                        task.chemical_potential_kbt,
+                    )
+                )
 
-        results = list(executor.map(_load_single_material_worker_unpack, worker_args))
+        if worker_args:
+            results = direct_results + list(executor.map(_load_single_material_worker_unpack, worker_args))
+        else:
+            results = direct_results
 
         for idx, mat, err in results:
             task = chunk[idx]
-            mat_input = task.material_path_or_name
+            mat_input = task.material_path_or_name or (mat.name if mat else f"mat_{idx}")
             mat_basename = Path(mat_input).stem if os.path.exists(mat_input) or "/" in mat_input else str(mat_input)
             mat_out_dir = os.path.join(task.out_dir, mat_basename)
             os.makedirs(mat_out_dir, exist_ok=True)
@@ -814,13 +826,11 @@ def execute_prepared_batch(
     bg_losses = generator.train(steps=bg_steps, batch_size=batch_size, verbose=False)
     bg_loss = bg_losses[-1] if bg_losses else 0.0
 
-    n_samp_batches = max(1, math.ceil(bg_samples / batch_size))
-    all_batch_samples = []
-    for _ in range(n_samp_batches):
-        samp = generator.sample(n_samples=batch_size, return_all_pad=True)
-        all_batch_samples.append(samp.numpy())
-
-    stacked_samples = np.concatenate(all_batch_samples, axis=0)
+    conformer_stats = generator.evaluate_conformer_ensemble(n_samples=bg_samples)
+    stacked_samples = conformer_stats["coords"]
+    mean_energies = conformer_stats["mean_energy"]
+    var_energies = conformer_stats["var_energy"]
+    mean_log_pxs = conformer_stats["mean_log_px"]
     t_bg = time.perf_counter() - t_bg_start
 
     # 3. Extract Per-Material Trajectories and Dispatch Async Writes
@@ -833,7 +843,10 @@ def execute_prepared_batch(
         mat_out_dir = os.path.join(task.out_dir, mat.name)
         site_names = [s.site_name for s in mat.sites] if mat.sites else [mat.name]
 
-        mat_coords = stacked_samples[:bg_samples, : mat.num_sites, :]
+        if len(stacked_samples.shape) == 4:
+            mat_coords = stacked_samples[:bg_samples, local_idx, : mat.num_sites, :]
+        else:
+            mat_coords = stacked_samples[:bg_samples, : mat.num_sites, :]
 
         if async_writer:
             async_writer.write_xyz(
@@ -862,6 +875,9 @@ def execute_prepared_batch(
             excess_adsorption_a2=cdft_gammas[local_idx],
             cdft_final_loss=final_cdft_loss,
             bg_final_loss=bg_loss,
+            bg_log_likelihood=float(mean_log_pxs[local_idx]) if local_idx < len(mean_log_pxs) else None,
+            bg_energy_mean=float(mean_energies[local_idx]) if local_idx < len(mean_energies) else None,
+            bg_energy_var=float(var_energies[local_idx]) if local_idx < len(var_energies) else None,
             solvation_free_energy_kcal_mol=getattr(mat, "solvation_free_energy_kcal_mol", 0.0),
             artifact_dir=mat_out_dir,
         )

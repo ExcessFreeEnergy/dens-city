@@ -165,10 +165,71 @@ typedef struct {
     int num_atoms;
     int num_bonds;
     int num_ports;
+    int num_attached_fragments;
     float molecular_weight;
     Vec3 center_of_mass;
     float bounding_radius;
 } MolecularGraph;
+
+// Computes 1-2 (bonded), 1-3 (angle), and 1-4 (torsion/intra-ring) symmetric exclusion matrix (N x N)
+static inline void compute_12_13_exclusions(const MolecularGraph* graph, float* excl_out) {
+    int n = graph->num_atoms;
+    memset(excl_out, 0, n * n * sizeof(float));
+    for (int i = 0; i < n; i++) {
+        excl_out[i * n + i] = 1.0f;
+    }
+    for (int b = 0; b < graph->num_bonds; b++) {
+        int u = graph->bonds[b].atom_u;
+        int v = graph->bonds[b].atom_v;
+        if (u >= 0 && u < n && v >= 0 && v < n) {
+            excl_out[u * n + v] = 1.0f;
+            excl_out[v * n + u] = 1.0f;
+        }
+    }
+    for (int i = 0; i < n; i++) {
+        for (int b1 = 0; b1 < graph->num_bonds; b1++) {
+            int w = -1;
+            if (graph->bonds[b1].atom_u == i) w = graph->bonds[b1].atom_v;
+            else if (graph->bonds[b1].atom_v == i) w = graph->bonds[b1].atom_u;
+            if (w < 0 || w >= n) continue;
+
+            for (int b2 = 0; b2 < graph->num_bonds; b2++) {
+                int j = -1;
+                if (graph->bonds[b2].atom_u == w && graph->bonds[b2].atom_v != i) j = graph->bonds[b2].atom_v;
+                else if (graph->bonds[b2].atom_v == w && graph->bonds[b2].atom_u != i) j = graph->bonds[b2].atom_u;
+                if (j >= 0 && j < n && j != i) {
+                    excl_out[i * n + j] = 1.0f;
+                    excl_out[j * n + i] = 1.0f;
+                }
+            }
+        }
+    }
+    for (int i = 0; i < n; i++) {
+        for (int b1 = 0; b1 < graph->num_bonds; b1++) {
+            int w = -1;
+            if (graph->bonds[b1].atom_u == i) w = graph->bonds[b1].atom_v;
+            else if (graph->bonds[b1].atom_v == i) w = graph->bonds[b1].atom_u;
+            if (w < 0 || w >= n) continue;
+
+            for (int b2 = 0; b2 < graph->num_bonds; b2++) {
+                int k = -1;
+                if (graph->bonds[b2].atom_u == w && graph->bonds[b2].atom_v != i) k = graph->bonds[b2].atom_v;
+                else if (graph->bonds[b2].atom_v == w && graph->bonds[b2].atom_u != i) k = graph->bonds[b2].atom_u;
+                if (k < 0 || k >= n || k == i) continue;
+
+                for (int b3 = 0; b3 < graph->num_bonds; b3++) {
+                    int j = -1;
+                    if (graph->bonds[b3].atom_u == k && graph->bonds[b3].atom_v != w) j = graph->bonds[b3].atom_v;
+                    else if (graph->bonds[b3].atom_v == k && graph->bonds[b3].atom_u != w) j = graph->bonds[b3].atom_u;
+                    if (j >= 0 && j < n && j != i && j != w) {
+                        excl_out[i * n + j] = 1.0f;
+                        excl_out[j * n + i] = 1.0f;
+                    }
+                }
+            }
+        }
+    }
+}
 
 // Fragment definition template for library
 typedef struct {
@@ -280,10 +341,19 @@ static inline FragmentTemplate get_fragment_template(int frag_idx) {
             ft.num_bonds = 12;
             ft.num_ports = 2;
 
+            float d = 0.889f;
+            float m = 1.257f;
             Vec3 cage[10] = {
-                {0.0f, 0.0f, 0.0f}, {1.54f, 0.0f, 0.0f}, {0.0f, 1.54f, 0.0f}, {0.0f, 0.0f, 1.54f},
-                {1.54f, 1.54f, 0.0f}, {1.54f, 0.0f, 1.54f}, {0.0f, 1.54f, 1.54f},
-                {1.54f, 1.54f, 1.54f}, {0.77f, 0.77f, 0.0f}, {0.77f, 0.0f, 0.77f}
+                { d,  d,  d}, // 0: Bridgehead A0
+                { d, -d, -d}, // 1: Bridgehead A1
+                {-d,  d, -d}, // 2: Bridgehead A2
+                {-d, -d,  d}, // 3: Bridgehead A3
+                { m, 0.0f, 0.0f}, // 4: Methylene M01 (between A0, A1)
+                {-m, 0.0f, 0.0f}, // 5: Methylene M23 (between A2, A3)
+                {0.0f,  m, 0.0f}, // 6: Methylene M02 (between A0, A2)
+                {0.0f, -m, 0.0f}, // 7: Methylene M13 (between A1, A3)
+                {0.0f, 0.0f,  m}, // 8: Methylene M03 (between A0, A3)
+                {0.0f, 0.0f, -m}  // 9: Methylene M12 (between A1, A2)
             };
             for (int i = 0; i < 10; i++) {
                 ft.atoms[i].pos = cage[i];
@@ -294,13 +364,16 @@ static inline FragmentTemplate get_fragment_template(int frag_idx) {
                 ft.atoms[i].ring_id = 2;
             }
             int bond_pairs[12][2] = {
-                {0,1}, {0,2}, {0,3}, {1,4}, {1,5}, {2,4}, {2,6}, {3,5}, {3,6}, {4,7}, {5,7}, {6,7}
+                {0, 4}, {0, 6}, {0, 8}, // A0 to M01, M02, M03
+                {1, 4}, {1, 7}, {1, 9}, // A1 to M01, M13, M12
+                {2, 5}, {2, 6}, {2, 9}, // A2 to M23, M02, M12
+                {3, 5}, {3, 7}, {3, 8}  // A3 to M23, M13, M03
             };
             for (int b = 0; b < 12; b++) {
                 ft.bonds[b] = (Bond){.atom_u = bond_pairs[b][0], .atom_v = bond_pairs[b][1], .bond_order = 1, .is_rotatable = false};
             }
-            ft.ports[0] = (AttachmentPort){.origin_atom = 0, .pos = ft.atoms[0].pos, .normal = vec3_create(-0.577f, -0.577f, -0.577f), .state = PORT_STATE_EMPTY};
-            ft.ports[1] = (AttachmentPort){.origin_atom = 7, .pos = ft.atoms[7].pos, .normal = vec3_create(0.577f, 0.577f, 0.577f), .state = PORT_STATE_EMPTY};
+            ft.ports[0] = (AttachmentPort){.origin_atom = 0, .pos = ft.atoms[0].pos, .normal = vec3_create(0.577f, 0.577f, 0.577f), .state = PORT_STATE_EMPTY};
+            ft.ports[1] = (AttachmentPort){.origin_atom = 1, .pos = ft.atoms[1].pos, .normal = vec3_create(0.577f, -0.577f, -0.577f), .state = PORT_STATE_EMPTY};
             break;
         }
 
@@ -466,8 +539,8 @@ static inline FragmentTemplate get_fragment_template(int frag_idx) {
             ft.atoms[1].atomic_number = 1;
             ft.atoms[1].mass = 1.008f;
             ft.atoms[1].charge = 0.58f;
-            ft.atoms[1].sigma = 0.0f;
-            ft.atoms[1].epsilon_k = 0.0f;
+            ft.atoms[1].sigma = 1.06f;
+            ft.atoms[1].epsilon_k = 7.55f;
 
             ft.bonds[0] = (Bond){.atom_u = 0, .atom_v = 1, .bond_order = 1, .is_rotatable = true};
             break;
@@ -668,6 +741,7 @@ static inline bool rigid_body_attach(MolecularGraph* graph, int port_idx, int fr
         }
     }
 
+    graph->num_attached_fragments++;
     return true;
 }
 
@@ -681,6 +755,7 @@ static inline void init_base_scaffold(MolecularGraph* graph, int scaffold_frag_i
     graph->num_atoms = ft.num_atoms;
     graph->num_bonds = ft.num_bonds;
     graph->num_ports = ft.num_ports;
+    graph->num_attached_fragments = 0;
 
     for (int i = 0; i < ft.num_atoms; i++) {
         graph->atoms[i] = ft.atoms[i];

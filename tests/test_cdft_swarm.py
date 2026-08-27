@@ -217,16 +217,27 @@ def test_exploit2_unreactive_blob_finalize_is_masked_and_mechanics_obliterated()
     )
     obs, info = env.reset()
     mask = env.get_action_mask()
-    assert mask[28] == 1, "Finalize should be allowed when empty_ports (2) >= min_valency (2)"
+    # On reset of bare scaffold, finalize is strictly masked to prevent premature finalization
+    assert mask[28] == 0, "Finalize must be masked on bare scaffold (prevent premature finalization)"
 
-    # Cap Port 0 (leaving 1 empty port, which is < min_valency 2)
-    obs, r, term, _, info = env.step((0, 6))  # Hydrogen cap
+    # Attach Linker (Para-Phenylene) at Port 0
+    obs, r, term, _, info = env.step((0, 3))
+    assert term is False
+
+    # Attach Linker (Para-Phenylene) at Port 1 (now >= 16 atoms, >= 2 attached fragments)
+    obs, r, term, _, info = env.step((1, 3))
+    assert term is False
+    mask = env.get_action_mask()
+    assert mask[28] == 1, "Finalize should be allowed once molecule has grown >=16 atoms and has >=2 reactive ports"
+
+    # Cap one port (leaving 1 empty port, which is < min_valency 2)
+    obs, r, term, _, info = env.step((2, 6))  # Hydrogen cap
     assert term is False
     mask = env.get_action_mask()
     assert mask[28] == 0, "Finalize MUST be masked to 0 when empty_ports (1) < min_valency (2)"
 
-    # Cap Port 1 (leaving 0 empty ports -> auto-terminates because all ports are filled)
-    obs, reward, term, _, info = env.step((1, 6))  # Hydrogen cap
+    # Cap the remaining port (leaving 0 empty ports -> auto-terminates because all ports are filled)
+    obs, reward, term, _, info = env.step((3, 6))  # Hydrogen cap
     assert term is True
     # Because active_valency (0) < min_valency (2), mechanical rewards are obliterated and penalty applied:
     assert reward < -5.0, f"Unreactive blob should receive harsh negative penalty (got {reward})"
