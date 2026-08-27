@@ -169,3 +169,35 @@ def test_quantum_funnel_ranker_pareto_integration(tmp_path):
     summary = ranker.export_results(ranked, out_dir=tmp_path, top_k=2)
     assert summary["top_k_exported"] == 2
     assert "U_EGNN" in (tmp_path / "funnel_report.md").read_text()
+
+
+def test_egnn_fully_padded_batch_gradient_none_safety():
+    """
+    Validates that a batch with all-zero molecule masks or all-zero atom masks
+    safely returns zero energies and zero forces without NoneType errors.
+    """
+    B, N = 4, 16
+    x_np = np.zeros((B, N, 3), dtype=np.float32)
+    z_np = np.zeros((B, N), dtype=np.float32)
+    mask_np = np.zeros((B, N, 1), dtype=np.float32)
+    mol_mask_np = np.zeros(B, dtype=np.float32)
+
+    egnn = EGNNForceField(num_layers=3, hidden_dim=64, max_atomic_number=128, n_particles=N)
+
+    x_tensor = Tensor(x_np)
+    z_tensor = Tensor(z_np)
+    mask_tensor = Tensor(mask_np)
+    mol_mask_tensor = Tensor(mol_mask_np)
+
+    u_total = egnn.compute_energy(x_tensor, z_tensor, mask_tensor, mol_mask_tensor)
+    assert u_total.shape == (B,)
+    assert np.allclose(u_total.numpy(), 0.0)
+
+    u_total.sum().backward()
+
+    grad_tensor = x_tensor.grad if x_tensor.grad is not None else Tensor.zeros_like(x_tensor)
+    f_tensor = (-grad_tensor * mask_tensor).realize()
+    f_np = f_tensor.numpy()
+
+    assert f_np.shape == (B, N, 3)
+    assert np.allclose(f_np, 0.0)
