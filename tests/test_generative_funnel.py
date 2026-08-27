@@ -5,8 +5,10 @@ End-to-end integration test for the 3-stage Generative Molecular Funnel Pipeline
 from pathlib import Path
 
 import numpy as np
+from tinygrad import Tensor
 
 from dens_city.boltzmann.bijectors import Base2CartesianFlow
+from dens_city.boltzmann.egnn import EGNNForceField
 from dens_city.boltzmann.energy import MicroscopicEnergy
 from dens_city.boltzmann.generator import BoltzmannGenerator
 from dens_city.boltzmann.lbfgs import BatchedLBFGS
@@ -62,7 +64,26 @@ def test_generative_funnel_e2e(tmp_path):
     assert len(stats["mean_energy"]) == 8
     assert len(stats["mean_log_px"]) == 8
 
-    # 4. Pipeline Results
+    # 4. Stage 4: EGNN Quantum-Surrogate Filter
+    egnn = EGNNForceField(num_layers=3, hidden_dim=64, max_atomic_number=128, n_particles=candidate_batch.n_particles)
+    x_tensor = Tensor(lbfgs_res.x_relaxed)
+    z_tensor = Tensor(candidate_batch.atomic_numbers[:8])
+    mask_tensor = Tensor(candidate_batch.atom_mask[:8]).reshape(8, candidate_batch.n_particles, 1)
+    mol_mask_tensor = Tensor.ones(8)
+
+    u_total = egnn.compute_energy(x_tensor, z_tensor, mask_tensor, mol_mask_tensor)
+    u_total.sum().backward()
+
+    u_np = u_total.numpy().astype(np.float32)
+    grad_tensor = x_tensor.grad if x_tensor.grad is not None else Tensor.zeros_like(x_tensor)
+    f_np = (-grad_tensor * mask_tensor).numpy().astype(np.float32)
+    num_real = np.maximum(1.0, candidate_batch.atom_mask[:8].reshape(8, -1).sum(axis=1))
+    f_rms_np = np.sqrt(np.sum(f_np**2, axis=(1, 2)) / num_real).astype(np.float32)
+
+    x_tensor.grad = None
+    del x_tensor, z_tensor, mask_tensor, mol_mask_tensor, u_total, grad_tensor
+
+    # 5. Pipeline Results
     pipeline_results = []
     for i in range(candidate_batch.num_candidates):
         meta = candidate_batch.metadata[i]
@@ -76,11 +97,13 @@ def test_generative_funnel_e2e(tmp_path):
             bg_log_likelihood=float(stats["mean_log_px"][i]),
             bg_energy_mean=float(stats["mean_energy"][i]),
             bg_energy_var=float(stats["var_energy"][i]),
+            egnn_energy=float(u_np[i]),
+            egnn_force_rms=float(f_rms_np[i]),
             solvation_free_energy_kcal_mol=float(meta["omega_solv"]),
         )
         pipeline_results.append(res)
 
-    # 5. Funnel Ranker & Pareto Export
+    # 6. Funnel Ranker & Pareto Export
     ranker = FunnelRanker(target_spec=target_spec)
     ranked = ranker.rank_candidates(candidate_batch.metadata, pipeline_results)
     assert len(ranked) == candidate_batch.num_candidates

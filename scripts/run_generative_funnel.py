@@ -10,6 +10,7 @@ Couples:
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
 from pathlib import Path
@@ -20,6 +21,7 @@ import torch
 from tinygrad import Tensor
 
 from dens_city.boltzmann.bijectors import Base2CartesianFlow
+from dens_city.boltzmann.egnn import EGNNForceField
 from dens_city.boltzmann.energy import MicroscopicEnergy
 from dens_city.boltzmann.generator import BoltzmannGenerator
 from dens_city.boltzmann.lbfgs import BatchedLBFGS
@@ -118,6 +120,30 @@ def main():
         type=float,
         default=1e-3,
         help="RMS force convergence threshold for L-BFGS relaxation (default: 1e-3)",
+    )
+    parser.add_argument(
+        "--enable-egnn",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable Stage 4 E(n)-Equivariant Graph Neural Network (EGNN) quantum surrogate screening (default: True)",
+    )
+    parser.add_argument(
+        "--egnn-batch-size",
+        type=int,
+        default=32,
+        help="Batch size for Stage 4 EGNN quantum force field evaluation (default: 32)",
+    )
+    parser.add_argument(
+        "--egnn-layers",
+        type=int,
+        default=7,
+        help="Number of message-passing layers in the EGNN architecture (default: 7)",
+    )
+    parser.add_argument(
+        "--egnn-weights",
+        type=str,
+        default=None,
+        help="Optional path to pretrained EGNN weights .npz archive",
     )
     args = parser.parse_args()
 
@@ -225,6 +251,7 @@ def main():
     batch_size = args.batch_size
     num_chunks = max(1, math.ceil(candidate_batch.num_candidates / batch_size))
     pipeline_results: List[MaterialPipelineResult] = []
+    coords_relaxed_all = np.zeros_like(candidate_batch.coords)
 
     for chunk_idx in range(num_chunks):
         start_i = chunk_idx * batch_size
@@ -260,8 +287,10 @@ def main():
                 x_init=coords_chunk,
                 atom_mask=mol_batch.atom_mask,
             )
+            coords_relaxed_all[start_i:end_i] = lbfgs_res.x_relaxed[:count_i]
             u_evaluated = lbfgs_res.final_energies
         else:
+            coords_relaxed_all[start_i:end_i] = candidate_batch.coords[start_i:end_i]
             u_evaluated = energy_fn(Tensor(coords_chunk)).numpy()
 
         # 3. Batched Boltzmann Generator & Normalizing Flow
@@ -303,9 +332,79 @@ def main():
     print(f"  GPU screening finished in {t_gpu:.2f}s ({candidate_batch.num_candidates / max(1e-3, t_gpu):.1f} mol/s)")
 
     # -------------------------------------------------------------
-    # STAGE 4: Multi-Objective Funnel Ranking & Pareto Export
+    # STAGE 4: EGNN Quantum-Surrogate Filter
     # -------------------------------------------------------------
-    print(f"\n[Stage 4] Ranking and sorting Pareto frontier (Top {args.top_k} selection)...")
+    if args.enable_egnn:
+        print(
+            f"\n[Stage 4] Screening {candidate_batch.num_candidates} relaxed candidates via 7-Layer Invariant EGNN MLFF (B={args.egnn_batch_size})..."
+        )
+        t0_egnn = time.perf_counter()
+        egnn = EGNNForceField(
+            num_layers=args.egnn_layers,
+            hidden_dim=128,
+            max_atomic_number=128,
+            n_particles=candidate_batch.n_particles,
+        )
+
+        egnn_batch_size = args.egnn_batch_size
+        num_egnn_chunks = max(1, math.ceil(candidate_batch.num_candidates / egnn_batch_size))
+
+        for chunk_idx in range(num_egnn_chunks):
+            start_i = chunk_idx * egnn_batch_size
+            count_i = min(egnn_batch_size, candidate_batch.num_candidates - start_i)
+            end_i = start_i + count_i
+
+            x_chunk = np.zeros((egnn_batch_size, candidate_batch.n_particles, 3), dtype=np.float32)
+            z_chunk = np.zeros((egnn_batch_size, candidate_batch.n_particles), dtype=np.float32)
+            mask_chunk = np.zeros((egnn_batch_size, candidate_batch.n_particles, 1), dtype=np.float32)
+            mol_mask_chunk = np.zeros(egnn_batch_size, dtype=np.float32)
+
+            x_chunk[:count_i] = coords_relaxed_all[start_i:end_i]
+            z_chunk[:count_i] = candidate_batch.atomic_numbers[start_i:end_i]
+            mask_chunk[:count_i] = candidate_batch.atom_mask[start_i:end_i].reshape(
+                count_i, candidate_batch.n_particles, 1
+            )
+            mol_mask_chunk[:count_i] = 1.0
+
+            # 1. State Tensors with autograd flag for conservative forces
+            x_tensor = Tensor(x_chunk)
+            z_tensor = Tensor(z_chunk)
+            mask_tensor = Tensor(mask_chunk)
+            mol_mask_tensor = Tensor(mol_mask_chunk)
+
+            # 2. Single forward pass for potential energy
+            u_total = egnn.compute_energy(x_tensor, z_tensor, mask_tensor, mol_mask_tensor)
+
+            # 3. Single reverse-mode autograd pass for conservative forces
+            u_total.sum().backward()
+
+            # 4. Immediate extraction to host NumPy
+            u_np = u_total.numpy().astype(np.float32)
+            grad_tensor = x_tensor.grad if x_tensor.grad is not None else Tensor.zeros_like(x_tensor)
+            f_np = (-grad_tensor * mask_tensor).numpy().astype(np.float32)
+
+            # 5. Quantum Force RMS Stability
+            num_real = np.maximum(1.0, mask_chunk.reshape(egnn_batch_size, -1).sum(axis=1))
+            f_rms_np = np.sqrt(np.sum(f_np**2, axis=(1, 2)) / num_real).astype(np.float32)
+
+            # 6. Explicitly sever the autograd graph to maintain constant O(B_egnn * N^2 * F) VRAM
+            x_tensor.grad = None
+            del x_tensor, z_tensor, mask_tensor, mol_mask_tensor, u_total, grad_tensor
+
+            for local_i in range(count_i):
+                global_i = start_i + local_i
+                pipeline_results[global_i].egnn_energy = float(u_np[local_i])
+                pipeline_results[global_i].egnn_force_rms = float(f_rms_np[local_i])
+
+        t_egnn = time.perf_counter() - t0_egnn
+        print(
+            f"  EGNN quantum screening finished in {t_egnn:.2f}s ({candidate_batch.num_candidates / max(1e-3, t_egnn):.1f} mol/s)"
+        )
+
+    # -------------------------------------------------------------
+    # STAGE 5: Multi-Objective Funnel Ranking & Pareto Export
+    # -------------------------------------------------------------
+    print(f"\n[Stage 5] Ranking and sorting Pareto frontier (Top {args.top_k} selection)...")
     ranker = FunnelRanker(target_spec=target_spec)
     ranked_candidates = ranker.rank_candidates(
         candidate_metadata=candidate_batch.metadata,
@@ -318,21 +417,22 @@ def main():
         top_k=args.top_k,
     )
 
-    print("\n" + "=" * 95)
-    print(f"=== TOP {args.top_k} REFINED MOLECULAR CANDIDATES ===")
-    print("=" * 95)
+    print("\n" + "=" * 120)
+    print(f"=== TOP {args.top_k} REFINED MOLECULAR CANDIDATES (QUANTUM-REFURBISHED) ===")
+    print("=" * 120)
     print(
-        f"{'Rank':<5} {'Candidate Name':<32} {'Score':>8} {'P_wall (bar)':>14} {'ln p(x)':>10} {'<U_3D> (K)':>12} {'MW (amu)':>10} {'Pareto':>8}"
+        f"{'Rank':<5} {'Candidate Name':<32} {'Score':>8} {'P_wall (bar)':>14} {'ln p(x)':>10} {'<U_3D> (K)':>12} {'U_EGNN (K)':>12} {'F_RMS':>10} {'MW (amu)':>10} {'Pareto':>8}"
     )
-    print("-" * 95)
+    print("-" * 120)
     for cand in ranked_candidates[: args.top_k]:
         pareto_str = "YES" if cand.is_pareto_optimal else "no"
         print(
             f"{cand.rank:<5} {cand.name:<32} {cand.funnel_score:>+8.3f} "
             f"{cand.wall_pressure_bar:>14.1f} {cand.bg_log_likelihood:>+10.2f} "
-            f"{cand.bg_energy_mean:>12.1f} {cand.molecular_weight:>10.1f} {pareto_str:>8}"
+            f"{cand.bg_energy_mean:>12.1f} {cand.egnn_energy:>12.1f} {cand.egnn_force_rms:>10.2f} "
+            f"{cand.molecular_weight:>10.1f} {pareto_str:>8}"
         )
-    print("=" * 95)
+    print("=" * 120)
     print(f"\nSuccessfully exported top candidates to: {export_summary['mol2_dir']}")
     print(f"Summary Report: {export_summary['report_path']}")
     print(f"Summary CSV:    {export_summary['csv_path']}")

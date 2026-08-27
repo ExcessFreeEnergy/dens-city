@@ -18,7 +18,7 @@ from dens_city.utils.pipeline import MaterialPipelineResult
 @dataclass
 class RankedCandidate:
     """
-    Encapsulates a fully evaluated and scored molecular candidate across all 3 funnel stages.
+    Encapsulates a fully evaluated and scored molecular candidate across all 4 funnel stages.
     """
 
     rank: int
@@ -32,6 +32,8 @@ class RankedCandidate:
     bg_log_likelihood: float
     bg_energy_mean: float
     bg_energy_var: float
+    egnn_energy: float
+    egnn_force_rms: float
     molecular_weight: float
     num_sites: int
     pmi_linearity: float
@@ -48,26 +50,32 @@ class RankedCandidate:
 
 class FunnelRanker:
     """
-    Ranks candidate molecules using coupled cDFT + Boltzmann Normalizing Flow observables.
+    Ranks candidate molecules using coupled cDFT + Boltzmann Normalizing Flow + EGNN MLFF observables.
     """
 
     def __init__(
         self,
         target_spec: Dict[str, Any],
-        w_rl: float = 0.35,
-        w_cdft: float = 0.35,
-        w_boltzmann: float = 0.30,
+        w_rl: float = 0.30,
+        w_cdft: float = 0.30,
+        w_boltzmann: float = 0.20,
+        w_egnn: float = 0.20,
         alpha_energy: float = 0.001,
         beta_logp: float = 0.05,
         gamma_var: float = 0.0001,
+        alpha_egnn_energy: float = 0.001,
+        beta_egnn_force: float = 0.01,
     ):
         self.target_spec = target_spec
         self.w_rl = w_rl
         self.w_cdft = w_cdft
         self.w_boltzmann = w_boltzmann
+        self.w_egnn = w_egnn
         self.alpha_energy = alpha_energy
         self.beta_logp = beta_logp
         self.gamma_var = gamma_var
+        self.alpha_egnn_energy = alpha_egnn_energy
+        self.beta_egnn_force = beta_egnn_force
 
         self.min_p_wall = float(target_spec.get("min_wall_pressure_bar", 15.0))
         self.max_solv = float(target_spec.get("max_solvation_kcal", -3.0))
@@ -79,8 +87,8 @@ class FunnelRanker:
         pipeline_results: List[MaterialPipelineResult],
     ) -> List[RankedCandidate]:
         """
-        Combines Stage 1 RL swarm metrics with Stage 2/3 cDFT and Boltzmann Generator
-        observables into a unified Pareto-ranked candidate list.
+        Combines Stage 1 RL swarm metrics with Stage 2/3 cDFT, Boltzmann Generator,
+        and Stage 4 EGNN quantum observables into a unified Pareto-ranked candidate list.
         """
         results_by_name = {r.material_name: r for r in pipeline_results}
 
@@ -100,6 +108,8 @@ class FunnelRanker:
             bg_logp = float(res.bg_log_likelihood) if (res and res.bg_log_likelihood is not None) else 0.0
             bg_u_mean = float(res.bg_energy_mean) if (res and res.bg_energy_mean is not None) else 0.0
             bg_u_var = float(res.bg_energy_var) if (res and res.bg_energy_var is not None) else 0.0
+            egnn_u = float(res.egnn_energy) if (res and res.egnn_energy is not None) else 0.0
+            egnn_f_rms = float(res.egnn_force_rms) if (res and res.egnn_force_rms is not None) else 0.0
 
             # 1. RL Score Component
             s_rl = max(0.0, rl_reward)
@@ -117,12 +127,19 @@ class FunnelRanker:
             # Lower Var(U) -> rigid, stable conformer ensemble
             s_bg = (
                 self.beta_logp * bg_logp
-                - self.alpha_energy * max(-1000.0, min(10000.0, bg_u_mean))
+                - self.alpha_energy * max(-10000.0, min(10000.0, bg_u_mean))
                 - self.gamma_var * min(50000.0, bg_u_var)
             )
 
+            # 4. EGNN Quantum Force Field Component
+            # Lower U_EGNN -> quantum ground state energetic minimum
+            # Lower ||F_EGNN||_RMS -> true stationary quantum minimum (not a quantum cliff)
+            s_egnn = -self.alpha_egnn_energy * max(-10000.0, min(50000.0, egnn_u)) - self.beta_egnn_force * min(
+                1000.0, egnn_f_rms
+            )
+
             # Total Composite Score
-            total_score = self.w_rl * s_rl + self.w_cdft * s_cdft + self.w_boltzmann * s_bg
+            total_score = self.w_rl * s_rl + self.w_cdft * s_cdft + self.w_boltzmann * s_bg + self.w_egnn * s_egnn
 
             cand = RankedCandidate(
                 rank=0,
@@ -136,6 +153,8 @@ class FunnelRanker:
                 bg_log_likelihood=bg_logp,
                 bg_energy_mean=bg_u_mean,
                 bg_energy_var=bg_u_var,
+                egnn_energy=egnn_u,
+                egnn_force_rms=egnn_f_rms,
                 molecular_weight=float(meta.get("mw", 0.0)),
                 num_sites=int(meta.get("num_atoms", 0)),
                 pmi_linearity=float(meta.get("pmi_linearity", 0.0)),
@@ -148,21 +167,30 @@ class FunnelRanker:
         # Sort by total score descending
         evaluated.sort(key=lambda c: c.funnel_score, reverse=True)
 
-        # Compute Pareto optimality across (P_wall, bg_log_likelihood, -bg_energy_mean, rl_reward)
+        # Compute Pareto optimality across (P_wall, bg_log_likelihood, -egnn_energy, -egnn_force_rms, rl_reward)
         for i, c1 in enumerate(evaluated):
             c1.rank = i + 1
             is_dominated = False
+            # If EGNN energy is populated, use quantum energy, else fall back to classical
+            u1 = c1.egnn_energy if c1.egnn_energy != 0.0 else c1.bg_energy_mean
+            f1 = c1.egnn_force_rms
+
             for j, c2 in enumerate(evaluated):
                 if i != j:
+                    u2 = c2.egnn_energy if c2.egnn_energy != 0.0 else c2.bg_energy_mean
+                    f2 = c2.egnn_force_rms
+
                     if (
                         c2.wall_pressure_bar >= c1.wall_pressure_bar
                         and c2.bg_log_likelihood >= c1.bg_log_likelihood
-                        and c2.bg_energy_mean <= c1.bg_energy_mean
+                        and u2 <= u1
+                        and f2 <= f1
                         and c2.rl_reward >= c1.rl_reward
                         and (
                             c2.wall_pressure_bar > c1.wall_pressure_bar
                             or c2.bg_log_likelihood > c1.bg_log_likelihood
-                            or c2.bg_energy_mean < c1.bg_energy_mean
+                            or u2 < u1
+                            or f2 < f1
                             or c2.rl_reward > c1.rl_reward
                         )
                     ):
@@ -206,21 +234,22 @@ class FunnelRanker:
         # 3. Export Markdown summary report
         md_file = out_path / "funnel_report.md"
         lines = [
-            "# Generative Molecular Funnel Report",
+            "# Generative Molecular Funnel Report (Quantum-Refined)",
             "",
             f"**Total Candidates Screened**: {len(ranked_candidates)}",
             f"**Top Candidates Exported**: {len(top_list)}",
             "",
-            "| Rank | Candidate | Score | P_wall (bar) | ln p(x) | <U_3D> (K) | MW (amu) | Sites | Pareto |",
-            "|:---:|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|",
+            "| Rank | Candidate | Score | P_wall (bar) | ln p(x) | <U_3D> (K) | U_EGNN (K) | F_RMS | MW (amu) | Sites | Pareto |",
+            "|:---:|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|",
         ]
 
         for cand in top_list:
-            pareto_str = "⭐ Yes" if cand.is_pareto_optimal else "No"
+            pareto_str = "Yes" if cand.is_pareto_optimal else "No"
             lines.append(
                 f"| {cand.rank} | `{cand.name}` | **{cand.funnel_score:+.3f}** | "
                 f"{cand.wall_pressure_bar:.1f} / {cand.target_wall_pressure_bar:.1f} | "
                 f"{cand.bg_log_likelihood:+.2f} | {cand.bg_energy_mean:.1f} | "
+                f"{cand.egnn_energy:.1f} | {cand.egnn_force_rms:.2f} | "
                 f"{cand.molecular_weight:.1f} | {cand.num_sites} | {pareto_str} |"
             )
 

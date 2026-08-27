@@ -94,6 +94,8 @@ class MaterialPipelineResult:
     bg_energy_mean: Optional[float] = None
     bg_energy_var: Optional[float] = None
     solvation_free_energy_kcal_mol: Optional[float] = None
+    egnn_energy: Optional[float] = None
+    egnn_force_rms: Optional[float] = None
     artifact_dir: Optional[str] = None
     artifacts: List[str] = field(default_factory=list)
 

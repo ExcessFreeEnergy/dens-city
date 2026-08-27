@@ -156,8 +156,8 @@ def test_coulomb_electrostatics():
     pos = Tensor([[10.0, 10.0, 20.0], [10.0 + r_dist, 10.0, 20.0]])
     u_coul_bare = energy_fn.compute_pair_energy(pos, shift=False)
 
-    # Exact C_coul / r = -167101.0 / 5.0 = -33420.2 K
-    exact_coul = -167101.0 / r_dist
+    # Exact C_coul / sqrt(r^2 + 0.36) = -167101.0 / sqrt(25.36) = -33182.1 K
+    exact_coul = -167101.0 / math.sqrt(r_dist**2 + 0.36)
     assert math.isclose(u_coul_bare.item(), exact_coul, rel_tol=1e-4), (
         f"Coulomb energy {u_coul_bare.item()} != exact {exact_coul} K"
     )
