@@ -21,15 +21,17 @@
   • 3-Stage Curriculum Scheduler with C-memory TargetSpec ctypes broadcast
          │
          ▼
-[Pareto-Optimal Candidate .mol2 Export / Constellation 3D Sweeps]
+[Stage 2: In-Memory Contiguous Streaming & Zero-Copy GPU Ingestion]
+  • Direct C-FFI array export without disk I/O or GAFF recalculation thrashing
          │
          ▼
-[Stage 2: Batched cDFT & Boltzmann Generators] (tinygrad, B=512)
-  • Rosenfeld FMT Hard-Sphere Excess + WCA Attractive Dispersion + Poisson Electrostatics
+[Stage 3: Batched cDFT + L-BFGS Relaxation + Boltzmann Generators] (tinygrad, B=512)
+  • Batched L-BFGS Quasi-Newton GPU Geometry Relaxation (m=6, autograd forces)
+  • Soft-Core Shifted-Force LJ + Damped Reaction-Field Coulomb Electrostatics
   • Base-2 Cartesian Flow (RealNVP Bijectors + Z-Matrix) & Latent MCMC
          │
          ▼
-[Single-Material Raylib 3D Viewer / Batch Artifact Export (.xyz, .npy)]
+[Stage 4: Multi-Objective Pareto Frontier Ranking & Export (.mol2, .csv, .md)]
 ```
 
 ---
@@ -41,16 +43,30 @@
 uv sync
 ```
 
-### 2. Stage 1: RL Molecular Swarm Training
+### 2. End-to-End Generative Molecular Funnel
 ```bash
-# Train on OLED semiconductors with curriculum scheduling
-uv run python scripts/train_swarm.py --spec tests/data/conjugated_oled_semiconductors.yaml --num-envs 16 --total-timesteps 50000
+# Run 3-stage generative funnel on a single material spec
+uv run python scripts/run_generative_funnel.py \
+  --spec tests/data/conjugated_oled_semiconductors.yaml \
+  --train-steps 25000 \
+  --num-candidates 512 \
+  --batch-size 512 \
+  --top-k 20 \
+  --out-dir runs/funnel_results
 
+# Run funnel across all material classes
+for spec in tests/data/*.yaml; do
+  uv run python scripts/run_generative_funnel.py --spec "$spec" --train-steps 25000 --num-candidates 512 --batch-size 512 --top-k 20 --out-dir runs/funnel_results
+done
+```
+
+### 3. Stage 1: RL Swarm Hyperparameter Sweeps (Constellation 3D)
+```bash
 # Multi-trial hyperparameter sweep for Constellation 3D viewer
 uv run python scripts/run_curriculum_sweep.py --num-trials-per-spec 3 --steps-per-trial 10000
 ```
 
-### 3. Stage 2: High-Throughput Batch Screening
+### 4. High-Throughput Batch Screening (FreeSolv & Database)
 ```bash
 # High-throughput batch run (default batch size 512)
 uv run dens-city --materials argon water methane 5cb --batch-size 512
