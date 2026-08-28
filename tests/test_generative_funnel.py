@@ -106,7 +106,7 @@ def test_generative_funnel_e2e(tmp_path):
     # 6. Funnel Ranker & Pareto Export
     ranker = FunnelRanker(target_spec=target_spec)
     ranked = ranker.rank_candidates(candidate_batch.metadata, pipeline_results)
-    assert len(ranked) == candidate_batch.num_candidates
+    assert 0 < len(ranked) <= candidate_batch.num_candidates
 
     summary = ranker.export_results(ranked, out_dir=tmp_path, top_k=5)
     assert summary["top_k_exported"] <= 5

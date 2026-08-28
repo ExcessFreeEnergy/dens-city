@@ -15,9 +15,8 @@ from rdkit import Chem
 
 from dens_city.swarm.spec_loader import SwarmSpecLoader
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-OCEAN_SWARM_DIR = REPO_ROOT / "ocean" / "cdft_swarm"
-LIB_SO_PATH = OCEAN_SWARM_DIR / "cdft_swarm_lib.so"
+SWARM_C_DIR = Path(__file__).resolve().parent / "c_src"
+LIB_SO_PATH = SWARM_C_DIR / "cdft_swarm_lib.so"
 
 TOTAL_OBS_SIZE = 88
 TOTAL_ACTION_MASK_SIZE = 29
@@ -25,11 +24,11 @@ TOTAL_ACTION_MASK_SIZE = 29
 
 def ensure_shared_library() -> Path:
     """Compiles cdft_swarm_lib.so if missing or outdated."""
-    c_src = OCEAN_SWARM_DIR / "cdft_swarm_lib.c"
+    c_src = SWARM_C_DIR / "cdft_swarm_lib.c"
     if not c_src.exists():
         raise FileNotFoundError(f"Missing C source at {c_src}")
 
-    c_deps = list(OCEAN_SWARM_DIR.glob("*.h")) + [c_src]
+    c_deps = list(SWARM_C_DIR.glob("*.h")) + [c_src]
     recompile = False
     if not LIB_SO_PATH.exists():
         recompile = True
@@ -49,7 +48,7 @@ def ensure_shared_library() -> Path:
             "-mavx2",
             "-mfma",
             "-fopenmp",
-            f"-I{OCEAN_SWARM_DIR}",
+            f"-I{SWARM_C_DIR}",
             str(c_src),
             "-o",
             str(LIB_SO_PATH),
@@ -142,6 +141,9 @@ class CDFTSwarmEnv:
 
         self.lib.env_get_num_bonds.argtypes = [ctypes.c_void_p]
         self.lib.env_get_num_bonds.restype = ctypes.c_int
+
+        self.lib.env_get_num_ports.argtypes = [ctypes.c_void_p]
+        self.lib.env_get_num_ports.restype = ctypes.c_int
 
         self.lib.env_get_atom_pos_x.argtypes = [ctypes.c_void_p, ctypes.c_int]
         self.lib.env_get_atom_pos_x.restype = ctypes.c_float

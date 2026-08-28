@@ -3,6 +3,7 @@ Utility and orchestration modules for dens-city.
 Contains material loading, force field derivation, EOS solvers, and high-throughput batch execution pipelines.
 """
 
+from dens_city.utils.funnel_ranker import FunnelRanker
 from dens_city.utils.materials import (
     AtomSite,
     Material,
@@ -25,6 +26,7 @@ __all__ = [
     "Material",
     "AtomSite",
     "MaterialLoader",
+    "FunnelRanker",
     "compute_wca_dispersion_integral",
     "compute_bulk_pressure",
     "solve_bulk_density_from_pressure",
