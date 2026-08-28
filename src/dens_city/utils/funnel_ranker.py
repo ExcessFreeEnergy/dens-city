@@ -2,7 +2,8 @@
 Multi-Objective Funnel Ranker for dens-city.
 Filters and ranks thousands of RL-generated molecular candidates against
 coupled cDFT thermodynamics, Normalizing Flow exact log-likelihood,
-3D microscopic internal energy stability, and target material specifications.
+3D microscopic internal energy stability, target material specifications,
+and RDKit Synthetic Accessibility (SA Score) constraints.
 """
 
 from __future__ import annotations
@@ -10,15 +11,43 @@ from __future__ import annotations
 import csv
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from dens_city.utils.pipeline import MaterialPipelineResult
+
+try:
+    from rdkit import Chem
+    from rdkit.Contrib.SA_Score import sascorer
+
+    HAS_RDKIT_SA = True
+except ImportError:
+    HAS_RDKIT_SA = False
+
+
+def compute_sa_score(smiles: str = "", mol2_content: str = "") -> Optional[float]:
+    """
+    Computes RDKit Synthetic Accessibility (SA) Score (1.0 = easy to synthesize, 10.0 = difficult).
+    Returns None if RDKit/sascorer is unavailable or parsing fails.
+    """
+    if not HAS_RDKIT_SA:
+        return None
+    try:
+        mol = None
+        if smiles:
+            mol = Chem.MolFromSmiles(smiles)
+        if mol is None and mol2_content:
+            mol = Chem.MolFromMol2Block(mol2_content)
+        if mol is not None:
+            return float(sascorer.calculateScore(mol))
+    except Exception:
+        pass
+    return None
 
 
 @dataclass
 class RankedCandidate:
     """
-    Encapsulates a fully evaluated and scored molecular candidate across all 4 funnel stages.
+    Encapsulates a fully evaluated and scored molecular candidate across all 5 funnel stages.
     """
 
     rank: int
@@ -40,6 +69,8 @@ class RankedCandidate:
     aromatic_density: float
     rotatable_fraction: float
     mol2_content: str
+    sa_score: Optional[float] = None
+    smiles: str = ""
     is_pareto_optimal: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
@@ -50,7 +81,8 @@ class RankedCandidate:
 
 class FunnelRanker:
     """
-    Ranks candidate molecules using coupled cDFT + Boltzmann Normalizing Flow + EGNN MLFF observables.
+    Ranks candidate molecules using coupled cDFT + Boltzmann Normalizing Flow + EGNN MLFF observables
+    with an RDKit Synthetic Accessibility (SA Score) safety gate.
     """
 
     def __init__(
@@ -65,6 +97,8 @@ class FunnelRanker:
         gamma_var: float = 0.0001,
         alpha_egnn_energy: float = 0.001,
         beta_egnn_force: float = 0.01,
+        max_sa_score: Optional[float] = None,
+        enable_sa_filter: bool = True,
     ):
         self.target_spec = target_spec
         self.w_rl = w_rl
@@ -81,6 +115,13 @@ class FunnelRanker:
         self.max_solv = float(target_spec.get("max_solvation_kcal", -3.0))
         self.max_mw = float(target_spec.get("max_molecular_weight", 850.0))
 
+        if max_sa_score is not None:
+            self.max_sa_score = float(max_sa_score)
+        else:
+            self.max_sa_score = float(target_spec.get("max_sa_score", 6.0))
+        self.enable_sa_filter = bool(enable_sa_filter)
+        self.last_num_dropped_sa: int = 0
+
     def rank_candidates(
         self,
         candidate_metadata: List[Dict[str, Any]],
@@ -88,15 +129,31 @@ class FunnelRanker:
     ) -> List[RankedCandidate]:
         """
         Combines Stage 1 RL swarm metrics with Stage 2/3 cDFT, Boltzmann Generator,
-        and Stage 4 EGNN quantum observables into a unified Pareto-ranked candidate list.
+        and Stage 4 EGNN quantum observables into a unified Pareto-ranked candidate list,
+        applying an RDKit synthesizability safety gate (if SA > max_sa_score: drop).
         """
         results_by_name = {r.material_name: r for r in pipeline_results}
 
         evaluated: List[RankedCandidate] = []
+        num_dropped_sa = 0
 
         for meta in candidate_metadata:
             name = meta["name"]
             res = results_by_name.get(name)
+
+            smiles_str = meta.get("smiles", "")
+            mol2_str = meta.get("mol2", "")
+
+            # 0. Synthesizability (SA Score) Safety Gate
+            sa_score = meta.get("sa_score")
+            if sa_score is None:
+                sa_score = compute_sa_score(smiles=smiles_str, mol2_content=mol2_str)
+            else:
+                sa_score = float(sa_score)
+
+            if self.enable_sa_filter and sa_score is not None and sa_score > self.max_sa_score:
+                num_dropped_sa += 1
+                continue  # Drop candidate exceeding synthesizability difficulty threshold
 
             rl_reward = float(meta.get("rl_reward", 0.0))
             p_w = float(res.wall_pressure_bar) if res else float(meta.get("p_wall", 0.0))
@@ -160,9 +217,13 @@ class FunnelRanker:
                 pmi_linearity=float(meta.get("pmi_linearity", 0.0)),
                 aromatic_density=float(meta.get("aromatic_density", 0.0)),
                 rotatable_fraction=float(meta.get("rotatable_fraction", 0.0)),
-                mol2_content=meta.get("mol2", ""),
+                mol2_content=mol2_str,
+                sa_score=sa_score,
+                smiles=smiles_str,
             )
             evaluated.append(cand)
+
+        self.last_num_dropped_sa = num_dropped_sa
 
         # Sort by total score descending
         evaluated.sort(key=lambda c: c.funnel_score, reverse=True)
@@ -234,19 +295,21 @@ class FunnelRanker:
         # 3. Export Markdown summary report
         md_file = out_path / "funnel_report.md"
         lines = [
-            "# Generative Molecular Funnel Report (Quantum-Refined)",
+            "# Generative Molecular Funnel Report (Quantum-Refined & SA-Gated)",
             "",
             f"**Total Candidates Screened**: {len(ranked_candidates)}",
             f"**Top Candidates Exported**: {len(top_list)}",
             "",
-            "| Rank | Candidate | Score | P_wall (bar) | ln p(x) | <U_3D> (K) | U_EGNN (K) | F_RMS | MW (amu) | Sites | Pareto |",
-            "|:---:|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|",
+            "| Rank | Candidate | Score | SA Score | P_wall (bar) | ln p(x) | <U_3D> (K) | U_EGNN (K) | F_RMS | MW (amu) | Sites | Pareto |",
+            "|:---:|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|",
         ]
 
         for cand in top_list:
             pareto_str = "Yes" if cand.is_pareto_optimal else "No"
+            sa_str = f"{cand.sa_score:.2f}" if cand.sa_score is not None else "N/A"
             lines.append(
                 f"| {cand.rank} | `{cand.name}` | **{cand.funnel_score:+.3f}** | "
+                f"{sa_str} | "
                 f"{cand.wall_pressure_bar:.1f} / {cand.target_wall_pressure_bar:.1f} | "
                 f"{cand.bg_log_likelihood:+.2f} | {cand.bg_energy_mean:.1f} | "
                 f"{cand.egnn_energy:.1f} | {cand.egnn_force_rms:.2f} | "

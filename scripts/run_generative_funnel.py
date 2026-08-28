@@ -145,6 +145,17 @@ def main():
         default=None,
         help="Optional path to pretrained EGNN weights .npz archive",
     )
+    parser.add_argument(
+        "--max-sa-score",
+        type=float,
+        default=6.0,
+        help="Maximum allowable RDKit Synthetic Accessibility (SA) Score (default: 6.0)",
+    )
+    parser.add_argument(
+        "--disable-sa-filter",
+        action="store_true",
+        help="Disable Stage 5 RDKit synthesizability (SA Score) safety gate",
+    )
     args = parser.parse_args()
 
     spec_path = Path(args.spec)
@@ -410,11 +421,20 @@ def main():
     # STAGE 5: Multi-Objective Funnel Ranking & Pareto Export
     # -------------------------------------------------------------
     print(f"\n[Stage 5] Ranking and sorting Pareto frontier (Top {args.top_k} selection)...")
-    ranker = FunnelRanker(target_spec=target_spec)
+    ranker = FunnelRanker(
+        target_spec=target_spec,
+        max_sa_score=args.max_sa_score,
+        enable_sa_filter=not args.disable_sa_filter,
+    )
     ranked_candidates = ranker.rank_candidates(
         candidate_metadata=candidate_batch.metadata,
         pipeline_results=pipeline_results,
     )
+
+    if ranker.last_num_dropped_sa > 0:
+        print(
+            f"  Synthesizability safety gate dropped {ranker.last_num_dropped_sa} candidate(s) with SA Score > {args.max_sa_score:.1f}"
+        )
 
     export_summary = ranker.export_results(
         ranked_candidates=ranked_candidates,
@@ -422,22 +442,24 @@ def main():
         top_k=args.top_k,
     )
 
-    print("\n" + "=" * 120)
-    print(f"=== TOP {args.top_k} REFINED MOLECULAR CANDIDATES (QUANTUM-REFURBISHED) ===")
-    print("=" * 120)
+    print("\n" + "=" * 130)
+    print(f"=== TOP {args.top_k} REFINED MOLECULAR CANDIDATES (QUANTUM-REFURBISHED & SA-GATED) ===")
+    print("=" * 130)
     print(
-        f"{'Rank':<5} {'Candidate Name':<32} {'Score':>8} {'P_wall (bar)':>14} {'ln p(x)':>10} {'<U_3D> (K)':>12} {'U_EGNN (K)':>12} {'F_RMS':>10} {'MW (amu)':>10} {'Pareto':>8}"
+        f"{'Rank':<5} {'Candidate Name':<32} {'Score':>8} {'SA':>6} {'P_wall (bar)':>14} {'ln p(x)':>10} {'<U_3D> (K)':>12} {'U_EGNN (K)':>12} {'F_RMS':>10} {'MW (amu)':>10} {'Pareto':>8}"
     )
-    print("-" * 120)
+    print("-" * 130)
     for cand in ranked_candidates[: args.top_k]:
         pareto_str = "YES" if cand.is_pareto_optimal else "no"
+        sa_str = f"{cand.sa_score:.2f}" if cand.sa_score is not None else "N/A"
         print(
             f"{cand.rank:<5} {cand.name:<32} {cand.funnel_score:>+8.3f} "
+            f"{sa_str:>6} "
             f"{cand.wall_pressure_bar:>14.1f} {cand.bg_log_likelihood:>+10.2f} "
             f"{cand.bg_energy_mean:>12.1f} {cand.egnn_energy:>12.1f} {cand.egnn_force_rms:>10.2f} "
             f"{cand.molecular_weight:>10.1f} {pareto_str:>8}"
         )
-    print("=" * 120)
+    print("=" * 130)
     print(f"\nSuccessfully exported top candidates to: {export_summary['mol2_dir']}")
     print(f"Summary Report: {export_summary['report_path']}")
     print(f"Summary CSV:    {export_summary['csv_path']}")

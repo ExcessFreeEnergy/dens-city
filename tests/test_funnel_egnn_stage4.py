@@ -201,3 +201,90 @@ def test_egnn_fully_padded_batch_gradient_none_safety():
 
     assert f_np.shape == (B, N, 3)
     assert np.allclose(f_np, 0.0)
+
+
+def test_stage5_synthesizability_sa_gate(tmp_path):
+    """
+    Validates that FunnelRanker boolean safety gate strictly drops molecules
+    with SA Score > max_sa_score (e.g. SA > 6.0) while retaining valid synthesizable candidates.
+    """
+    target_spec = {
+        "min_wall_pressure_bar": 10.0,
+        "max_solvation_kcal": -2.0,
+        "max_molecular_weight": 800.0,
+        "max_sa_score": 6.0,
+    }
+
+    # cand_easy: benzene (SA ~ 1.0)
+    # cand_hard: highly strained/bridged (SA = 8.5)
+    # cand_borderline: SA = 5.2
+    metadata = [
+        {
+            "name": "cand_easy",
+            "smiles": "c1ccccc1",
+            "rl_reward": 5.0,
+            "p_wall": 25.0,
+            "omega_solv": -3.5,
+            "mw": 78.1,
+            "num_atoms": 6,
+        },
+        {
+            "name": "cand_hard",
+            "smiles": "C12C3C4C1C5C2C3C45",  # cubane/hyper-strained (SA > 6.0)
+            "sa_score": 8.5,
+            "rl_reward": 9.0,  # High reward, but un-synthesizable
+            "p_wall": 30.0,
+            "omega_solv": -4.0,
+            "mw": 104.1,
+            "num_atoms": 8,
+        },
+        {
+            "name": "cand_borderline",
+            "sa_score": 5.2,
+            "rl_reward": 4.0,
+            "p_wall": 20.0,
+            "omega_solv": -2.5,
+            "mw": 150.0,
+            "num_atoms": 12,
+        },
+    ]
+
+    results = [
+        MaterialPipelineResult(material_name="cand_easy", status=PipelineStatus.SUCCESS.value, wall_pressure_bar=25.0),
+        MaterialPipelineResult(material_name="cand_hard", status=PipelineStatus.SUCCESS.value, wall_pressure_bar=30.0),
+        MaterialPipelineResult(
+            material_name="cand_borderline", status=PipelineStatus.SUCCESS.value, wall_pressure_bar=20.0
+        ),
+    ]
+
+    # 1. Filter enabled with default max_sa_score = 6.0
+    ranker = FunnelRanker(target_spec=target_spec, enable_sa_filter=True)
+    ranked = ranker.rank_candidates(metadata, results)
+
+    # cand_hard (SA=8.5) must be strictly dropped
+    ranked_names = [c.name for c in ranked]
+    assert "cand_hard" not in ranked_names
+    assert "cand_easy" in ranked_names
+    assert "cand_borderline" in ranked_names
+    assert len(ranked) == 2
+    assert ranker.last_num_dropped_sa == 1
+
+    # SA score must be recorded on ranked candidate
+    easy_cand = next(c for c in ranked if c.name == "cand_easy")
+    assert easy_cand.sa_score is not None
+    assert easy_cand.sa_score < 3.0
+
+    # 2. Filter disabled: cand_hard must be included
+    ranker_no_filter = FunnelRanker(target_spec=target_spec, enable_sa_filter=False)
+    ranked_all = ranker_no_filter.rank_candidates(metadata, results)
+    assert len(ranked_all) == 3
+    assert "cand_hard" in [c.name for c in ranked_all]
+    assert ranker_no_filter.last_num_dropped_sa == 0
+
+    # 3. Export formatting verification
+    summary = ranker.export_results(ranked, out_dir=tmp_path, top_k=5)
+    assert summary["top_k_exported"] == 2
+    report_text = (tmp_path / "funnel_report.md").read_text()
+    assert "SA Score" in report_text
+    csv_text = (tmp_path / "funnel_summary.csv").read_text()
+    assert "sa_score" in csv_text
