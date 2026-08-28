@@ -35,6 +35,10 @@ dens-city = "dens_city.ui.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"dens_city.swarm.c_src" = ["*.c", "*.h", "*.ini"]
+"dens_city.utils" = ["*.c"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
