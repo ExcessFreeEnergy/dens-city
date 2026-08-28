@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
+from rdkit import Chem
 
 from dens_city.swarm.env import CDFTSwarmEnv
 from dens_city.swarm.policy import MolecularSwarmPolicy
@@ -271,6 +272,8 @@ class SwarmCandidateSampler:
 
                             cand_name = f"cand_{idx + 1:04d}_{self.spec_path.stem}"
                             mol2_str = single_env.export_mol2_string(cand_name)
+                            rd_mol = single_env.get_current_rdkit_mol()
+                            smiles_str = Chem.MolToSmiles(rd_mol, canonical=True) if rd_mol is not None else ""
 
                             metadata_list.append(
                                 {
@@ -284,6 +287,7 @@ class SwarmCandidateSampler:
                                     "pmi_linearity": raw_data["pmi_linearity"],
                                     "aromatic_density": raw_data["aromatic_density"],
                                     "rotatable_fraction": raw_data["rotatable_fraction"],
+                                    "smiles": smiles_str,
                                     "mol2": mol2_str,
                                     "effective_sigma": eff_sig,
                                     "effective_epsilon_k": eff_eps,

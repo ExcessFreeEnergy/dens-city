@@ -647,24 +647,108 @@ static inline FragmentTemplate get_fragment_template(int frag_idx) {
     return ft;
 }
 
-// -------------------------------------------------------------
-// SE(3) Rigid-Body Attachment Execution
-// -------------------------------------------------------------
-static inline bool rigid_body_attach(MolecularGraph* graph, int port_idx, int frag_idx) {
-    if (port_idx < 0 || port_idx >= graph->num_ports) return false;
-    AttachmentPort* p_a = &graph->ports[port_idx];
-    if (p_a->state != PORT_STATE_EMPTY) return false;
-
+// Computes total molecular weight of a fragment template
+static inline float get_fragment_mass(int frag_idx) {
     FragmentTemplate ft = get_fragment_template(frag_idx);
-    if (graph->num_atoms + ft.num_atoms > MAX_ATOMS) return false;
-    if (graph->num_bonds + ft.num_bonds + 1 > MAX_BONDS) return false;
-
-    Vec3 p_b = ft.atoms[0].pos;
-    Vec3 c_frag = vec3_create(0.0f, 0.0f, 0.0f);
+    float mass = 0.0f;
     for (int k = 0; k < ft.num_atoms; k++) {
-        c_frag = vec3_add(c_frag, ft.atoms[k].pos);
+        mass += ft.atoms[k].mass;
     }
-    c_frag = vec3_scale(c_frag, 1.0f / (float)ft.num_atoms);
+    return mass;
+}
+
+// -------------------------------------------------------------
+// Universal C-Level Action Masking & Feasibility Probing
+// -------------------------------------------------------------
+
+// Returns maximum standard covalent valency for an element
+static inline float get_max_valence(int atomic_number) {
+    switch (atomic_number) {
+        case 1:  return 1.0f; // H
+        case 6:  return 4.0f; // C
+        case 7:  return 3.0f; // N (trivalent neutral)
+        case 8:  return 2.0f; // O (divalent)
+        case 9:  return 1.0f; // F (monovalent)
+        case 14: return 4.0f; // Si
+        case 16: return 4.0f; // S
+        case 17: return 1.0f; // Cl
+        case 35: return 1.0f; // Br
+        default: return 4.0f;
+    }
+}
+
+// Computes current effective covalent bond order sum for an atom in the graph
+static inline float get_atom_current_valence(const MolecularGraph* graph, int atom_idx) {
+    if (atom_idx < 0 || atom_idx >= graph->num_atoms) return 0.0f;
+    float val = 0.0f;
+    for (int b = 0; b < graph->num_bonds; b++) {
+        if (graph->bonds[b].atom_u == atom_idx || graph->bonds[b].atom_v == atom_idx) {
+            int order = graph->bonds[b].bond_order;
+            if (order == 4) {
+                val += 1.5f; // Aromatic bond contribution
+            } else {
+                val += (float)order;
+            }
+        }
+    }
+    return val;
+}
+
+// Computes internal covalent bond order sum for an atom inside a fragment template
+static inline float get_fragment_atom_internal_valence(const FragmentTemplate* ft, int atom_idx) {
+    if (atom_idx < 0 || atom_idx >= ft->num_atoms) return 0.0f;
+    float val = 0.0f;
+    for (int b = 0; b < ft->num_bonds; b++) {
+        if (ft->bonds[b].atom_u == atom_idx || ft->bonds[b].atom_v == atom_idx) {
+            int order = ft->bonds[b].bond_order;
+            if (order == 4) {
+                val += 1.5f;
+            } else {
+                val += (float)order;
+            }
+        }
+    }
+    return val;
+}
+
+// 1. Valence Saturation Mask: Verifies that neither site exceeds allowable covalent valency
+static inline bool check_valence_saturation(const MolecularGraph* graph, int port_idx, const FragmentTemplate* ft) {
+    if (port_idx < 0 || port_idx >= graph->num_ports) return false;
+    int origin_atom = graph->ports[port_idx].origin_atom;
+    if (origin_atom < 0 || origin_atom >= graph->num_atoms) return false;
+
+    // Check parent origin atom valency
+    float current_val = get_atom_current_valence(graph, origin_atom);
+    float max_origin_val = get_max_valence(graph->atoms[origin_atom].atomic_number);
+    if (current_val + 1.0f > max_origin_val + 0.01f) {
+        return false; // Origin atom is valence saturated (e.g. Carbon > 4 or Nitrogen > 3)
+    }
+
+    // Check fragment attachment atom 0 valency
+    float ft_internal_val = get_fragment_atom_internal_valence(ft, 0);
+    float max_ft_val = get_max_valence(ft->atoms[0].atomic_number);
+    if (ft_internal_val + 1.0f > max_ft_val + 0.01f) {
+        return false; // Incoming fragment root atom is valence saturated
+    }
+
+    return true;
+}
+
+// Computes SE(3) rigid forward-projection coordinates for a candidate fragment on a target port
+static inline void compute_fragment_transformed_positions(
+    const AttachmentPort* p_a,
+    const FragmentTemplate* ft,
+    Vec3* out_positions,
+    Mat3* out_R,
+    Vec3* out_trans,
+    Vec3* out_centroid
+) {
+    Vec3 p_b = ft->atoms[0].pos;
+    Vec3 c_frag = vec3_create(0.0f, 0.0f, 0.0f);
+    for (int k = 0; k < ft->num_atoms; k++) {
+        c_frag = vec3_add(c_frag, ft->atoms[k].pos);
+    }
+    c_frag = vec3_scale(c_frag, 1.0f / (float)ft->num_atoms);
 
     Vec3 delta_c = vec3_sub(p_b, c_frag);
     Vec3 u_b = (vec3_norm(delta_c) > 1e-3f) ? vec3_normalize(delta_c) : vec3_create(-1.0f, 0.0f, 0.0f);
@@ -677,13 +761,46 @@ static inline bool rigid_body_attach(MolecularGraph* graph, int port_idx, int fr
     Vec3 rotated_pb = mat3_vec3_mul(R, p_b);
     Vec3 trans = vec3_sub(target_pos, rotated_pb);
 
-    Vec3 transformed_pos[16];
-    for (int i = 0; i < ft.num_atoms; i++) {
-        Vec3 rot_pos = mat3_vec3_mul(R, ft.atoms[i].pos);
-        transformed_pos[i] = vec3_add(rot_pos, trans);
+    Vec3 c_transformed = vec3_create(0.0f, 0.0f, 0.0f);
+    for (int i = 0; i < ft->num_atoms; i++) {
+        Vec3 rot_pos = mat3_vec3_mul(R, ft->atoms[i].pos);
+        out_positions[i] = vec3_add(rot_pos, trans);
+        c_transformed = vec3_add(c_transformed, out_positions[i]);
+    }
+    c_transformed = vec3_scale(c_transformed, 1.0f / (float)ft->num_atoms);
 
+    *out_R = R;
+    *out_trans = trans;
+    *out_centroid = c_transformed;
+}
+
+// 2. Hard-Sphere Steric Probing Mask: Rejects actions if distance r < 1.5 Å (severe 1-4 collision)
+static inline bool check_hard_sphere_collision(
+    const MolecularGraph* graph,
+    int port_idx,
+    const FragmentTemplate* ft,
+    const Vec3* transformed_pos,
+    Vec3 frag_centroid
+) {
+    const AttachmentPort* p_a = &graph->ports[port_idx];
+
+    // Check fragment centroid distance against all existing atoms (excluding direct origin atom)
+    if (ft->num_atoms > 1) {
         for (int j = 0; j < graph->num_atoms; j++) {
             if (j == p_a->origin_atom) continue;
+            float c_dist = vec3_dist(frag_centroid, graph->atoms[j].pos);
+            if (c_dist < 1.5f) {
+                return false; // Severe centroid clash
+            }
+        }
+    }
+
+    // Check all atom-atom pairwise clearances
+    for (int i = 0; i < ft->num_atoms; i++) {
+        for (int j = 0; j < graph->num_atoms; j++) {
+            if (j == p_a->origin_atom) continue;
+
+            // Check if j is a direct neighbor of the origin atom (1-3 bond angle check)
             bool is_direct_nbr = false;
             for (int b = 0; b < graph->num_bonds; b++) {
                 if ((graph->bonds[b].atom_u == p_a->origin_atom && graph->bonds[b].atom_v == j) ||
@@ -692,15 +809,138 @@ static inline bool rigid_body_attach(MolecularGraph* graph, int port_idx, int fr
                     break;
                 }
             }
-            if (is_direct_nbr) continue;
 
             float dist = vec3_dist(transformed_pos[i], graph->atoms[j].pos);
-            float min_dist = 0.65f * 0.5f * (ft.atoms[i].sigma + graph->atoms[j].sigma);
-            if (dist < min_dist) {
+
+            // Universal 1.5 Å hard-sphere collision floor (guaranteed severe 1-4 VdW collision)
+            if (dist < 1.5f) {
                 return false;
+            }
+
+            if (!is_direct_nbr) {
+                float min_dist = 0.65f * 0.5f * (ft->atoms[i].sigma + graph->atoms[j].sigma);
+                if (dist < min_dist) {
+                    return false;
+                }
             }
         }
     }
+    return true;
+}
+
+// 3. Trajectory Weight Ceilings Mask: Dynamically masks fragments exceeding remaining weight budget
+static inline bool check_weight_ceiling(const MolecularGraph* graph, int frag_idx, float max_mw) {
+    if (max_mw <= 0.0f) return true;
+    float current_mw = 0.0f;
+    for (int i = 0; i < graph->num_atoms; i++) {
+        current_mw += graph->atoms[i].mass;
+    }
+    float frag_mw = get_fragment_mass(frag_idx);
+    if (current_mw + frag_mw > max_mw) {
+        return false; // Weight ceiling exceeded
+    }
+    return true;
+}
+
+// 4. Heteroatom Isolation Mask: Blocks unstable energetic chains (O-O peroxides, N-N azo/azides, S-S persulfides)
+static inline bool check_heteroatom_isolation(const MolecularGraph* graph, int port_idx, const FragmentTemplate* ft) {
+    int origin_atom = graph->ports[port_idx].origin_atom;
+    int z_origin = graph->atoms[origin_atom].atomic_number;
+    int z_frag = ft->atoms[0].atomic_number;
+
+    // Reject direct bonding of identical heteroatoms (Z > 6: N, O, S, F, etc.)
+    if (z_origin > 6 && z_origin == z_frag) {
+        return false; // Blocks -O-O-, -N-N-, -S-S-
+    }
+
+    // Reject unstable O-heteroatom chains (e.g. -O-N-, -O-S-)
+    if (z_origin == 8 && (z_frag == 7 || z_frag == 16)) {
+        return false;
+    }
+    if (z_frag == 8 && (z_origin == 7 || z_origin == 16)) {
+        return false;
+    }
+
+    // Check 3-heteroatom contiguous chain formation: if origin atom is already bonded to a heteroatom,
+    // prevent bonding another heteroatom to it (which creates X-Y-Z energetic chain)
+    if (z_origin > 6 && z_frag > 6) {
+        return false;
+    }
+    if (z_frag > 6) {
+        for (int b = 0; b < graph->num_bonds; b++) {
+            int nbr = -1;
+            if (graph->bonds[b].atom_u == origin_atom) nbr = graph->bonds[b].atom_v;
+            else if (graph->bonds[b].atom_v == origin_atom) nbr = graph->bonds[b].atom_u;
+            if (nbr >= 0 && nbr < graph->num_atoms && graph->atoms[nbr].atomic_number > 6) {
+                return false; // Would form contiguous heteroatom sequence
+            }
+        }
+    }
+
+    return true;
+}
+
+// Unified attachment validation combining all 4 Universal C-Level Action Masks
+static inline bool is_attachment_valid(
+    const MolecularGraph* graph,
+    int port_idx,
+    int frag_idx,
+    float max_mw,
+    Vec3* out_pos,
+    Mat3* out_R,
+    Vec3* out_trans
+) {
+    if (port_idx < 0 || port_idx >= graph->num_ports) return false;
+    if (graph->ports[port_idx].state != PORT_STATE_EMPTY) return false;
+    if (frag_idx < 0 || frag_idx >= 12) return false;
+
+    FragmentTemplate ft = get_fragment_template(frag_idx);
+    if (graph->num_atoms + ft.num_atoms > MAX_ATOMS) return false;
+    if (graph->num_bonds + ft.num_bonds + 1 > MAX_BONDS) return false;
+
+    // 1. Trajectory Weight Ceiling
+    if (!check_weight_ceiling(graph, frag_idx, max_mw)) return false;
+
+    // 2. Valence Saturation
+    if (!check_valence_saturation(graph, port_idx, &ft)) return false;
+
+    // 3. Heteroatom Isolation
+    if (!check_heteroatom_isolation(graph, port_idx, &ft)) return false;
+
+    // 4. Hard-Sphere Steric Probing
+    Vec3 transformed_pos[16];
+    Mat3 R;
+    Vec3 trans;
+    Vec3 centroid;
+    compute_fragment_transformed_positions(&graph->ports[port_idx], &ft, transformed_pos, &R, &trans, &centroid);
+
+    if (!check_hard_sphere_collision(graph, port_idx, &ft, transformed_pos, centroid)) {
+        return false;
+    }
+
+    if (out_pos) {
+        for (int k = 0; k < ft.num_atoms; k++) out_pos[k] = transformed_pos[k];
+    }
+    if (out_R) *out_R = R;
+    if (out_trans) *out_trans = trans;
+
+    return true;
+}
+
+// -------------------------------------------------------------
+// SE(3) Rigid-Body Attachment Execution
+// -------------------------------------------------------------
+static inline bool rigid_body_attach(MolecularGraph* graph, int port_idx, int frag_idx) {
+    Vec3 transformed_pos[16];
+    Mat3 R;
+    Vec3 trans;
+
+    if (!is_attachment_valid(graph, port_idx, frag_idx, 0.0f, transformed_pos, &R, &trans)) {
+        return false;
+    }
+
+    FragmentTemplate ft = get_fragment_template(frag_idx);
+    AttachmentPort* p_a = &graph->ports[port_idx];
 
     int atom_offset = graph->num_atoms;
     for (int i = 0; i < ft.num_atoms; i++) {

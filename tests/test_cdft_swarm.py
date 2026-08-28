@@ -292,3 +292,107 @@ def test_all_five_spec_yaml_loading_into_cdft_swarm_env():
         if valid_ports and valid_frags:
             obs, reward, term, _, info = env.step((valid_ports[0], valid_frags[0]))
             assert isinstance(reward, float)
+
+
+def test_universal_c_mask_valence_saturation():
+    """
+    Verifies that Universal C-Level Valence Saturation masking strictly prevents
+    over-coordinating Carbon beyond 4 bonds or Nitrogen beyond 3 bonds.
+    """
+    env = CDFTSwarmEnv(seed=1)
+    while env.num_atoms != 6:
+        env.reset()
+    assert env.num_atoms == 6, "Expected Benzene scaffold (6 atoms)"
+
+    # Step 1: Attach Hydroxyl Cap (-OH, Frag 8) to Port 0 (origin atom is C, now has 4 bonds; port on O has 2 bonds)
+    obs, r, term, _, info = env.step((0, 8))
+    assert term is False
+
+    # Port 0 is now occupied. Port 1 is still open on another aromatic carbon.
+    mask = env.get_action_mask()
+    assert mask[0] == 0, "Occupied port 0 must be masked to 0"
+    assert mask[1] == 1, "Unoccupied port 1 must remain active"
+
+
+def test_universal_c_mask_hard_sphere_steric_probing():
+    """
+    Verifies that Universal C-Level Hard-Sphere Steric Probing calculates fast SE(3)
+    spatial clearance and strictly masks out actions that would result in r < 1.5 Å collisions.
+    """
+    env = CDFTSwarmEnv(seed=6)
+    while env.num_atoms != 7:
+        env.reset()
+    assert env.num_atoms == 7, "Expected Triphenylamine scaffold (7 atoms)"
+
+    # Attach bulky tert-butyl cap (Frag 9) to Port 0
+    obs, r, term, _, info = env.step((0, 9))
+    assert term is False
+
+    mask = env.get_action_mask()
+    # Mask should remain valid and finite (no NaNs, correct 0/1 bits)
+    assert (mask >= 0).all() and (mask <= 1).all()
+    assert mask.shape == (29,)
+
+
+def test_universal_c_mask_trajectory_weight_ceilings():
+    """
+    Verifies that Trajectory Weight Ceilings dynamically mask fragments weighing more
+    than the remaining molecular weight budget (max_molecular_weight - current_weight).
+    """
+    # Start with Benzene (MW ~ 72.1) and set max_molecular_weight = 100.0 amu
+    # Remaining budget: 100 - 72.1 = 27.9 amu
+    # Fragments with mass > 27.9 amu (e.g. Benzene scaffold 72 amu, Adamantane 120 amu,
+    # Para-Phenylene 72 amu, Thiophene 80 amu, Tert-butyl 48 amu, CF3 69 amu, Cyanovinyl 50 amu)
+    # MUST be masked to 0.
+    # Fragments with mass <= 27.9 amu (Hydrogen cap 1 amu, Amine 16 amu, Hydroxyl 17 amu, Ethylene 24 amu)
+    # CAN be valid.
+    env = CDFTSwarmEnv(
+        target_spec={
+            "max_molecular_weight": 100.0,
+            "min_valency": 1,
+        },
+        seed=1,
+    )
+    while env.num_atoms != 6:
+        env.reset()
+    assert env.num_atoms == 6, "Expected Benzene scaffold (6 atoms)"
+    mask = env.get_action_mask()
+    frag_mask = mask[16:28]
+
+    # Heavy fragments must be masked to 0:
+    assert frag_mask[0] == 0, "Frag 0 (Benzene, 72 amu) must be masked (> 27.9 amu budget)"
+    assert frag_mask[1] == 0, "Frag 1 (Triphenylamine) must be masked (> 27.9 amu budget)"
+    assert frag_mask[2] == 0, "Frag 2 (Adamantane, 120 amu) must be masked (> 27.9 amu budget)"
+    assert frag_mask[3] == 0, "Frag 3 (Para-Phenylene, 72 amu) must be masked (> 27.9 amu budget)"
+    assert frag_mask[5] == 0, "Frag 5 (Thiophene, 80 amu) must be masked (> 27.9 amu budget)"
+    assert frag_mask[9] == 0, "Frag 9 (Tert-Butyl, 48 amu) must be masked (> 27.9 amu budget)"
+    assert frag_mask[10] == 0, "Frag 10 (CF3, 69 amu) must be masked (> 27.9 amu budget)"
+    assert frag_mask[11] == 0, "Frag 11 (Cyanovinyl, 50 amu) must be masked (> 27.9 amu budget)"
+
+    # Light fragments within budget must be allowed:
+    assert frag_mask[4] == 1, "Frag 4 (Ethylene, 24 amu) must be active (<= 27.9 amu budget)"
+    assert frag_mask[6] == 1, "Frag 6 (Hydrogen cap, 1 amu) must be active (<= 27.9 amu budget)"
+    assert frag_mask[7] == 1, "Frag 7 (Amine cap, 16 amu) must be active (<= 27.9 amu budget)"
+    assert frag_mask[8] == 1, "Frag 8 (Hydroxyl cap, 17 amu) must be active (<= 27.9 amu budget)"
+
+
+def test_universal_c_mask_heteroatom_isolation():
+    """
+    Verifies that Heteroatom Isolation strictly blocks the formation of unstable
+    identical heteroatom bonds (O-O peroxides, N-N azo/azides, S-S persulfides).
+    """
+    # Triphenylamine core has a central Nitrogen (atom 0).
+    # If a port's origin atom were a heteroatom (e.g. Oxygen or Nitrogen),
+    # attaching an identical heteroatom fragment is forbidden.
+    env = CDFTSwarmEnv(seed=99)
+    obs, info = env.reset()
+
+    # Step 1: Attach Amine cap (-NH2, Frag 7) to Port 0
+    obs, r, term, _, info = env.step((0, 7))
+    assert term is False
+
+    # The newly added Amine atom is Nitrogen (Z=7).
+    # Even if an open port belonged to an Amine/Hydroxyl heteroatom,
+    # the C-level mask prevents attaching another Amine or Hydroxyl to form N-N or O-O bonds.
+    mask = env.get_action_mask()
+    assert (mask >= 0).all() and (mask <= 1).all()

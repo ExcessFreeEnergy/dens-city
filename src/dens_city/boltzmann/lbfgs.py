@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple, Union
 
 import numpy as np
-from tinygrad import Tensor
+from tinygrad import Tensor, TinyJit, dtypes
 
 
 @dataclass
@@ -47,6 +47,7 @@ class BatchedLBFGS:
         backtrack_factor: float = 0.5,
         max_line_search_steps: int = 8,
         verbose: bool = False,
+        use_jit: bool = True,
     ):
         """
         Args:
@@ -58,6 +59,7 @@ class BatchedLBFGS:
             backtrack_factor: Step reduction multiplier during line search.
             max_line_search_steps: Maximum backtracking evaluations per iteration.
             verbose: If True, prints iteration progress.
+            use_jit: If True, compiles energy and analytical force evaluation into a TinyJit execution graph.
         """
         self.m = max(1, int(m))
         self.max_iter = max(1, int(max_iter))
@@ -67,6 +69,7 @@ class BatchedLBFGS:
         self.backtrack_factor = float(backtrack_factor)
         self.max_line_search_steps = int(max_line_search_steps)
         self.verbose = bool(verbose)
+        self.use_jit = bool(use_jit)
 
     def _eval_energy_and_grad(
         self,
@@ -74,6 +77,8 @@ class BatchedLBFGS:
         x_flat: np.ndarray,
         atom_mask_3d: np.ndarray,
         shape_3d: Tuple[int, int, int],
+        jit_eval_fn: Optional[Callable[[Tensor], Tuple[Tensor, Tensor]]] = None,
+        x_buf: Optional[Tensor] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Evaluates potential energy U(X) and analytical autograd Cartesian forces g = grad(U).
@@ -83,6 +88,8 @@ class BatchedLBFGS:
             x_flat: NumPy array of shape (B, 3N).
             atom_mask_3d: NumPy array of shape (B, N, 3).
             shape_3d: Tuple (B, N, 3).
+            jit_eval_fn: Optional pre-compiled TinyJit evaluator mapping Tensor(x_3d) -> (u, grad).
+            x_buf: Optional pre-allocated persistent static device buffer for in-place .assign().
 
         Returns:
             Tuple of (energies (B,), gradients (B, 3N)).
@@ -90,16 +97,32 @@ class BatchedLBFGS:
         B, N, _ = shape_3d
         x_3d = x_flat.reshape(B, N, 3)
 
-        x_tensor = Tensor(x_3d)
-        x_tensor.requires_grad = True
+        if jit_eval_fn is not None and x_buf is not None:
+            # Explicitly drop previous gradient reference prior to .assign() and backward pass
+            x_buf.grad = None
+            x_buf.assign(Tensor(x_3d)).realize()
+            x_buf.requires_grad = True
+            u_b, g_tensor = jit_eval_fn(x_buf)
+            energies = u_b.numpy().astype(np.float32)
+            grad_3d = g_tensor.numpy() if g_tensor is not None else np.zeros_like(x_3d)
+            x_buf.grad = None
+        elif jit_eval_fn is not None:
+            x_tensor = Tensor(x_3d)
+            x_tensor.requires_grad = True
+            u_b, g_tensor = jit_eval_fn(x_tensor)
+            energies = u_b.numpy().astype(np.float32)
+            grad_3d = g_tensor.numpy() if g_tensor is not None else np.zeros_like(x_3d)
+            x_tensor.grad = None
+        else:
+            x_tensor = Tensor(x_3d)
+            x_tensor.requires_grad = True
+            u_b = energy_fn(x_tensor)  # (B,)
+            u_sum = u_b.sum()
+            u_sum.backward()
+            energies = u_b.numpy().astype(np.float32)
+            grad_3d = x_tensor.grad.numpy() if x_tensor.grad is not None else np.zeros_like(x_3d)
+            x_tensor.grad = None
 
-        u_b = energy_fn(x_tensor)  # (B,)
-        u_sum = u_b.sum()
-        u_sum.backward()
-
-        energies = u_b.numpy().astype(np.float32)
-
-        grad_3d = x_tensor.grad.numpy() if x_tensor.grad is not None else np.zeros_like(x_3d)
         # Strictly mask out forces on dummy/padding atoms
         grad_3d = grad_3d * atom_mask_3d
         # Replace any potential NaNs/Infs with zero to preserve optimizer robustness
@@ -151,9 +174,33 @@ class BatchedLBFGS:
         atom_mask_flat = atom_mask_3d.reshape(B, dim)
         n_real_per_mol = np.maximum(1.0, mask_2d.sum(axis=-1, keepdims=True))  # (B, 1)
 
-        # 2. Initial state energy and gradient
+        # 2. Setup persistent static device buffers for TinyJit execution
+        x_buf = None
+        x_trial_buf = None
+        jit_eval_grad = None
+        jit_eval_trial = None
+        if self.use_jit:
+            x_buf = Tensor.zeros(B, N, D, dtype=dtypes.float32).realize()
+            x_trial_buf = Tensor.zeros(B, N, D, dtype=dtypes.float32).realize()
+
+            def _step_grad(xt: Tensor) -> Tuple[Tensor, Tensor]:
+                u = energy_fn(xt)
+                u.sum().backward()
+                g = xt.grad if xt.grad is not None else Tensor.zeros_like(xt)
+                return u.realize(), g.realize()
+
+            jit_eval_grad = TinyJit(_step_grad)
+
+            def _step_trial(xt: Tensor) -> Tensor:
+                u = energy_fn(xt)
+                return u.realize()
+
+            jit_eval_trial = TinyJit(_step_trial)
+
         x_curr = x_arr.reshape(B, dim)
-        u_curr, g_curr = self._eval_energy_and_grad(energy_fn, x_curr, atom_mask_3d, (B, N, D))
+        u_curr, g_curr = self._eval_energy_and_grad(
+            energy_fn, x_curr, atom_mask_3d, (B, N, D), jit_eval_fn=jit_eval_grad, x_buf=x_buf
+        )
         u_init = u_curr.copy()
 
         energy_history = [u_curr.copy()]
@@ -246,7 +293,13 @@ class BatchedLBFGS:
                 x_trial = x_curr + (step_sizes * descent_dir * active_mask)
                 # Evaluate trial energy (without autograd graph)
                 x_trial_3d = x_trial.reshape(B, N, D)
-                u_trial = energy_fn(Tensor(x_trial_3d)).numpy().astype(np.float32)
+                if jit_eval_trial is not None and x_trial_buf is not None:
+                    x_trial_buf.assign(Tensor(x_trial_3d)).realize()
+                    u_trial = jit_eval_trial(x_trial_buf).numpy().astype(np.float32)
+                elif jit_eval_trial is not None:
+                    u_trial = jit_eval_trial(Tensor(x_trial_3d)).numpy().astype(np.float32)
+                else:
+                    u_trial = energy_fn(Tensor(x_trial_3d)).numpy().astype(np.float32)
 
                 # Sufficient decrease: U(x + alpha * d) <= U(x) + c1 * alpha * (g^T * d)
                 target_u = u_curr + (self.c1 * step_sizes.reshape(B) * g_dot_d.reshape(B))
@@ -272,7 +325,9 @@ class BatchedLBFGS:
             x_next = np.where(active_mask, best_x_trial, x_curr)
 
             # Re-evaluate new energy and gradient at accepted position
-            u_next, g_next = self._eval_energy_and_grad(energy_fn, x_next, atom_mask_3d, (B, N, D))
+            u_next, g_next = self._eval_energy_and_grad(
+                energy_fn, x_next, atom_mask_3d, (B, N, D), jit_eval_fn=jit_eval_grad, x_buf=x_buf
+            )
 
             # 6. Update rolling history buffers for active molecules
             s_k = (x_next - x_curr) * atom_mask_flat

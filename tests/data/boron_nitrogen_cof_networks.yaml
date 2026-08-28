@@ -1,0 +1,59 @@
+group_name: "boron_nitrogen_cof_networks"
+version: "1.0.0"
+description: "Extended metalloid borazine and boroxine covalent organic framework (COF) nodes for testing Lewis acid/base pair mechanics and alternate aromaticity."
+
+rl_reward_targets:
+  target_elasticity: 0.10       # Rigid planar networks
+  target_tensile: 0.70
+  target_toughness: 0.50
+  target_lightweight: 0.60      # High porosity desired
+  max_solvation_kcal: -1.0      # Low solubility (frameworks)
+  min_wall_pressure_bar: 5.0
+  max_molecular_weight: 900.0
+  min_valency: 3                # Minimum 3 to form 2D/3D sheets
+
+tensor_limits:
+  max_sites: 128
+  allowed_atomic_numbers: [1, 5, 6, 7, 8] # H, B, C, N, O
+  max_molecular_weight: 900.0
+  min_boron_count: 3
+  max_boron_count: 12
+
+scaffolds:
+  - id: "borazine_core"
+    smarts: "B1([*:1])N([*:2])B([*:3])N([*:4])B([*:5])N1([*:6])"
+    name: "borazine hexasubstituted core"
+    attachment_points: 6
+  - id: "boroxine_core"
+    smarts: "B1([*:1])OB([*:2])OB([*:3])O1"
+    name: "boroxine trisubstituted core"
+    attachment_points: 3
+
+building_blocks:
+  linkers_and_caps:
+    - id: "phenylene_diboronic_acid"
+      smiles: "OB(O)c1ccc(B(O)O)cc1"
+    - id: "catechol_linker"
+      smiles: "Oc1ccccc1O"
+    - id: "dimethylamino_cap"
+      smiles: "N(C)(C)[*:1]"
+    - id: "hydrogen_cap"
+      smiles: "[H][*:1]"
+
+assembly_rules:
+  reaction_type: "boronic_ester_condensation"
+  smarts_transform: "[B:1](O)O.[O:2][H]>>[B:1][O:2]"
+  min_aromatic_rings: 2
+  require_planar_geometry: true
+
+generation_spec:
+  target_molecules: 50000
+  random_seed: 512
+  deterministic_enumeration: true
+  conformer_embedding:
+    algorithm: "distance_geometry_gpu"
+    num_conformations_per_molecule: 5
+    planarity_tolerance_deg: 5.0
+  jackhammer_mining:
+    max_fragment_nodes: 48
+    target_fragment_budget: 15000

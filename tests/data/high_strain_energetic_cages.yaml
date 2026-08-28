@@ -1,0 +1,65 @@
+group_name: "high_strain_energetic_cages"
+version: "1.1.0"
+description: "Polynitro-substituted polycyclic cages designed to test distance geometry solvers against extreme ring strain and explosive nitrogen densities."
+
+rl_reward_targets:
+  target_elasticity: 0.05
+  target_tensile: 0.90
+  target_toughness: 0.10
+  target_lightweight: 0.30
+  max_solvation_kcal: -4.0
+  min_wall_pressure_bar: 50.0   # Energetic material simulation
+  max_molecular_weight: 600.0
+  min_valency: 4
+
+tensor_limits:
+  max_sites: 96
+  allowed_atomic_numbers: [1, 6, 7, 8] # H, C, N, O
+  max_molecular_weight: 600.0
+  min_nitrogen_count: 8
+  min_ring_strain_kcal_mol: 30.0 # Force extreme geometric strain
+
+scaffolds:
+  - id: "cubane_tetra_core"
+    smarts: "C123C45C1([*:1])C6([*:2])C2C3([*:3])C4C56([*:4])"
+    name: "tetrasubstituted cubane"
+    attachment_points: 4
+  - id: "tetrahedrane_core"
+    smarts: "C123C1([*:1])C2([*:2])C3([*:3])"
+    name: "trisubstituted tetrahedrane"
+    attachment_points: 3
+  - id: "hexamine_cage"
+    smarts: "N12CN3CN(C1)CN(C2)C3"
+    name: "adamantane-like hexamine core"
+    attachment_points: 4
+
+building_blocks:
+  energetic_groups:
+    - id: "nitro_group"
+      smiles: "[N+](=O)[O-][*:1]"
+    - id: "azide_group"
+      smiles: "N=[N+]=[N-][*:1]"
+    - id: "tetrazole_ring"
+      smiles: "c1nnn[nH]1"
+    - id: "nitramine_linker"
+      smiles: "N([N+](=O)[O-])[*:1]"
+    - id: "hydrogen_cap"
+      smiles: "[H][*:1]"
+
+assembly_rules:
+  reaction_type: "nitration_and_click_coupling"
+  smarts_transform: "[C:1][H].[N:2](=[O])[O-]>>[C:1][N:2]"
+  min_n_o_ratio: 0.5
+  max_rotatable_bonds: 3
+
+generation_spec:
+  target_molecules: 50000
+  random_seed: 911
+  deterministic_enumeration: true
+  conformer_embedding:
+    algorithm: "force_field_optimized_gpu" # Distance geometry fails on high strain; needs FF
+    force_field: "MMFF94s"
+    num_conformations_per_molecule: 3
+  jackhammer_mining:
+    max_fragment_nodes: 24
+    target_fragment_budget: 15000

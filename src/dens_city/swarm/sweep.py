@@ -115,6 +115,9 @@ class CurriculumSweepRunner:
             "loss/policy": [],
             "loss/value": [],
             "loss/entropy": [],
+            "loss/approx_kl": [],
+            "loss/clipfrac": [],
+            "loss/explained_variance": [],
         }
 
         try:
@@ -131,6 +134,12 @@ class CurriculumSweepRunner:
                 metric_streams["loss/policy"].append(float(metrics["loss/policy"]))
                 metric_streams["loss/value"].append(float(metrics["loss/value"]))
                 metric_streams["loss/entropy"].append(float(metrics["loss/entropy"]))
+                metric_streams["loss/approx_kl"].append(float(metrics.get("loss/approx_kl", 0.0)))
+                metric_streams["loss/clipfrac"].append(float(metrics.get("loss/clipfrac", 0.0)))
+                metric_streams["loss/explained_variance"].append(float(metrics.get("loss/explained_variance", 0.0)))
+                if metrics.get("early_stopped", 0.0) > 0.5:
+                    print(f"[EARLY STOPPING] Trial {trial_id} halted: {trainer.early_stop_reason}")
+                    break
         finally:
             vec_env.close()
 

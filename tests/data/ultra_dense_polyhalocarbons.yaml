@@ -1,0 +1,59 @@
+group_name: "ultra_dense_polyhalocarbons"
+version: "1.0.0"
+description: "Perhalogenated fluids and resins with near-zero hydrogen content to push the boundaries of molecular weight density, steric repulsion, and vdW radii."
+
+rl_reward_targets:
+  target_elasticity: 0.01
+  target_tensile: 0.50
+  target_toughness: 0.20
+  target_lightweight: 0.00      # Heavy atom maximization (lowest fractional free volume)
+  max_solvation_kcal: -0.5      # Extreme hydrophobicity
+  min_wall_pressure_bar: 30.0   # Extreme density testing
+  max_molecular_weight: 1500.0
+  min_valency: 1
+
+tensor_limits:
+  max_sites: 64                 # Small site count, huge mass
+  allowed_atomic_numbers: [6, 9, 17, 35, 53] # C, F, Cl, Br, I (No H)
+  max_molecular_weight: 1500.0
+  max_hydrogen_count: 0         # Enforce perhalogenation
+  min_halogen_count: 12
+
+scaffolds:
+  - id: "hexachlorobutadiene_core"
+    smarts: "C(=C(Cl)[*:1])(Cl)C(Cl)=C(Cl)[*:2]"
+    name: "perchlorinated butadiene"
+    attachment_points: 2
+  - id: "perfluoro_cyclohexane_core"
+    smarts: "C1(F)(F)C(F)(F)C(F)(F)C(F)([*:1])C(F)(F)C1(F)([*:2])"
+    name: "perfluorocyclohexane bridge"
+    attachment_points: 2
+
+building_blocks:
+  heavy_halogens:
+    - id: "trichloromethyl_cap"
+      smiles: "C(Cl)(Cl)(Cl)[*:1]"
+    - id: "tribromomethyl_cap"
+      smiles: "C(Br)(Br)(Br)[*:1]"
+    - id: "pentafluorophenyl_cap"
+      smiles: "c1(F)c(F)c(F)c(F)c(F)c1[*:1]"
+    - id: "iodine_cap"
+      smiles: "I[*:1]"
+
+assembly_rules:
+  reaction_type: "radical_halogen_coupling"
+  smarts_transform: "[C:1][I].[C:2][Br]>>[C:1][C:2]"
+  min_heavy_atom_mass_fraction: 0.85
+  min_vdw_volume_angstrom3: 200.0
+
+generation_spec:
+  target_molecules: 50000
+  random_seed: 888
+  deterministic_enumeration: true
+  conformer_embedding:
+    algorithm: "distance_geometry_gpu"
+    num_conformations_per_molecule: 5
+    vdw_overlap_threshold_angstrom: 0.20 # Push limits of steric clashes
+  jackhammer_mining:
+    max_fragment_nodes: 16
+    target_fragment_budget: 10000

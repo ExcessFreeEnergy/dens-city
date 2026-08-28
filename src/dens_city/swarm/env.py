@@ -29,14 +29,16 @@ def ensure_shared_library() -> Path:
     if not c_src.exists():
         raise FileNotFoundError(f"Missing C source at {c_src}")
 
+    c_deps = list(OCEAN_SWARM_DIR.glob("*.h")) + [c_src]
     recompile = False
     if not LIB_SO_PATH.exists():
         recompile = True
     else:
-        src_mtime = c_src.stat().st_mtime
         so_mtime = LIB_SO_PATH.stat().st_mtime
-        if src_mtime > so_mtime:
-            recompile = True
+        for dep in c_deps:
+            if dep.stat().st_mtime > so_mtime:
+                recompile = True
+                break
 
     if recompile:
         cmd = [
@@ -367,7 +369,16 @@ class CDFTSwarmEnv:
             is_arom = bool(self.lib.env_get_atom_is_aromatic(self._env_ptr, i))
             sym = z_to_sym.get(z, "C")
             s_name = f"{sym}{i + 1}"
-            at_type = "ca" if is_arom else ("c3" if z == 6 else sym.lower())
+            if z == 6:
+                at_type = "C.ar" if is_arom else "C.3"
+            elif z == 7:
+                at_type = "N.ar" if is_arom else "N.3"
+            elif z == 8:
+                at_type = "O.3"
+            elif z == 16:
+                at_type = "S.3"
+            else:
+                at_type = sym
             px = float(self.lib.env_get_atom_pos_x(self._env_ptr, i))
             py = float(self.lib.env_get_atom_pos_y(self._env_ptr, i))
             pz = float(self.lib.env_get_atom_pos_z(self._env_ptr, i))

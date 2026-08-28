@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Callable, List, Optional, Tuple
 
-from tinygrad import Tensor, dtypes, nn
+from tinygrad import Tensor, TinyJit, dtypes, nn
 
 
 class EGNNLayer:
@@ -199,6 +199,26 @@ class EGNNForceField:
         Evaluates exact conservative forces F = -∇_x U(x) via reverse-mode autograd.
         Returns: Tensor of shape (B, N, 3).
         """
+        _, forces = self.compute_energy_and_forces(
+            x=x,
+            atomic_numbers=atomic_numbers,
+            atom_mask=atom_mask,
+            molecule_mask=molecule_mask,
+        )
+        return forces
+
+    def compute_energy_and_forces(
+        self,
+        x: Tensor,
+        atomic_numbers: Tensor,
+        atom_mask: Optional[Tensor] = None,
+        molecule_mask: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor]:
+        """
+        Evaluates total potential energy U(x) and conservative forces F = -∇_x U(x)
+        via reverse-mode autograd in a single unified graph traversal.
+        Returns: Tuple of (energy (B,), forces (B, N, 3)).
+        """
         x_in = x.detach()
         x_in.requires_grad = True
 
@@ -211,5 +231,29 @@ class EGNNForceField:
 
         loss = u_total.sum()
         loss.backward()
-        forces = (-x_in.grad * atom_mask.reshape(x.shape[0], x.shape[1], 1)).realize()
-        return forces
+
+        _, _, a_mask, _, _ = self._prepare_inputs(x_in, atomic_numbers, atom_mask, molecule_mask)
+        grad = x_in.grad if x_in.grad is not None else Tensor.zeros_like(x_in)
+        forces = (-grad * a_mask).realize()
+        return u_total.realize(), forces
+
+    def get_jit_evaluator(self) -> Callable[[Tensor, Tensor, Tensor, Tensor], Tuple[Tensor, Tensor]]:
+        """
+        Returns a lazily-instantiated TinyJit compiled evaluator function
+        mapping (x, atomic_numbers, atom_mask, molecule_mask) -> (u_total, forces).
+        Traces the execution graph once and replays directly from GPU command queue.
+        """
+        if getattr(self, "_jit_evaluator", None) is None:
+            # Ensure parameters are realized on device before tracing
+            for p in nn.state.get_parameters(self):
+                p.realize()
+
+            def _step(x_in: Tensor, z_in: Tensor, a_mask: Tensor, m_mask: Tensor) -> Tuple[Tensor, Tensor]:
+                u = self.compute_energy(x=x_in, atomic_numbers=z_in, atom_mask=a_mask, molecule_mask=m_mask)
+                u.sum().backward()
+                grad = x_in.grad if x_in.grad is not None else Tensor.zeros_like(x_in)
+                f = (-grad * a_mask).realize()
+                return u.realize(), f
+
+            self._jit_evaluator = TinyJit(_step)
+        return self._jit_evaluator

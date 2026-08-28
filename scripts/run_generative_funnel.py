@@ -18,7 +18,7 @@ from typing import List
 
 import numpy as np
 import torch
-from tinygrad import Tensor
+from tinygrad import Tensor, dtypes
 
 from dens_city.boltzmann.bijectors import Base2CartesianFlow
 from dens_city.boltzmann.egnn import EGNNForceField
@@ -346,14 +346,22 @@ def main():
             n_particles=candidate_batch.n_particles,
         )
 
+        jit_eval = egnn.get_jit_evaluator()
         egnn_batch_size = args.egnn_batch_size
         num_egnn_chunks = max(1, math.ceil(candidate_batch.num_candidates / egnn_batch_size))
+
+        # Persistent static GPU buffers for TinyJit execution across all batch chunks
+        x_buf = Tensor.zeros(egnn_batch_size, candidate_batch.n_particles, 3, dtype=dtypes.float32).realize()
+        z_buf = Tensor.zeros(egnn_batch_size, candidate_batch.n_particles, dtype=dtypes.float32).realize()
+        mask_buf = Tensor.zeros(egnn_batch_size, candidate_batch.n_particles, 1, dtype=dtypes.float32).realize()
+        mol_mask_buf = Tensor.zeros(egnn_batch_size, dtype=dtypes.float32).realize()
 
         for chunk_idx in range(num_egnn_chunks):
             start_i = chunk_idx * egnn_batch_size
             count_i = min(egnn_batch_size, candidate_batch.num_candidates - start_i)
             end_i = start_i + count_i
 
+            # Zero-padded host arrays ensure static (egnn_batch_size, ...) shapes on all chunks
             x_chunk = np.zeros((egnn_batch_size, candidate_batch.n_particles, 3), dtype=np.float32)
             z_chunk = np.zeros((egnn_batch_size, candidate_batch.n_particles), dtype=np.float32)
             mask_chunk = np.zeros((egnn_batch_size, candidate_batch.n_particles, 1), dtype=np.float32)
@@ -366,30 +374,27 @@ def main():
             )
             mol_mask_chunk[:count_i] = 1.0
 
-            # 1. State Tensors with autograd flag for conservative forces
-            x_tensor = Tensor(x_chunk)
-            z_tensor = Tensor(z_chunk)
-            mask_tensor = Tensor(mask_chunk)
-            mol_mask_tensor = Tensor(mol_mask_chunk)
+            # 1. Update static device buffers in-place via .assign() with clean grad state
+            x_buf.grad = None
+            x_buf.assign(Tensor(x_chunk)).realize()
+            x_buf.requires_grad = True
+            z_buf.assign(Tensor(z_chunk)).realize()
+            mask_buf.assign(Tensor(mask_chunk)).realize()
+            mol_mask_buf.assign(Tensor(mol_mask_chunk)).realize()
 
-            # 2. Single forward pass for potential energy
-            u_total = egnn.compute_energy(x_tensor, z_tensor, mask_tensor, mol_mask_tensor)
+            # 2. JIT-compiled single-pass energy & conservative forces
+            u_tensor, f_tensor = jit_eval(x_buf, z_buf, mask_buf, mol_mask_buf)
 
-            # 3. Single reverse-mode autograd pass for conservative forces
-            u_total.sum().backward()
+            # 3. Extraction to host NumPy
+            u_np = u_tensor.numpy().astype(np.float32)
+            f_np = f_tensor.numpy().astype(np.float32)
 
-            # 4. Immediate extraction to host NumPy
-            u_np = u_total.numpy().astype(np.float32)
-            grad_tensor = x_tensor.grad if x_tensor.grad is not None else Tensor.zeros_like(x_tensor)
-            f_np = (-grad_tensor * mask_tensor).numpy().astype(np.float32)
-
-            # 5. Quantum Force RMS Stability
+            # 4. Quantum Force RMS Stability
             num_real = np.maximum(1.0, mask_chunk.reshape(egnn_batch_size, -1).sum(axis=1))
             f_rms_np = np.sqrt(np.sum(f_np**2, axis=(1, 2)) / num_real).astype(np.float32)
 
-            # 6. Explicitly sever the autograd graph to maintain constant O(B_egnn * N^2 * F) VRAM
-            x_tensor.grad = None
-            del x_tensor, z_tensor, mask_tensor, mol_mask_tensor, u_total, grad_tensor
+            # 5. Clean up gradient reference on static leaf tensor
+            x_buf.grad = None
 
             for local_i in range(count_i):
                 global_i = start_i + local_i

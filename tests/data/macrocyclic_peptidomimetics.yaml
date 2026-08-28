@@ -1,0 +1,62 @@
+group_name: "macrocyclic_peptidomimetics"
+version: "1.0.5"
+description: "Massive ring architectures (>15 atoms) with multiple chiral centers and thioether bridges to test ring closure algorithms and large-scale intramolecular folding."
+
+rl_reward_targets:
+  target_elasticity: 0.60
+  target_tensile: 0.30
+  target_toughness: 0.80        # Intramolecular H-bonding density
+  target_lightweight: 0.40
+  max_solvation_kcal: -10.0     # Extreme polarity / solubility
+  min_wall_pressure_bar: 10.0
+  max_molecular_weight: 1200.0
+  min_valency: 2
+
+tensor_limits:
+  max_sites: 180
+  allowed_atomic_numbers: [1, 6, 7, 8, 16] # H, C, N, O, S
+  max_molecular_weight: 1200.0
+  min_macrocycle_size: 15       # Force generation of large rings
+  min_chiral_centers: 4
+
+scaffolds:
+  - id: "linear_peptide_backbone"
+    smarts: "N([*:1])CC(=O)N([*:2])CC(=O)N([*:3])CC(=O)[*:4]"
+    name: "tripeptide precursor"
+    attachment_points: 4
+  - id: "crown_ether_scaffold"
+    smarts: "O1CCOCCOCCOCC1"
+    name: "18-crown-6 topological template"
+    attachment_points: 2
+
+building_blocks:
+  amino_acids_and_linkers:
+    - id: "cysteine_residue"
+      smiles: "N(C)C(CS)C(=O)[*:1]"
+    - id: "proline_residue"
+      smiles: "N1CCCC1C(=O)[*:1]"
+    - id: "phenylalanine_residue"
+      smiles: "NC(Cc1ccccc1)C(=O)[*:1]"
+    - id: "disulfide_bridge"
+      smiles: "SS[*:1]"
+    - id: "hydrogen_cap"
+      smiles: "[H][*:1]"
+
+assembly_rules:
+  reaction_type: "macrolactamization_and_disulfide_coupling"
+  smarts_transform: "[C:1](=O)[OH].[N:2][H]>>[C:1](=O)[N:2]"
+  secondary_transform: "[S:1][H].[S:2][H]>>[S:1][S:2]"
+  min_h_bonds_per_molecule: 8
+  enforce_ring_closure: true
+
+generation_spec:
+  target_molecules: 50000
+  random_seed: 360
+  deterministic_enumeration: false # Stochastic preferred for massive topology spaces
+  conformer_embedding:
+    algorithm: "distance_geometry_gpu"
+    num_conformations_per_molecule: 50   # Macrocycles require extensive conformational sampling
+    embed_macrocycles_separately: true
+  jackhammer_mining:
+    max_fragment_nodes: 48
+    target_fragment_budget: 25000

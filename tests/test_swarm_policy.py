@@ -196,9 +196,239 @@ def test_constellation_sweep_export_schema(tmp_path):
     assert "policy" in data["args"]
     assert "vec" in data["args"]
 
-    assert "metrics" in data
     metrics = data["metrics"]
-    for required_key in ["agent_steps", "uptime", "env/score", "env/perf", "loss/policy"]:
+    for required_key in ["agent_steps", "uptime", "env/score", "env/perf", "loss/policy", "loss/approx_kl"]:
         assert required_key in metrics, f"Missing required Constellation metric: {required_key}"
         assert isinstance(metrics[required_key], list)
         assert len(metrics[required_key]) > 0
+
+
+def test_ppo_overtraining_telemetry():
+    """
+    Verifies that SwarmPuffeRLTrainer logs accurate PPO overtraining diagnostic metrics:
+    approximate KL divergence, clip fraction, explained variance, and policy entropy.
+    """
+    spec_data = SwarmSpecLoader.load_yaml(OLED_SPEC)
+    target_spec = SwarmSpecLoader.derive_target_spec(spec_data)
+
+    vec_env = VectorizedSwarmEnv(num_envs=4, spec_yaml_path=OLED_SPEC, seed=42)
+    policy = MolecularSwarmPolicy(obs_size=88, hidden_size=64, recurrent=False)
+
+    trainer = SwarmPuffeRLTrainer(
+        vec_env=vec_env,
+        policy=policy,
+        final_target_spec=target_spec,
+        total_timesteps=128,
+        horizon=8,
+        learning_rate=1e-3,
+        minibatch_size=16,
+        update_epochs=2,
+        use_curriculum=False,
+        device="cpu",
+    )
+
+    try:
+        metrics = trainer.train_epoch()
+        assert "loss/approx_kl" in metrics and np.isfinite(metrics["loss/approx_kl"])
+        assert "loss/clipfrac" in metrics and np.isfinite(metrics["loss/clipfrac"])
+        assert "loss/entropy" in metrics and np.isfinite(metrics["loss/entropy"])
+        assert "loss/explained_variance" in metrics and np.isfinite(metrics["loss/explained_variance"])
+        assert metrics["loss/entropy"] > 0.0, "Policy entropy should be positive"
+        assert metrics["loss/approx_kl"] >= 0.0, "Approximate KL divergence should be non-negative"
+    finally:
+        vec_env.close()
+
+
+def test_dynamic_early_stopping_ema_algorithm(tmp_path):
+    """
+    Verifies that the Dynamic Early-Stopping Callback:
+    1. Tracks a rolling 100-episode EMA of reward.
+    2. Accurately compares the current EMA with the EMA from lookback steps ago.
+    3. Halts execution and dumps trained_policy.pt when progress has flatlined (Δ_EMA < 0.01)
+       and physical constraints are satisfied.
+    """
+    spec_data = SwarmSpecLoader.load_yaml(OLED_SPEC)
+    target_spec = SwarmSpecLoader.derive_target_spec(spec_data)
+
+    vec_env = VectorizedSwarmEnv(num_envs=2, spec_yaml_path=OLED_SPEC, seed=101)
+    policy = MolecularSwarmPolicy(obs_size=88, hidden_size=64, recurrent=False)
+
+    trainer = SwarmPuffeRLTrainer(
+        vec_env=vec_env,
+        policy=policy,
+        final_target_spec=target_spec,
+        total_timesteps=1000,
+        horizon=4,
+        learning_rate=1e-3,
+        minibatch_size=8,
+        update_epochs=1,
+        use_curriculum=False,
+        early_stopping=True,
+        early_stopping_lookback=16,  # Short lookback for unit test
+        early_stopping_delta=0.05,
+        checkpoint_dir=tmp_path,
+        device="cpu",
+    )
+
+    try:
+        # Simulate populated history with flatlined EMA and satisfied constraints
+        trainer.reward_ema = 5.50
+        trainer.ema_history.append((16, 5.505, {"p_wall": 25.0, "omega_solv": -4.0, "valid_rate": 0.90}))
+        trainer.global_step = 64
+
+        # Test early stopping check helper
+        halted = trainer._check_early_stopping(
+            stage_idx=3,
+            avg_p_wall=25.0,
+            avg_omega=-4.0,
+            valid_rate=0.90,
+        )
+        assert halted is True
+        assert trainer.early_stopped is True
+        assert "Reward EMA flatlined" in trainer.early_stop_reason
+
+        # Verify trained_policy.pt was dumped
+        ckpt_path = tmp_path / "trained_policy.pt"
+        assert ckpt_path.exists()
+
+        # Verify saved checkpoint can be reloaded
+        trainer2 = SwarmPuffeRLTrainer(
+            vec_env=vec_env,
+            policy=MolecularSwarmPolicy(obs_size=88, hidden_size=64, recurrent=False),
+            final_target_spec=target_spec,
+            device="cpu",
+        )
+        trainer2.load_checkpoint(ckpt_path)
+        assert trainer2.global_step == 64
+    finally:
+        vec_env.close()
+
+
+def test_dynamic_entropy_scaling_with_molecular_weight():
+    """
+    Verifies that SwarmPuffeRLTrainer dynamically inflates the policy exploration entropy
+    coefficient when the molecular weight ceiling is low (e.g. Aliphatic Sponges <= 400 amu)
+    compared to high-mass specs (850 amu).
+    """
+    spec_sponge = SwarmSpecLoader.load_yaml(SPONGE_SPEC)
+    target_sponge = SwarmSpecLoader.derive_target_spec(spec_sponge)
+    assert target_sponge["max_molecular_weight"] == 350.0
+
+    vec_env = VectorizedSwarmEnv(num_envs=2, spec_yaml_path=SPONGE_SPEC, seed=42)
+    policy = MolecularSwarmPolicy(obs_size=88, hidden_size=64, recurrent=False)
+
+    trainer = SwarmPuffeRLTrainer(
+        vec_env=vec_env,
+        policy=policy,
+        final_target_spec=target_sponge,
+        total_timesteps=64,
+        horizon=4,
+        ent_coef=0.01,
+        dynamic_entropy_scaling=True,
+        device="cpu",
+    )
+
+    try:
+        metrics = trainer.train_epoch()
+        # With max_molecular_weight = 400 amu, dynamic entropy scale factor is 850 / 400 = 2.125
+        assert metrics["loss/dynamic_ent_scale"] >= 2.0
+        assert metrics["loss/entropy"] > 0.0
+    finally:
+        vec_env.close()
+
+
+def test_post_rollout_batch_sa_penalty_injection():
+    """
+    Verifies that post-rollout batch SA calculation retroactively injects the soft hinge penalty
+    R_SA = -slope * max(0, SA - threshold) into rewards_buf before GAE computation.
+    """
+    spec_oled = SwarmSpecLoader.load_yaml(OLED_SPEC)
+    target_oled = SwarmSpecLoader.derive_target_spec(spec_oled)
+
+    vec_env = VectorizedSwarmEnv(num_envs=2, spec_yaml_path=OLED_SPEC, seed=42)
+    policy = MolecularSwarmPolicy(obs_size=88, hidden_size=64, recurrent=False)
+
+    trainer = SwarmPuffeRLTrainer(
+        vec_env=vec_env,
+        policy=policy,
+        final_target_spec=target_oled,
+        total_timesteps=64,
+        horizon=4,
+        sa_penalty=True,
+        sa_threshold=4.5,
+        sa_penalty_slope=2.0,
+        device="cpu",
+    )
+
+    try:
+        metrics = trainer.train_epoch()
+        assert "env/sa_score" in metrics
+        assert "env/r_sa_penalty" in metrics
+        assert np.isfinite(metrics["env/sa_score"])
+        assert np.isfinite(metrics["env/r_sa_penalty"])
+    finally:
+        vec_env.close()
+
+
+def test_dynamic_sa_threshold_derivation_across_specs():
+    """
+    Verifies that SwarmSpecLoader derives domain-specific SA thresholds and slopes:
+    - H-Bond Resins -> SA thresh 5.5, slope 1.0 (dense polar donor/acceptor networks)
+    - OLEDs -> SA thresh 5.0, slope 1.5 (extended pi-conjugation)
+    - Battery Electrolytes -> SA thresh 5.2, slope 1.5 (fluorinated multi-clusters)
+    - Aliphatic Sponges & Drug Inhibitors -> SA thresh 4.5, slope 2.0 (small molecule / steric bulk)
+    """
+    spec_dir = SPECS_DIR
+    resin_target = SwarmSpecLoader.derive_target_spec(
+        SwarmSpecLoader.load_yaml(spec_dir / "sacrificial_h_bond_toughness_resins.yaml")
+    )
+    oled_target = SwarmSpecLoader.derive_target_spec(
+        SwarmSpecLoader.load_yaml(spec_dir / "conjugated_oled_semiconductors.yaml")
+    )
+    battery_target = SwarmSpecLoader.derive_target_spec(
+        SwarmSpecLoader.load_yaml(spec_dir / "fluorinated_battery_electrolytes.yaml")
+    )
+    sponge_target = SwarmSpecLoader.derive_target_spec(
+        SwarmSpecLoader.load_yaml(spec_dir / "ultra_lightweight_aliphatic_sponges.yaml")
+    )
+    drug_target = SwarmSpecLoader.derive_target_spec(
+        SwarmSpecLoader.load_yaml(spec_dir / "sterically_hindered_drug_inhibitors.yaml")
+    )
+
+    assert resin_target["sa_threshold"] == 5.5 and resin_target["sa_penalty_slope"] == 1.0
+    assert oled_target["sa_threshold"] == 5.0 and oled_target["sa_penalty_slope"] == 1.5
+    assert battery_target["sa_threshold"] == 5.2 and battery_target["sa_penalty_slope"] == 1.5
+    assert sponge_target["sa_threshold"] == 4.5 and sponge_target["sa_penalty_slope"] == 2.0
+    assert drug_target["sa_threshold"] == 4.5 and drug_target["sa_penalty_slope"] == 2.0
+
+
+def test_hbond_resin_diversity_restoration():
+    """
+    Verifies that Sacrificial H-Bond Resin training inherits the calibrated SA threshold (5.5)
+    and enhanced high-valency exploration entropy scale (>= 2.0).
+    """
+    resin_path = SPECS_DIR / "sacrificial_h_bond_toughness_resins.yaml"
+    target_resin = SwarmSpecLoader.derive_target_spec(SwarmSpecLoader.load_yaml(resin_path))
+
+    vec_env = VectorizedSwarmEnv(num_envs=2, spec_yaml_path=resin_path, seed=77)
+    policy = MolecularSwarmPolicy(obs_size=88, hidden_size=64, recurrent=False)
+
+    trainer = SwarmPuffeRLTrainer(
+        vec_env=vec_env,
+        policy=policy,
+        final_target_spec=target_resin,
+        total_timesteps=64,
+        horizon=4,
+        sa_penalty=True,
+        dynamic_entropy_scaling=True,
+        device="cpu",
+    )
+
+    try:
+        assert trainer.sa_threshold == 5.5
+        assert trainer.sa_penalty_slope == 1.0
+        metrics = trainer.train_epoch()
+        assert metrics["loss/dynamic_ent_scale"] >= 2.0
+        assert np.isfinite(metrics["env/score"])
+    finally:
+        vec_env.close()

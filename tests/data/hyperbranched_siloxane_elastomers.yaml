@@ -1,0 +1,59 @@
+group_name: "hyperbranched_siloxane_elastomers"
+version: "1.2.0"
+description: "Inorganic highly-branched Si-O-Si backbones to stress-test extreme bond angles, large radius of gyration, and torsional hyper-flexibility."
+
+rl_reward_targets:
+  target_elasticity: 0.99       # Maximum hyper-elasticity
+  target_tensile: 0.10
+  target_toughness: 0.10
+  target_lightweight: 0.85
+  max_solvation_kcal: -2.0
+  min_wall_pressure_bar: 3.0
+  max_molecular_weight: 1200.0
+  min_valency: 4
+
+tensor_limits:
+  max_sites: 256                # High site limit for long polymer chains
+  allowed_atomic_numbers: [1, 6, 8, 14] # H, C, O, Si
+  max_molecular_weight: 1200.0
+  min_silicon_count: 5
+  max_aromatic_rings: 0         # Strictly aliphatic/inorganic
+
+scaffolds:
+  - id: "d4_cyclotetrasiloxane"
+    smarts: "O1[Si]([*:1])([*:2])O[Si]([*:3])([*:4])O[Si]([*:5])([*:6])O[Si]([*:7])([*:8])1"
+    name: "octamethylcyclotetrasiloxane derivative"
+    attachment_points: 8
+  - id: "t_resin_branch"
+    smarts: "[Si](O[*:1])(O[*:2])(O[*:3])[*:4]"
+    name: "trifunctional silsesquioxane node"
+    attachment_points: 4
+
+building_blocks:
+  silicone_monomers:
+    - id: "pdms_linear_unit"
+      smiles: "O[Si](C)(C)O[*:1]"
+    - id: "trimethylsilyl_cap"
+      smiles: "[Si](C)(C)(C)[*:1]"
+    - id: "vinyl_silane_linker"
+      smiles: "C=C[Si](C)(C)[*:1]"
+    - id: "hydrogen_cap"
+      smiles: "[H][*:1]"
+
+assembly_rules:
+  reaction_type: "silanol_condensation"
+  smarts_transform: "[Si:1][O][H].[Si:2][O][H]>>[Si:1][O][Si:2]"
+  max_ring_count: 2
+  min_rotatable_bonds: 15
+
+generation_spec:
+  target_molecules: 50000
+  random_seed: 1024
+  deterministic_enumeration: true
+  conformer_embedding:
+    algorithm: "distance_geometry_gpu"
+    num_conformations_per_molecule: 25   # Needs more conformers due to extreme flexibility
+    clash_cutoff_angstrom: 0.90
+  jackhammer_mining:
+    max_fragment_nodes: 64
+    target_fragment_budget: 20000

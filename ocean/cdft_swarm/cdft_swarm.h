@@ -104,12 +104,27 @@ static inline void compute_action_mask(Env* env) {
     if (!env->action_mask) return;
     memset(env->action_mask, 0, TOTAL_ACTION_MASK_SIZE);
 
-    // 1. Port action mask (indices 0..15): 1 if port is empty, 0 otherwise
     int empty_port_count = 0;
+    bool port_has_valid_frag[MAX_PORTS] = {false};
+    bool frag_has_valid_port[NUM_FRAGMENT_CHOICES] = {false};
+
+    // Evaluate pair-wise feasibility across all open ports and fragment choices
+    for (int p = 0; p < env->graph.num_ports; p++) {
+        if (env->graph.ports[p].state != PORT_STATE_EMPTY) continue;
+        empty_port_count++;
+
+        for (int f = 0; f < NUM_FRAGMENT_CHOICES; f++) {
+            if (is_attachment_valid(&env->graph, p, f, env->targets.max_molecular_weight, NULL, NULL, NULL)) {
+                port_has_valid_frag[p] = true;
+                frag_has_valid_port[f] = true;
+            }
+        }
+    }
+
+    // 1. Port action mask (indices 0..15): 1 if port is empty and has at least one valid fragment attachment
     for (int p = 0; p < MAX_PORTS; p++) {
-        if (p < env->graph.num_ports && env->graph.ports[p].state == PORT_STATE_EMPTY) {
+        if (p < env->graph.num_ports && port_has_valid_frag[p]) {
             env->action_mask[p] = 1;
-            empty_port_count++;
         } else {
             env->action_mask[p] = 0;
         }
@@ -118,15 +133,7 @@ static inline void compute_action_mask(Env* env) {
     // 2. Fragment choice action mask (indices 16..27 for fragments 0..11)
     unsigned char* frag_mask = &env->action_mask[MAX_PORTS];
     for (int f = 0; f < NUM_FRAGMENT_CHOICES; f++) {
-        FragmentTemplate ft = get_fragment_template(f);
-        // Check if adding this fragment would violate limits
-        if (env->graph.num_atoms + ft.num_atoms > MAX_ATOMS ||
-            env->graph.num_bonds + ft.num_bonds + 1 > MAX_BONDS ||
-            empty_port_count == 0) {
-            frag_mask[f] = 0;
-        } else {
-            frag_mask[f] = 1;
-        }
+        frag_mask[f] = frag_has_valid_port[f] ? 1 : 0;
     }
 
     // 3. Finalize action mask (index 28)

@@ -3,6 +3,11 @@ dens_city.swarm: Stage 1 Multi-Objective RL Swarm environment for molecular patt
 """
 
 from dens_city.swarm.env import CDFTSwarmEnv
+from dens_city.swarm.evaluator import (
+    compute_batch_diversity,
+    evaluate_molecule_chemistry,
+    run_spec_rl_stage,
+)
 from dens_city.swarm.policy import (
     MolecularActionDecoder,
     MolecularPortEncoder,
@@ -26,4 +31,7 @@ __all__ = [
     "SwarmCurriculumManager",
     "SwarmPuffeRLTrainer",
     "CurriculumSweepRunner",
+    "evaluate_molecule_chemistry",
+    "compute_batch_diversity",
+    "run_spec_rl_stage",
 ]

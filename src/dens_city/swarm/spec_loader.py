@@ -42,15 +42,45 @@ class SwarmSpecLoader:
 
         if "rl_reward_targets" in spec_data:
             targets = spec_data["rl_reward_targets"]
+            toughness = float(targets.get("target_toughness", 0.25))
+            tensile = float(targets.get("target_tensile", 0.25))
+            solvation = float(targets.get("max_solvation_kcal", -3.0))
+            max_mw = float(targets.get("max_molecular_weight", default_max_mw))
+            min_val = int(targets.get("min_valency", 2))
+
+            # Dynamic Material-Domain SA Calibration:
+            if "sa_threshold" in targets:
+                sa_thresh = float(targets["sa_threshold"])
+                sa_slope = float(targets.get("sa_penalty_slope", 2.0))
+            else:
+                # 1. Sacrificial H-Bond Resins / Crosslinked Networks (dense polar HBA/HBD networks)
+                if toughness >= 0.70 or (min_val >= 4 and float(targets.get("target_lightweight", 0.0)) < 0.50):
+                    sa_thresh = 5.5
+                    sa_slope = 1.0
+                # 2. Fluorinated Battery Electrolytes (high solvation requirement)
+                elif solvation <= -5.0:
+                    sa_thresh = 5.2
+                    sa_slope = 1.5
+                # 3. Extended Conjugated OLEDs (high tensile + high MW)
+                elif tensile >= 0.75 and max_mw >= 800.0:
+                    sa_thresh = 5.0
+                    sa_slope = 1.5
+                # 4. Small Molecule / Aliphatic Sponges / Drug Targets
+                else:
+                    sa_thresh = 4.5
+                    sa_slope = 2.0
+
             return {
                 "target_elasticity": float(targets.get("target_elasticity", 0.25)),
-                "target_tensile": float(targets.get("target_tensile", 0.25)),
-                "target_toughness": float(targets.get("target_toughness", 0.25)),
+                "target_tensile": tensile,
+                "target_toughness": toughness,
                 "target_lightweight": float(targets.get("target_lightweight", 0.25)),
-                "max_solvation_kcal": float(targets.get("max_solvation_kcal", -3.0)),
+                "max_solvation_kcal": solvation,
                 "min_wall_pressure_bar": float(targets.get("min_wall_pressure_bar", 15.0)),
-                "max_molecular_weight": float(targets.get("max_molecular_weight", default_max_mw)),
-                "min_valency": int(targets.get("min_valency", 2)),
+                "max_molecular_weight": max_mw,
+                "min_valency": min_val,
+                "sa_threshold": sa_thresh,
+                "sa_penalty_slope": sa_slope,
             }
 
         max_mw = default_max_mw
