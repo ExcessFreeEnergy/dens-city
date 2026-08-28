@@ -46,9 +46,11 @@ def main():
     )
     parser.add_argument(
         "--train-steps",
+        "--total-timesteps",
+        dest="train_steps",
         type=int,
-        default=25000,
-        help="Number of RL curriculum training steps before sampling (default: 25000)",
+        default=5000000,
+        help="Number of RL curriculum training steps before sampling (scaled to 5M-10M steps, default: 5000000)",
     )
     parser.add_argument(
         "--num-candidates",
@@ -85,6 +87,56 @@ def main():
         type=int,
         default=16,
         help="Number of parallel C-FFI environments (default: 16)",
+    )
+    parser.add_argument(
+        "--horizon",
+        type=int,
+        default=16,
+        help="Rollout horizon per environment matching mean molecular growth path (default: 16)",
+    )
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=3e-4,
+        help="PPO learning rate (default: 3e-4)",
+    )
+    parser.add_argument(
+        "--hidden-size",
+        type=int,
+        default=256,
+        help="Policy latent dimension (default: 256)",
+    )
+    parser.add_argument(
+        "--early-stopping-lookback",
+        type=int,
+        default=500000,
+        help="Step lookback window for EMA reward flatline detection (default: 500000)",
+    )
+    parser.add_argument(
+        "--early-stopping-delta",
+        type=float,
+        default=0.01,
+        help="EMA reward change threshold for early stopping (default: 0.01)",
+    )
+    parser.add_argument(
+        "--no-early-stopping",
+        action="store_true",
+        help="Disable Dynamic EMA early stopping",
+    )
+    parser.add_argument(
+        "--no-curriculum",
+        action="store_true",
+        help="Disable 3-stage curriculum scheduler",
+    )
+    parser.add_argument(
+        "--no-sa-penalty",
+        action="store_true",
+        help="Disable in-the-loop batch SA score penalty",
+    )
+    parser.add_argument(
+        "--no-dynamic-entropy",
+        action="store_true",
+        help="Disable molecular-weight-scaling dynamic entropy coefficient",
     )
     parser.add_argument(
         "--recurrent",
@@ -170,7 +222,7 @@ def main():
     target_spec = SwarmSpecLoader.derive_target_spec(spec_data)
 
     print("=" * 80)
-    print(f"=== 3-STAGE GENERATIVE MOLECULAR FUNNEL: {spec_data.get('group_name', spec_path.stem)} ===")
+    print(f"=== 5-STAGE GENERATIVE MOLECULAR FUNNEL: {spec_data.get('group_name', spec_path.stem)} ===")
     print(f"Target Wall Pressure: >= {target_spec.get('min_wall_pressure_bar', 15.0):.1f} bar")
     print(f"Target Max Solvation: <= {target_spec.get('max_solvation_kcal', -3.0):.1f} kcal/mol")
     print(f"Target Max Weight:   <= {target_spec.get('max_molecular_weight', 850.0):.1f} amu")
@@ -182,7 +234,7 @@ def main():
     # STAGE 1: Policy Training (or Checkpoint Load)
     # -------------------------------------------------------------
     policy = MolecularSwarmPolicy(
-        hidden_size=256,
+        hidden_size=args.hidden_size,
         recurrent=args.recurrent,
     ).to(device)
 
@@ -190,7 +242,9 @@ def main():
         print(f"\n[Stage 1] Loading pre-trained policy checkpoint from {args.checkpoint}...")
         policy.load_state_dict(torch.load(args.checkpoint, map_location=device))
     else:
-        print(f"\n[Stage 1] Training RL Molecular Swarm Policy ({args.train_steps} timesteps, {args.num_envs} envs)...")
+        print(
+            f"\n[Stage 1] Training RL Molecular Swarm Policy ({args.train_steps:,} timesteps, {args.num_envs} envs, horizon={args.horizon})..."
+        )
         vec_env = VectorizedSwarmEnv(
             num_envs=args.num_envs,
             target_spec=target_spec,
@@ -201,24 +255,44 @@ def main():
             policy=policy,
             final_target_spec=target_spec,
             total_timesteps=args.train_steps,
-            horizon=16,
+            horizon=args.horizon,
+            learning_rate=args.learning_rate,
             minibatch_size=64,
-            learning_rate=3e-4,
+            update_epochs=4,
+            use_curriculum=not args.no_curriculum,
+            early_stopping=not args.no_early_stopping,
+            early_stopping_lookback=args.early_stopping_lookback,
+            early_stopping_delta=args.early_stopping_delta,
+            dynamic_entropy_scaling=not args.no_dynamic_entropy,
+            sa_penalty=not args.no_sa_penalty,
             device=device,
         )
 
-        epochs = max(1, args.train_steps // (args.num_envs * 16))
+        batch_steps = args.num_envs * args.horizon
+        epochs = max(1, args.train_steps // batch_steps)
+        log_interval = max(1, min(epochs, 25000 // batch_steps))
+
         for epoch in range(1, epochs + 1):
             metrics = trainer.train_epoch()
-            if epoch % max(1, epochs // 5) == 0 or epoch == epochs:
+            is_early_stopped = metrics.get("early_stopped", 0.0) > 0.5
+
+            if epoch % log_interval == 0 or epoch == epochs or is_early_stopped:
                 print(
-                    f"  Epoch {epoch:03d}/{epochs:03d} | "
-                    f"Step {int(metrics['global_step']):6d} | "
+                    f"  Epoch {epoch:05d}/{epochs:05d} | "
+                    f"Step {int(metrics['global_step']):8,d} | "
+                    f"Stage {int(metrics.get('curriculum_stage', 3))} | "
                     f"Score: {metrics['env/score']:+6.2f} | "
+                    f"EMA: {metrics.get('env/reward_ema', 0.0):+6.2f} | "
                     f"Valid Rate: {metrics['env/valid_rate'] * 100:5.1f}% | "
                     f"P_wall: {metrics['env/p_wall']:5.1f} bar | "
                     f"SPS: {metrics['SPS']:5.0f}"
                 )
+
+            if is_early_stopped:
+                print(f"\n  >> Early stopping triggered at step {int(metrics['global_step']):,}!")
+                print(f"     Reason: {trainer.early_stop_reason}")
+                break
+
         vec_env.close()
 
         ckpt_path = out_dir / "trained_policy.pt"
