@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import json
 import random
+import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -303,3 +304,46 @@ class CurriculumSweepRunner:
 
         print(f"=== Sweep Complete! Saved {len(all_trials)} trial records to {self.output_dir} ===")
         return all_trials
+
+
+def run_curriculum_sweep(
+    specs: Optional[List[str | Path]] = None,
+    num_trials_per_spec: int = 2,
+    steps_per_trial: int = 5000,
+    num_envs: int = 8,
+    output_dir: str | Path = "runs/constellation_sweeps",
+    seed: int = 42,
+) -> int:
+    """Top-level runner for Constellation-compatible curriculum hyperparameter sweeps."""
+    import torch
+
+    default_specs = [
+        "tests/data/conjugated_oled_semiconductors.yaml",
+        "tests/data/fluorinated_battery_electrolytes.yaml",
+        "tests/data/sterically_hindered_drug_inhibitors.yaml",
+        "tests/data/ultra_lightweight_aliphatic_sponges.yaml",
+        "tests/data/sacrificial_h_bond_toughness_resins.yaml",
+    ]
+    raw_specs = specs or default_specs
+    spec_paths = [Path(p).resolve() for p in raw_specs]
+
+    for p in spec_paths:
+        if not p.exists():
+            print(f"Error: Specification file not found: {p}", file=sys.stderr)
+            return 1
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"=== Initializing Curriculum Sweep Runner ({len(spec_paths)} specs, device={device}) ===")
+    runner = CurriculumSweepRunner(
+        spec_yaml_paths=spec_paths,
+        output_dir=output_dir,
+        seed=seed,
+    )
+
+    runner.run_sweep(
+        num_trials_per_spec=num_trials_per_spec,
+        steps_per_trial=steps_per_trial,
+        num_envs=num_envs,
+        device=device,
+    )
+    return 0

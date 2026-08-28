@@ -15,14 +15,14 @@ import numpy as np
 from rdkit import Chem
 from rdkit.Chem import Descriptors, rdMolDescriptors
 
-from dens_city.utils.materials import MaterialLoader
-from dens_city.utils.pipeline import MaterialPipelineTask, PipelineStatus, process_material_task
-from scripts.generate_molecular_library import (
+from dens_city.utils.library_generator import (
     embed_conformers,
     export_dataset,
     generate_library,
     load_spec,
 )
+from dens_city.utils.materials import MaterialLoader
+from dens_city.utils.pipeline import MaterialPipelineTask, PipelineStatus, process_material_task
 
 SPECS_DIR = Path(__file__).resolve().parent / "data"
 OLED_SPEC = SPECS_DIR / "conjugated_oled_semiconductors.yaml"

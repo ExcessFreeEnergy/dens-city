@@ -1,14 +1,12 @@
-#!/usr/bin/env python3
 """
-Verification script for dens-city end-to-end simulation results against the FreeSolv database.
-Cross-references the 20 benchmark materials in test_data/ with experimental and calculated
+End-to-End Simulation Verification & FreeSolv Validation Reporter.
+Cross-references benchmark materials in test_data/ with experimental and calculated
 thermodynamic hydration free energies (FreeSolv database.pickle), validating physical consistency,
 cDFT grand potentials, wall contact pressures, and Boltzmann Generator 3D conformational sampling.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import pickle
 from pathlib import Path
@@ -63,15 +61,14 @@ def load_pipeline_results(summary_path: Path) -> List[Dict[str, Any]]:
     return results
 
 
-def find_latest_results_dir() -> Optional[Path]:
+def find_latest_results_dir(base_dir: str = "runs") -> Optional[Path]:
     """Finds the most recent runs directory containing pipeline_summary.jsonl."""
-    runs_dir = Path("runs")
+    runs_dir = Path(base_dir)
     if not runs_dir.exists():
         return None
     summary_files = list(runs_dir.glob("**/pipeline_summary.jsonl"))
     if not summary_files:
         return None
-    # Sort by modification time descending
     summary_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return summary_files[0].parent
 
@@ -103,7 +100,6 @@ def verify_and_generate_report(
         "",
     ]
 
-    # Verify all succeeded
     successes = [r for r in results if r.get("status") in ("SUCCESS", "SUCCESS_CDFT_ONLY")]
     failures = [r for r in results if r.get("status") not in ("SUCCESS", "SUCCESS_CDFT_ONLY")]
 
@@ -179,7 +175,6 @@ def verify_and_generate_report(
             f"| `{name}` | `{fs_key}` | {iupac} | `{smiles}` | {sites} | {dG_expt:+.2f} | {dG_calc:+.2f} | {p_wall:+10.2f} | {rho_bulk:.4f} | {cdft_loss:.4f} |"
         )
 
-    # Compute Statistical Metrics
     stats_summary = {}
     if expt_vals and calc_vals:
         expt_np = np.array(expt_vals, dtype=np.float64)
@@ -238,7 +233,6 @@ def verify_and_generate_report(
     )
     report_lines.append("")
 
-    # Top 15 Outliers Section
     report_lines.append(
         "### Top 15 Molecules with Largest Absolute Error ($|\\Delta G_{\\rm calc} - \\Delta G_{\\rm expt}|$)"
     )
@@ -255,7 +249,6 @@ def verify_and_generate_report(
             f"| `{m['fs_key']}` | {m['iupac']} | {m['dG_expt']:+.2f} | {m['dG_calc']:+.2f} | {m['diff']:>+6.2f} | {grp_str} |"
         )
 
-    # Functional Group Error Breakdown
     report_lines.append("")
     report_lines.append("### Chemical Functional Group Error Rankings")
     report_lines.append("")
@@ -291,36 +284,12 @@ def verify_and_generate_report(
     report_lines.append("## 4. Comprehensive High-Throughput Benchmark Table")
     report_lines.append("")
     report_lines.append(
-        "| # | Material | Class / Category | Sites (Real/Pad) | cDFT Time (s) | BG Time (s) | Total Time (s) | $P_{\\rm wall}$ (bar) | Status |"
+        "| # | Material | Sites (Real/Pad) | cDFT Time (s) | BG Time (s) | Total Time (s) | $P_{\\rm wall}$ (bar) | Status |"
     )
-    report_lines.append("| :-: | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |")
-
-    categories = {
-        "argon": "Noble Gas Fluid",
-        "nitrogen": "Diatomic Linear Gas",
-        "carbon_dioxide": "Triatomic Linear Gas",
-        "hydrogen": "Diatomic Light Gas",
-        "hydrogen_fluoride": "1D Associating Dipolar Fluid",
-        "water": "Polar Hydrogen-Bonding Solvent (SPC/E)",
-        "methane": "Alkane (FreeSolv mobley_9055303)",
-        "n_decane": "Linear Alkane Chain (FreeSolv mobley_2197088)",
-        "neopentane": "Branched Alkane (FreeSolv mobley_1261349)",
-        "methanol": "Alcohol (FreeSolv mobley_1636752)",
-        "ammonia": "Polar Solvent (FreeSolv mobley_5631798)",
-        "benzene": "Aromatic Hydrocarbon (FreeSolv mobley_3053621)",
-        "acetone": "Ketone (FreeSolv mobley_3867265)",
-        "5cb": "Nematic Liquid Crystal (LC)",
-        "polyethylene": "Polymer Oligomer (C20H42)",
-        "sodium_chloride": "1:1 RPM Strong Electrolyte",
-        "calcium_chloride": "2:1 Asymmetric Electrolyte",
-        "sodium_dodecyl_sulfate": "Anionic Surfactant (SDS)",
-        "sulfur_hexafluoride": "Octahedral Heavy Gas",
-        "colloidal_hard_sphere": "Mesoscopic Hard Sphere Colloid",
-    }
+    report_lines.append("| :-: | :--- | :---: | :---: | :---: | :---: | :---: | :---: |")
 
     for idx, r in enumerate(results, 1):
         name = r["material_name"]
-        cat = categories.get(name, "FreeSolv Organic Compound" if name.startswith("mobley_") else "General Fluid")
         sites = r.get("num_sites", 0)
         cdft_t = r.get("cdft_runtime_seconds", 0.0)
         bg_t = r.get("bg_runtime_seconds", 0.0)
@@ -329,7 +298,7 @@ def verify_and_generate_report(
         status = r.get("status", "UNKNOWN")
 
         report_lines.append(
-            f"| {idx:02d} | `{name}` | {cat} | {sites}/128 | {cdft_t:5.2f} | {bg_t:5.2f} | {tot_t:5.2f} | {p_wall:+10.2f} | **{status}** |"
+            f"| {idx:02d} | `{name}` | {sites}/128 | {cdft_t:5.2f} | {bg_t:5.2f} | {tot_t:5.2f} | {p_wall:+10.2f} | **{status}** |"
         )
 
     report_lines.append("")
@@ -368,72 +337,51 @@ def verify_and_generate_report(
     }
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Verify dens-city results against FreeSolv database.")
-    parser.add_argument(
-        "--run-e2e",
-        action="store_true",
-        help="Execute the full end-to-end simulation across all materials before verifying",
-    )
-    parser.add_argument(
-        "--all",
-        "-a",
-        action="store_true",
-        help="Ensure all 642+ FreeSolv molecules are populated in test data before running",
-    )
-    parser.add_argument(
-        "--results-dir",
-        type=Path,
-        default=None,
-        help="Directory containing pipeline_summary.jsonl (defaults to most recent run in runs/)",
-    )
-    parser.add_argument(
-        "--database",
-        type=Path,
-        default=Path("FreeSolv/database.pickle"),
-        help="Path to FreeSolv database.pickle",
-    )
-    parser.add_argument(
-        "--report-out",
-        type=Path,
-        default=Path("data/e2e_freesolv_verification_report.md"),
-        help="Output markdown file for the verification report",
-    )
-    args = parser.parse_args()
+def verify_pipeline_against_freesolv(
+    results_dir: Optional[str | Path] = None,
+    database_path: Optional[str | Path] = None,
+    report_out: Optional[str | Path] = None,
+    run_e2e: bool = False,
+    populate_all_freesolv: bool = False,
+) -> int:
+    """Entrypoint function for FreeSolv verification and report generation."""
+    if run_e2e:
+        from dens_city.ui.cli import main as cli_main
+        from dens_city.utils.test_data_generator import generate_test_data
 
-    # If --run-e2e is requested, ensure test data and run the high-throughput CLI
-    if args.run_e2e:
         test_data_dir = Path("data/test_data")
         mol2_files = list(test_data_dir.glob("*.mol2")) if test_data_dir.exists() else []
-        if not mol2_files or (args.all and len(mol2_files) < 600):
+        if not mol2_files or (populate_all_freesolv and len(mol2_files) < 600):
             print("Populating test data before running end-to-end simulation...")
-            from scripts.generate_test_data import generate_all
-
-            generate_all(populate_entire_freesolv=args.all)
+            generate_test_data(populate_entire_freesolv=populate_all_freesolv)
 
         print("Executing dens-city end-to-end benchmark...")
-        from dens_city.ui.cli import main as cli_main
-
         cli_main(["--materials", "all", "--benchmark", "--batch-size", "512"])
 
-    # Locate results directory
-    results_dir = args.results_dir
-    if results_dir is None:
-        results_dir = find_latest_results_dir()
-        if results_dir is None:
-            # Check default runs/e2e_all_20_molecules
-            fallback = Path("runs/e2e_all_20_molecules")
-            if fallback.exists():
-                results_dir = fallback
-            else:
-                raise FileNotFoundError("No results directory found. Run with --run-e2e to execute simulation first.")
+    res_dir = Path(results_dir) if results_dir else find_latest_results_dir()
+    if res_dir is None:
+        fallback = Path("runs/e2e_all_20_molecules")
+        if fallback.exists():
+            res_dir = fallback
+        else:
+            print("Error: No simulation results found in runs/. Run with --run-e2e to execute simulation first.")
+            return 1
 
-    print(f"Verifying results from: {results_dir}")
+    db_p = Path(database_path) if database_path else Path("FreeSolv/database.pickle")
+    if not db_p.exists():
+        alt_db = Path("data/database.pickle")
+        if alt_db.exists():
+            db_p = alt_db
+
+    rep_p = Path(report_out) if report_out else Path("data/e2e_freesolv_verification_report.md")
+
+    print(f"Verifying results from: {res_dir}")
     stats = verify_and_generate_report(
-        results_dir=results_dir,
-        db_path=args.database,
-        report_out=args.report_out,
+        results_dir=res_dir,
+        db_path=db_p,
+        report_out=rep_p,
     )
+
     print("\n" + "=" * 80)
     print("  Verification & Statistical Benchmark Completed Successfully")
     print("=" * 80)
@@ -446,20 +394,7 @@ def main():
         print(f"  Mean Signed Bias   : {sm.get('bias', 0.0):+.3f} kcal/mol")
         print(f"  Max Absolute Err   : {sm.get('max_err', 0.0):.3f} kcal/mol")
         print(f"  Pearson Correlation: R = {sm.get('r_corr', 0.0):.4f} (R^2 = {sm.get('r2', 0.0):.4f})")
-
-    top_out = stats.get("top_outliers", [])
-    if top_out:
-        print("-" * 80)
-        print("  Top Outliers with Largest |Calc - Expt| Error:")
-        for o in top_out[:5]:
-            print(
-                f"    - {o['fs_key']:<16} ({o['iupac'][:25]:<25}): Expt {o['dG_expt']:+6.2f} | Calc {o['dG_calc']:+6.2f} | Diff {o['diff']:+6.2f} kcal/mol"
-            )
-
     print("=" * 80)
     print(f"  Report Generated   : {stats['report_path']}")
     print("=" * 80)
-
-
-if __name__ == "__main__":
-    main()
+    return 0

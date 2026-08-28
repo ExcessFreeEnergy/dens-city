@@ -637,3 +637,124 @@ class SwarmPuffeRLTrainer:
             self.save_checkpoint(self.checkpoint_dir / f"checkpoint_step_{self.global_step:08d}.pt")
 
         return metrics
+
+
+def train_swarm_policy(
+    spec: str | Path,
+    total_timesteps: int = 5000000,
+    num_envs: int = 16,
+    horizon: int = 16,
+    learning_rate: float = 3e-4,
+    hidden_size: int = 256,
+    recurrent: bool = False,
+    no_curriculum: bool = False,
+    no_early_stopping: bool = False,
+    early_stopping_lookback: int = 500000,
+    early_stopping_delta: float = 0.01,
+    no_sa_penalty: bool = False,
+    sa_threshold: Optional[float] = None,
+    sa_penalty_slope: Optional[float] = None,
+    no_dynamic_entropy: bool = False,
+    checkpoint_dir: str | Path = "runs/checkpoints",
+    export_dir: str | Path = "runs/candidates",
+    seed: int = 42,
+) -> Dict[str, Any]:
+    """Top-level runner for Stage 1 Molecular Swarm RL policy training."""
+    from dens_city.swarm.spec_loader import SwarmSpecLoader
+
+    spec_path = Path(spec).resolve()
+    if not spec_path.exists():
+        raise FileNotFoundError(f"Specification file not found at {spec_path}")
+
+    print(f"=== Loading Swarm Specification: {spec_path.name} ===")
+    spec_data = SwarmSpecLoader.load_yaml(spec_path)
+    target_spec = SwarmSpecLoader.derive_target_spec(spec_data)
+    print(f"Target Material Objectives: {target_spec}")
+
+    exp_dir = Path(export_dir)
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_dir = Path(checkpoint_dir)
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Initializing Vectorized C Environment Pool ({num_envs} envs, device={device})...")
+
+    vec_env = VectorizedSwarmEnv(
+        num_envs=num_envs,
+        spec_yaml_path=spec_path,
+        target_spec=target_spec,
+        seed=seed,
+    )
+
+    policy = MolecularSwarmPolicy(
+        obs_size=88,
+        hidden_size=hidden_size,
+        recurrent=recurrent,
+    )
+
+    trainer = SwarmPuffeRLTrainer(
+        vec_env=vec_env,
+        policy=policy,
+        final_target_spec=target_spec,
+        total_timesteps=total_timesteps,
+        horizon=horizon,
+        learning_rate=learning_rate,
+        use_curriculum=not no_curriculum,
+        early_stopping=not no_early_stopping,
+        early_stopping_lookback=early_stopping_lookback,
+        early_stopping_delta=early_stopping_delta,
+        dynamic_entropy_scaling=not no_dynamic_entropy,
+        sa_penalty=not no_sa_penalty,
+        sa_threshold=sa_threshold,
+        sa_penalty_slope=sa_penalty_slope,
+        checkpoint_dir=ckpt_dir,
+        device=device,
+    )
+
+    print(f"Starting Swarm PPO Training for {total_timesteps:,} timesteps...")
+    epochs = max(1, total_timesteps // (num_envs * horizon))
+
+    try:
+        for epoch in range(1, epochs + 1):
+            metrics = trainer.train_epoch()
+
+            if epoch % 5 == 0 or epoch == epochs or metrics.get("early_stopped", 0.0) > 0.5:
+                print(
+                    f"Epoch {metrics['epoch']:4d}/{epochs:4d} | "
+                    f"Steps: {metrics['global_step']:8d} | "
+                    f"SPS: {metrics['SPS']:5.0f} | "
+                    f"Stage: {metrics['curriculum_stage']} | "
+                    f"EMA: {metrics['env/reward_ema']:+5.2f} | "
+                    f"Score: {metrics['env/score']:+5.2f} | "
+                    f"Valid: {metrics['env/valid_rate'] * 100:4.1f}% | "
+                    f"H(pi): {metrics['loss/entropy']:4.2f} | "
+                    f"KL: {metrics['loss/approx_kl']:.4f} | "
+                    f"SA: {metrics['env/sa_score']:4.2f} | "
+                    f"P_wall: {metrics['env/p_wall']:4.1f} bar | "
+                    f"Best: {metrics['best_reward']:+5.2f}"
+                )
+
+            if metrics.get("early_stopped", 0.0) > 0.5:
+                print(f"\n[EARLY STOPPING HALT] {trainer.early_stop_reason}")
+                break
+
+        final_policy_path = ckpt_dir / "trained_policy.pt"
+        trainer.save_checkpoint(final_policy_path)
+        print(f"\nTraining Complete! Dumped policy weights to: {final_policy_path}")
+        print(f"Best Pareto Reward: {trainer.best_reward:.3f}")
+
+        exported_mol2_path = None
+        if trainer.best_mol2_str:
+            exported_mol2_path = exp_dir / f"{spec_path.stem}_best.mol2"
+            exported_mol2_path.write_text(trainer.best_mol2_str)
+            print(f"Exported Pareto-optimal candidate to: {exported_mol2_path}")
+
+        return {
+            "policy_path": str(final_policy_path),
+            "best_reward": trainer.best_reward,
+            "exported_mol2": str(exported_mol2_path) if exported_mol2_path else None,
+            "global_step": trainer.global_step,
+        }
+
+    finally:
+        vec_env.close()

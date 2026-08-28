@@ -1,18 +1,11 @@
-#!/usr/bin/env python3
 """
-dens-city: High-Performance Molecular Library Generator in C & Python.
+High-Performance Combinatorial Molecular Library Generator.
 Combines high-throughput combinatorial graph enumeration with compiled C OpenMP
 multi-core 3D conformer embedding, Gasteiger charge assignment, and parallel Tripos .mol2 disk writing.
-
-Usage:
-    uv run python scripts/generate_molecular_library.py --spec tests/data/conjugated_oled_semiconductors.yaml
-    uv run python scripts/generate_molecular_library.py --spec tests/data/fluorinated_battery_electrolytes.yaml --target-count 50000 --workers 16
-    uv run python scripts/generate_molecular_library.py --spec tests/data/sterically_hindered_drug_inhibitors.yaml --out-dir data/custom_run
 """
 
 from __future__ import annotations
 
-import argparse
 import concurrent.futures
 import json
 import math
@@ -30,9 +23,7 @@ import yaml
 from rdkit import Chem
 from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = REPO_ROOT / "data"
-C_EXT_DIR = REPO_ROOT / "src" / "dens_city" / "utils"
+C_EXT_DIR = Path(__file__).resolve().parent
 C_EXT_SO = C_EXT_DIR / "fast_mol2_writer.so"
 C_EXT_SRC = C_EXT_DIR / "fast_mol2_writer.c"
 
@@ -109,7 +100,8 @@ def ensure_c_extension() -> bool:
     if not C_EXT_SRC.exists():
         return False
     try:
-        py_inc = "/usr/include/python3.12"
+        py_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+        py_inc = f"/usr/include/python{py_ver}"
         cmd = [
             "gcc",
             "-O3",
@@ -144,7 +136,7 @@ def get_c_mol2_writer():
     return None
 
 
-def compute_sigma(r_min_half_A: float) -> tuple:
+def compute_sigma(r_min_half_A: float) -> Tuple[float, float]:
     if r_min_half_A == 0.0:
         return 0.0, 0.0
     sigma_A = 2.0 * r_min_half_A / (2.0 ** (1.0 / 6.0))
@@ -152,7 +144,7 @@ def compute_sigma(r_min_half_A: float) -> tuple:
     return sigma_A, sigma_nm
 
 
-def compute_epsilon(eps_kcal: float) -> tuple:
+def compute_epsilon(eps_kcal: float) -> Tuple[float, float]:
     eps_kj = eps_kcal * 4.184
     eps_K = (eps_kcal * 4184.0) / 8.314462618
     return eps_kj, eps_K
@@ -256,7 +248,6 @@ def connect_fragments(core_mol: Chem.Mol, sub_mol: Chem.Mol) -> Optional[Chem.Mo
 
         core_nbr_idx = core_nbrs[0].GetIdx()
 
-        # Check if sub is H cap ([H][*] or single dummy)
         if (len(sub_nbrs) == 1 and sub_nbrs[0].GetAtomicNum() == 1) or not sub_nbrs:
             rw = Chem.RWMol(core_mol)
             nbr = rw.GetAtomWithIdx(core_nbr_idx)
@@ -315,7 +306,6 @@ def build_substituent_arms(
     caps: List[Tuple[str, Chem.Mol]] = []
     linkers: List[Tuple[str, Chem.Mol]] = []
 
-    # 1. Parse building blocks
     for cat, items in spec.get("building_blocks", {}).items():
         for item in items:
             mol = parse_smiles_or_smarts(item["smiles"])
@@ -327,7 +317,6 @@ def build_substituent_arms(
             else:
                 linkers.append((item["id"], mol))
 
-    # 2. Parse scaffolds
     scaffolds: List[Tuple[str, Chem.Mol, int]] = []
     for s in spec.get("scaffolds", []):
         mol = parse_smiles_or_smarts(s["smarts"])
@@ -340,7 +329,6 @@ def build_substituent_arms(
 
     arms = list(caps)
 
-    # 3. Combinatorial expansion of arms
     if linkers:
         for lid, lmol in linkers:
             for cid, cmol in list(caps):
@@ -579,10 +567,10 @@ def assign_atom_type(atom: Chem.Atom) -> str:
     return sym
 
 
-def _single_mol_worker(args_tuple: Tuple[int, str, str, str, str, int]) -> Dict[str, Any]:
+def _single_mol_worker(args_tuple: Tuple[int, str, str, str, Optional[str], int]) -> Dict[str, Any]:
     """
     Isolated multi-process worker for high-speed 3D conformer embedding, Gasteiger charging,
-    and parallel Tripos .mol2 file export across all CPU cores.
+    and parallel Tripos .mol2 file export across CPU cores.
     """
     idx, smi, mol_name, group_name, out_dir_str, seed = args_tuple
     mol = Chem.MolFromSmiles(smi)
@@ -723,7 +711,6 @@ def embed_and_export_parallel(
         )
 
     if not skip_write:
-        # Generate Force Field parameter files & Manifest
         generate_forcefield_database(out_p)
 
         mw_list = [item["molecular_weight"] for item in mols_payloads]
@@ -775,7 +762,6 @@ def embed_and_export_parallel(
     return out_p
 
 
-# Compatibility wrappers for external callers / tests
 def embed_conformers(
     mols: List[Chem.Mol],
     num_conformations: int = 1,
@@ -882,7 +868,6 @@ def export_dataset(
     """Exports 3D molecules into standard Tripos .mol2 files."""
     out_p = Path(output_dir)
     out_p.mkdir(parents=True, exist_ok=True)
-    time.perf_counter()
     manifest_entries = []
     mw_list = []
     sites_list = []
@@ -929,99 +914,52 @@ def export_dataset(
     return out_p
 
 
-def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="generate_molecular_library",
-        description="dens-city: High-Performance C & Multi-Core Molecular Library Generator.",
-    )
-    parser.add_argument(
-        "--spec",
-        "-s",
-        type=str,
-        required=True,
-        help="Path to YAML molecular specification file (e.g. tests/data/conjugated_oled_semiconductors.yaml)",
-    )
-    parser.add_argument(
-        "--target-count",
-        "-n",
-        type=int,
-        default=None,
-        help="Target number of unique molecules to generate (defaults to YAML target_molecules, e.g. 50000)",
-    )
-    parser.add_argument(
-        "--out-dir",
-        "-o",
-        type=str,
-        default=None,
-        help="Destination directory (defaults to data/<group_name>_<timestamp>/)",
-    )
-    parser.add_argument(
-        "--workers",
-        "-w",
-        type=int,
-        default=min(16, os.cpu_count() or 4),
-        help=f"Number of parallel CPU workers (default: {min(16, os.cpu_count() or 4)})",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed for deterministic combinatorial sampling (default: 42)",
-    )
-    parser.add_argument(
-        "--skip-3d",
-        action="store_true",
-        default=False,
-        help="Skip 3D conformer embedding (2D generation benchmark only)",
-    )
-    parser.add_argument(
-        "--skip-write",
-        action="store_true",
-        default=False,
-        help="Skip writing .mol2 files to disk (in-memory generation benchmark mode)",
-    )
-
-    args = parser.parse_args(argv)
-
-    spec = load_spec(args.spec)
-    group_name = spec.get("group_name", Path(args.spec).stem)
-    target = args.target_count or spec.get("generation_spec", {}).get("target_molecules", 50000)
+def run_library_generator(
+    spec_path: str | Path,
+    target_count: Optional[int] = None,
+    out_dir: Optional[str | Path] = None,
+    workers: Optional[int] = None,
+    seed: int = 42,
+    skip_3d: bool = False,
+    skip_write: bool = False,
+) -> int:
+    """Entrypoint function to run full combinatorial molecular library generation."""
+    spec = load_spec(spec_path)
+    group_name = spec.get("group_name", Path(spec_path).stem)
+    target = target_count or spec.get("generation_spec", {}).get("target_molecules", 50000)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = args.out_dir or str(DATA_DIR / f"{group_name}_{ts}")
+    destination_dir = out_dir or f"data/{group_name}_{ts}"
+    num_workers = workers or min(16, os.cpu_count() or 4)
 
     print("=" * 84)
     print("  dens-city: High-Performance C / Multi-Core Combinatorial Molecular Generator")
     print("=" * 84)
-    print(f"  Specification File  : {args.spec}")
+    print(f"  Specification File  : {spec_path}")
     print(f"  Chemical Group      : {group_name}")
     print(f"  Target Molecule Set : {target:,} molecules")
-    print(f"  Parallel Workers    : {args.workers} CPU cores (OpenMP C-Engine active)")
-    print(
-        f"  Execution Mode      : {'In-Memory Benchmarking (--skip-write)' if args.skip_write else 'Full Export (.mol2)'}"
-    )
-    if not args.skip_write:
-        print(f"  Target Output Path  : {out_dir}")
+    print(f"  Parallel Workers    : {num_workers} CPU cores (OpenMP C-Engine active)")
+    print(f"  Execution Mode      : {'In-Memory Benchmarking (--skip-write)' if skip_write else 'Full Export (.mol2)'}")
+    if not skip_write:
+        print(f"  Target Output Path  : {destination_dir}")
     print("=" * 84)
 
     t_global_0 = time.perf_counter()
 
-    # 1. 2D Combinatorial Library Generation
-    mols_2d = generate_library(spec=spec, target_count=target, seed=args.seed, verbose=True)
+    mols_2d = generate_library(spec=spec, target_count=target, seed=seed, verbose=True)
     if not mols_2d:
         print("Error: No molecules were generated.", file=sys.stderr)
         return 1
 
-    # 2. 3D Conformer Embedding & Parallel C Disk Writing
-    if not args.skip_3d:
+    if not skip_3d:
         embed_and_export_parallel(
             mols_2d=mols_2d,
             spec=spec,
-            output_dir=out_dir,
+            output_dir=destination_dir,
             name_prefix=f"{group_name[:8]}_mol",
-            seed=args.seed,
-            num_workers=args.workers,
-            skip_write=args.skip_write,
+            seed=seed,
+            num_workers=num_workers,
+            skip_write=skip_write,
             verbose=True,
         )
     else:
@@ -1030,14 +968,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     t_total = time.perf_counter() - t_global_0
     print("=" * 84)
     print(f"  [+] Complete Pipeline Finished in {t_total:.2f} seconds ({len(mols_2d) / max(1e-4, t_total):.1f} mol/s)")
-    if not args.skip_write:
-        print(f"  [+] Data Artifact Directory Ready: {out_dir}")
+    if not skip_write:
+        print(f"  [+] Data Artifact Directory Ready: {destination_dir}")
     else:
         print(f"  [+] In-Memory Benchmark Successful: {len(mols_2d):,} 3D molecules generated.")
     print("=" * 84)
 
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

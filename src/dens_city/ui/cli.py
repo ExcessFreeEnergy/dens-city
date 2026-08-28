@@ -1,22 +1,14 @@
 """
-dens-city: Unified Command-Line Interface.
-Supports coupled cDFT screening -> Boltzmann Generator batch execution,
-high-performance 3D interactive Raylib visualization, compiler BEAM search,
-and high-throughput batched tensor parallelism across molecular datasets.
+dens-city: Unified Molecular Classical Density Functional Theory, RL Swarm, & 3D Generative Platform.
 
-Usage:
-    # 3D Interactive Raylib Visualizer
-    uv run dens-city --interactive --materials argon
-    uv run dens-city --interactive --materials water benzene 5cb
-
-    # Standard High-Throughput Coupled Pipeline
-    uv run dens-city --materials argon water --batch-size 32
-
-    # Benchmark Mode with BEAM=2 Compiler Search
-    uv run dens-city --materials all --benchmark --beam 2
-
-    # Debug Mode with Detailed Compiler Traces
-    uv run dens-city --materials argon benzene --debug
+Supports:
+- Coupled cDFT screening -> Boltzmann Generator batch execution
+- High-performance 3D interactive Raylib visualization
+- 5-Stage Multi-Objective Generative Molecular Funnel & Pareto screening
+- RL Swarm PPO policy training & Constellation curriculum sweeps
+- Multi-specification chemical diversity & synthesizability diagnostics
+- High-performance combinatorial molecular library generation in C & Python
+- Test data & FreeSolv database population & statistical verification
 """
 
 from __future__ import annotations
@@ -89,6 +81,39 @@ def discover_materials(data_dir: str, requested_materials: Optional[List[str]] =
         return filtered if filtered else requested_materials
 
     return discovered
+
+
+def resolve_spec_path(spec_arg: Optional[str], default_dir: str = "tests/data") -> Optional[Path]:
+    """Resolves a specification file path from a path, filename, or partial keyword match."""
+    if not spec_arg:
+        default_p = Path(default_dir) / "conjugated_oled_semiconductors.yaml"
+        return default_p if default_p.exists() else None
+
+    p = Path(spec_arg)
+    if p.exists() and p.is_file():
+        return p
+
+    search_dirs = [Path(default_dir), Path("data"), Path(".")]
+    for s_dir in search_dirs:
+        if not s_dir.exists():
+            continue
+        exact = s_dir / f"{spec_arg}.yaml"
+        if exact.exists():
+            return exact
+        exact_direct = s_dir / spec_arg
+        if exact_direct.exists() and exact_direct.is_file():
+            return exact_direct
+
+    query = spec_arg.lower().replace("_", "").replace("-", "")
+    for s_dir in search_dirs:
+        if not s_dir.exists():
+            continue
+        for yaml_file in sorted(s_dir.glob("*.yaml")):
+            stem_clean = yaml_file.stem.lower().replace("_", "").replace("-", "")
+            if query in stem_clean or stem_clean in query:
+                return yaml_file
+
+    return Path(spec_arg)
 
 
 def _run_task_with_logging(task: MaterialPipelineTask, log_file: Optional[str] = None) -> MaterialPipelineResult:
@@ -185,176 +210,795 @@ def print_benchmark_table(results: List[MaterialPipelineResult], total_time: flo
     print(colored("=" * 96, "cyan"))
 
 
-def main(argv: Optional[List[str]] = None) -> int:
-    """Main CLI entrypoint for dens-city."""
-    if argv is None:
-        argv = sys.argv[1:]
+def create_parser() -> argparse.ArgumentParser:
+    """Constructs the comprehensive CLI argument parser for dens-city."""
+    epilog_text = """
+Execution Modes & Examples:
+  # 1. Standard Coupled cDFT + Boltzmann Batch Screening (Default)
+  uv run dens-city --materials argon water methane 5cb --batch-size 512
+  uv run dens-city --materials all --benchmark
 
-    default_data_dir = "data/test_data"
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    default_out_dir = f"runs/batch_{ts}"
+  # 2. 3D Interactive Raylib Visualizer
+  uv run dens-city --interactive --materials argon
+
+  # 3. 5-Stage Generative Molecular Funnel (Single Material Spec)
+  uv run dens-city --funnel --spec tests/data/conjugated_oled_semiconductors.yaml --train-steps 25000 --num-candidates 512 --top-k 20
+  uv run dens-city --funnel --spec fluorinated_battery_electrolytes --checkpoint runs/checkpoints/trained_policy.pt
+
+  # 4. Cross-Material 5-Stage Funnel Benchmark (All Specs in tests/data/)
+  uv run dens-city --benchmark-specs --train-steps 25000 --num-candidates 64 --batch-size 64
+
+  # 5. Stage 1 RL Swarm PPO Policy Training
+  uv run dens-city --train-swarm --spec conjugated_oled_semiconductors --total-timesteps 5000000 --num-envs 16
+
+  # 6. Constellation Curriculum Hyperparameter Sweeps
+  uv run dens-city --sweep --num-trials-per-spec 3 --steps-per-trial 10000
+
+  # 7. Multi-Specification Chemical Diversity & Synthesizability Diagnostics
+  uv run dens-city --eval-swarm --specs-dir tests/data --timesteps 10000 --num-candidates 50
+
+  # 8. High-Performance Combinatorial Molecular Library Generation
+  uv run dens-city --generate-library --spec tests/data/conjugated_oled_semiconductors.yaml --target-count 50000
+  uv run dens-city --generate-library --spec fluorinated_battery_electrolytes --target-count 10000 --skip-3d
+
+  # 9. Test Data & FreeSolv Dataset Population
+  uv run dens-city --populate-test-data
+  uv run dens-city --populate-test-data --all-freesolv
+
+  # 10. FreeSolv Statistical Validation & Verification Report
+  uv run dens-city --verify-freesolv --run-e2e
+  uv run dens-city --verify-freesolv --results-dir runs/batch_20260828
+"""
 
     parser = argparse.ArgumentParser(
         prog="dens-city",
-        description="dens-city: High-Performance Molecular Classical Density Functional Theory & 3D Generative Platform.",
+        description="dens-city: High-Performance Classical Density Functional Theory, RL Swarm, & 3D Generative Molecular Platform.",
+        epilog=epilog_text,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument(
-        "--materials",
-        "-m",
-        nargs="+",
-        default=None,
-        help="Material names, .mol2 files, or 'all' (default: all available)",
-    )
-    parser.add_argument(
-        "--data-dir",
-        "-d",
-        type=str,
-        default=default_data_dir,
-        help=f"Directory containing .mol2 material files (default: {default_data_dir})",
-    )
-    parser.add_argument(
-        "--out-dir",
-        "-o",
-        type=str,
-        default=default_out_dir,
-        help=f"Destination path for structured artifacts and logs (default: {default_out_dir})",
-    )
-    parser.add_argument(
+
+    # -------------------------------------------------------------------------
+    # Mode Action Flags
+    # -------------------------------------------------------------------------
+    mode_group = parser.add_argument_group("Execution Mode Selectors")
+    mode_group.add_argument(
         "--interactive",
         "-i",
         action="store_true",
         default=False,
         help="Launch the 3D Raylib molecular viewer for real-time visualization",
     )
-    parser.add_argument(
-        "--benchmark",
+    mode_group.add_argument(
+        "--funnel",
+        "--run-funnel",
         action="store_true",
         default=False,
-        help="Profile execution time per material and output comprehensive benchmark summary",
+        help="Execute the 5-Stage Generative Molecular Funnel (RL Swarm -> C Sampling -> cDFT/L-BFGS/BG -> EGNN -> Pareto Export)",
     )
-    parser.add_argument(
-        "--beam",
-        type=int,
-        default=2,
-        help="tinygrad compiler BEAM search optimization level (default: 2)",
-    )
-    parser.add_argument(
-        "--debug",
+    mode_group.add_argument(
+        "--benchmark-specs",
+        "--all-specs",
         action="store_true",
         default=False,
-        help="Enable DEBUG=2 and write detailed per-material compiler logs to data/logs_<timestamp>/",
+        help="Execute the 5-Stage Generative Funnel benchmark across all specification YAMLs in --specs-dir",
     )
-    parser.add_argument(
-        "--batch-size",
-        "-b",
-        type=int,
-        default=512,
-        help="Molecule batch size for parallel tensor evaluation along Axis 0 (default: 512)",
+    mode_group.add_argument(
+        "--train-swarm",
+        "--train-rl",
+        action="store_true",
+        default=False,
+        help="Train the Stage 1 Molecular Swarm PPO policy on a target specification",
     )
-    parser.add_argument(
+    mode_group.add_argument(
+        "--sweep",
+        "--curriculum-sweep",
+        action="store_true",
+        default=False,
+        help="Run PufferLib Constellation-compatible curriculum hyperparameter sweeps",
+    )
+    mode_group.add_argument(
+        "--eval-swarm",
+        "--evaluate-specs",
+        action="store_true",
+        default=False,
+        help="Run chemical analysis, synthesizability (SA Score), and diversity diagnostics across all material specs",
+    )
+    mode_group.add_argument(
+        "--generate-library",
+        "--gen-library",
+        action="store_true",
+        default=False,
+        help="Run combinatorial 2D/3D molecular library generation and parallel .mol2 file export",
+    )
+    mode_group.add_argument(
+        "--populate-test-data",
+        "--generate-test-data",
+        action="store_true",
+        default=False,
+        help="Populate data/test_data/ with benchmark .mol2 files and force field parameter databases",
+    )
+    mode_group.add_argument(
+        "--verify-freesolv",
+        "--verify-e2e",
+        action="store_true",
+        default=False,
+        help="Validate simulation results against FreeSolv experimental hydration thermodynamics and output report",
+    )
+
+    # -------------------------------------------------------------------------
+    # Material & Input Selection
+    # -------------------------------------------------------------------------
+    input_group = parser.add_argument_group("Material & Specification Inputs")
+    input_group.add_argument(
+        "--materials",
+        "-m",
+        nargs="+",
+        default=None,
+        help="Material names, .mol2 files, or 'all' (default: argon)",
+    )
+    input_group.add_argument(
+        "--data-dir",
+        "-d",
+        type=str,
+        default="data/test_data",
+        help="Directory containing .mol2 material files (default: data/test_data)",
+    )
+    input_group.add_argument(
+        "--out-dir",
+        "-o",
+        type=str,
+        default=None,
+        help="Destination path for structured artifacts, summaries, and logs",
+    )
+    input_group.add_argument(
+        "--spec",
+        "-s",
+        type=str,
+        default=None,
+        help="Path or name of target specification YAML file (e.g. tests/data/conjugated_oled_semiconductors.yaml or 'oled')",
+    )
+    input_group.add_argument(
+        "--specs",
+        nargs="+",
+        default=None,
+        help="List of specification YAML files for curriculum sweeps",
+    )
+    input_group.add_argument(
+        "--specs-dir",
+        type=str,
+        default="tests/data",
+        help="Directory containing material specification YAML files (default: tests/data)",
+    )
+
+    # -------------------------------------------------------------------------
+    # Thermodynamics & cDFT Parameters
+    # -------------------------------------------------------------------------
+    cdft_group = parser.add_argument_group("Thermodynamics & cDFT Solver Options")
+    cdft_group.add_argument(
         "--temp",
         "-t",
         type=float,
         default=300.0,
-        help="Thermodynamic reservoir temperature in Kelvin (default: 300.0)",
+        help="Thermodynamic reservoir temperature in Kelvin (default: 300.0 K)",
     )
-    parser.add_argument(
+    cdft_group.add_argument(
         "--pressure",
         "-p",
         type=float,
         default=1.0,
-        help="Thermodynamic reservoir pressure in bar (default: 1.0)",
+        help="Thermodynamic reservoir pressure in bar (default: 1.0 bar)",
     )
-    parser.add_argument(
+    cdft_group.add_argument(
         "--mu",
         type=float,
         default=None,
-        help="Optional chemical potential in k_B T (overrides bulk pressure calculation)",
+        help="Optional chemical potential in k_B T (overrides bulk pressure EOS calculation)",
     )
-    parser.add_argument(
-        "--workers",
-        "-w",
-        type=int,
-        default=min(4, os.cpu_count() or 1),
-        help=f"Number of concurrent worker processes (default: {min(4, os.cpu_count() or 1)})",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        default=180.0,
-        help="Maximum execution timeout per material in seconds (default: 180s)",
-    )
-    parser.add_argument(
+    cdft_group.add_argument(
         "--grid",
         "-g",
         type=int,
         default=128,
         help="Spatial grid points for cDFT 1D pore discretization (default: 128)",
     )
-    parser.add_argument(
+    cdft_group.add_argument(
         "--cdft-steps",
         type=int,
         default=60,
         help="cDFT solver variational optimization steps (default: 60)",
     )
-    parser.add_argument(
+    cdft_group.add_argument(
         "--cdft-lr",
         type=float,
         default=0.02,
         help="cDFT solver learning rate (default: 0.02)",
     )
-    parser.add_argument(
-        "--bg-steps",
-        type=int,
-        default=40,
-        help="Boltzmann Generator training steps (default: 40)",
-    )
-    parser.add_argument(
-        "--bg-lr",
-        type=float,
-        default=0.01,
-        help="Boltzmann Generator learning rate (default: 0.01)",
-    )
-    parser.add_argument(
-        "--bg-samples",
-        type=int,
-        default=100,
-        help="Number of 3D configurations to sample into .xyz trajectory (default: 100)",
-    )
-    parser.add_argument(
-        "--bg-w-tor",
-        type=float,
-        default=0.0,
-        help="Torsional rotamer loss biasing weight (default: 0.0)",
-    )
-    parser.add_argument(
-        "--bg-mcmc-steps",
-        type=int,
-        default=0,
-        help="Number of latent space Metropolis Monte Carlo relaxation steps per sample (default: 0)",
-    )
-    parser.add_argument(
-        "--bg-mcmc-step-size",
-        type=float,
-        default=0.1,
-        help="Step size for Gaussian perturbations in latent MCMC relaxation (default: 0.1)",
-    )
-    parser.add_argument(
+    cdft_group.add_argument(
         "--skip-bg",
         action="store_true",
         default=False,
         help="Skip Boltzmann Generator phase and halt after cDFT screening",
     )
-    parser.add_argument(
+
+    # -------------------------------------------------------------------------
+    # Boltzmann Generator & Geometry Relaxation Options
+    # -------------------------------------------------------------------------
+    bg_group = parser.add_argument_group("Boltzmann Generator & Geometry Relaxation")
+    bg_group.add_argument(
+        "--bg-steps",
+        type=int,
+        default=40,
+        help="Boltzmann Generator training steps (default: 40)",
+    )
+    bg_group.add_argument(
+        "--bg-lr",
+        type=float,
+        default=0.01,
+        help="Boltzmann Generator learning rate (default: 0.01)",
+    )
+    bg_group.add_argument(
+        "--bg-samples",
+        type=int,
+        default=100,
+        help="Number of 3D configurations to sample into .xyz trajectory (default: 100)",
+    )
+    bg_group.add_argument(
+        "--bg-w-tor",
+        type=float,
+        default=0.0,
+        help="Torsional rotamer loss biasing weight (default: 0.0)",
+    )
+    bg_group.add_argument(
+        "--bg-mcmc-steps",
+        type=int,
+        default=0,
+        help="Number of latent space Metropolis Monte Carlo relaxation steps per sample (default: 0)",
+    )
+    bg_group.add_argument(
+        "--bg-mcmc-step-size",
+        type=float,
+        default=0.1,
+        help="Step size for Gaussian perturbations in latent MCMC relaxation (default: 0.1)",
+    )
+    bg_group.add_argument(
+        "--lbfgs-steps",
+        type=int,
+        default=50,
+        help="Number of batched L-BFGS Quasi-Newton geometry relaxation steps on GPU (default: 50)",
+    )
+    bg_group.add_argument(
+        "--lbfgs-tol",
+        type=float,
+        default=1e-3,
+        help="RMS force convergence threshold for L-BFGS relaxation (default: 1e-3)",
+    )
+
+    # -------------------------------------------------------------------------
+    # Quantum MLFF & EGNN Options
+    # -------------------------------------------------------------------------
+    egnn_group = parser.add_argument_group("EGNN Quantum Force Field Options")
+    egnn_group.add_argument(
         "--energy-engine",
         choices=["classical", "egnn"],
         default="classical",
         help="Microscopic Hamiltonian physics engine: 'classical' (GAFF LJ+Coulomb, default) or 'egnn' (7-layer E(n)-equivariant MLFF)",
     )
+    egnn_group.add_argument(
+        "--enable-egnn",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable Stage 4 E(n)-Equivariant Graph Neural Network (EGNN) quantum surrogate screening (default: True)",
+    )
+    egnn_group.add_argument(
+        "--egnn-batch-size",
+        type=int,
+        default=32,
+        help="Batch size for Stage 4 EGNN quantum force field evaluation (default: 32)",
+    )
+    egnn_group.add_argument(
+        "--egnn-layers",
+        type=int,
+        default=7,
+        help="Number of message-passing layers in the EGNN architecture (default: 7)",
+    )
+    egnn_group.add_argument(
+        "--egnn-weights",
+        type=str,
+        default=None,
+        help="Optional path to pretrained EGNN weights .npz archive",
+    )
 
+    # -------------------------------------------------------------------------
+    # RL Swarm & Generative Funnel Options
+    # -------------------------------------------------------------------------
+    rl_group = parser.add_argument_group("RL Swarm & Generative Funnel Options")
+    rl_group.add_argument(
+        "--train-steps",
+        "--total-timesteps",
+        dest="train_steps",
+        type=int,
+        default=5000000,
+        help="RL training steps / timesteps (default: 5,000,000)",
+    )
+    rl_group.add_argument(
+        "--num-candidates",
+        type=int,
+        default=512,
+        help="Number of candidate molecules to generate from trained policy (default: 512)",
+    )
+    rl_group.add_argument(
+        "--top-k",
+        type=int,
+        default=20,
+        help="Number of final Pareto-refined candidates to export (default: 20)",
+    )
+    rl_group.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Optional path to existing policy checkpoint .pt file",
+    )
+    rl_group.add_argument(
+        "--num-envs",
+        type=int,
+        default=16,
+        help="Number of parallel C-FFI environment workers (default: 16)",
+    )
+    rl_group.add_argument(
+        "--horizon",
+        type=int,
+        default=16,
+        help="Rollout horizon per environment matching mean molecular growth path (default: 16)",
+    )
+    rl_group.add_argument(
+        "--learning-rate",
+        "--lr",
+        dest="learning_rate",
+        type=float,
+        default=3e-4,
+        help="PPO learning rate (default: 3e-4)",
+    )
+    rl_group.add_argument(
+        "--hidden-size",
+        type=int,
+        default=256,
+        help="Policy latent dimension (default: 256)",
+    )
+    rl_group.add_argument(
+        "--recurrent",
+        action="store_true",
+        default=False,
+        help="Use recurrent MinGRU backbone instead of MLP",
+    )
+    rl_group.add_argument(
+        "--early-stopping-lookback",
+        type=int,
+        default=500000,
+        help="Step lookback window for EMA reward flatline detection (default: 500,000)",
+    )
+    rl_group.add_argument(
+        "--early-stopping-delta",
+        type=float,
+        default=0.01,
+        help="EMA reward change threshold for early stopping (default: 0.01)",
+    )
+    rl_group.add_argument(
+        "--no-early-stopping",
+        action="store_true",
+        default=False,
+        help="Disable Dynamic EMA early stopping",
+    )
+    rl_group.add_argument(
+        "--no-curriculum",
+        action="store_true",
+        default=False,
+        help="Disable 3-stage curriculum scheduler",
+    )
+    rl_group.add_argument(
+        "--no-sa-penalty",
+        action="store_true",
+        default=False,
+        help="Disable in-the-loop batch SA score penalty",
+    )
+    rl_group.add_argument(
+        "--sa-threshold",
+        type=float,
+        default=None,
+        help="SA Score hinge threshold above which penalty is applied",
+    )
+    rl_group.add_argument(
+        "--sa-penalty-slope",
+        type=float,
+        default=None,
+        help="Slope multiplier for SA score excess penalty",
+    )
+    rl_group.add_argument(
+        "--no-dynamic-entropy",
+        action="store_true",
+        default=False,
+        help="Disable molecular-weight-scaling dynamic entropy coefficient",
+    )
+    rl_group.add_argument(
+        "--max-sa-score",
+        type=float,
+        default=6.0,
+        help="Maximum allowable RDKit Synthetic Accessibility (SA) Score ceiling (default: 6.0)",
+    )
+    rl_group.add_argument(
+        "--disable-sa-filter",
+        action="store_true",
+        default=False,
+        help="Disable Stage 5 RDKit synthesizability (SA Score) safety gate",
+    )
+    rl_group.add_argument(
+        "--checkpoint-dir",
+        type=str,
+        default="runs/checkpoints",
+        help="Directory to save trained_policy.pt and periodic checkpoints (default: runs/checkpoints)",
+    )
+    rl_group.add_argument(
+        "--export-dir",
+        type=str,
+        default="runs/candidates",
+        help="Directory to save exported candidate .mol2 files (default: runs/candidates)",
+    )
+
+    # -------------------------------------------------------------------------
+    # Curriculum Sweep Options
+    # -------------------------------------------------------------------------
+    sweep_group = parser.add_argument_group("Curriculum Sweep Options")
+    sweep_group.add_argument(
+        "--num-trials-per-spec",
+        type=int,
+        default=2,
+        help="Number of random hyperparameter trials per material spec (default: 2)",
+    )
+    sweep_group.add_argument(
+        "--steps-per-trial",
+        type=int,
+        default=5000,
+        help="Timesteps to train each trial before evaluation (default: 5,000)",
+    )
+
+    # -------------------------------------------------------------------------
+    # Molecular Library Generator Options
+    # -------------------------------------------------------------------------
+    lib_group = parser.add_argument_group("Combinatorial Library Generator Options")
+    lib_group.add_argument(
+        "--target-count",
+        "-n",
+        type=int,
+        default=None,
+        help="Target number of unique molecules to generate (default: from YAML target_molecules, e.g. 50,000)",
+    )
+    lib_group.add_argument(
+        "--skip-3d",
+        action="store_true",
+        default=False,
+        help="Skip 3D conformer embedding (2D combinatorial generation only)",
+    )
+    lib_group.add_argument(
+        "--skip-write",
+        action="store_true",
+        default=False,
+        help="Skip writing .mol2 files to disk (in-memory benchmark mode)",
+    )
+    lib_group.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for deterministic combinatorial sampling (default: 42)",
+    )
+
+    # -------------------------------------------------------------------------
+    # FreeSolv & Test Data Options
+    # -------------------------------------------------------------------------
+    data_group = parser.add_argument_group("FreeSolv & Dataset Options")
+    data_group.add_argument(
+        "--all-freesolv",
+        "--all-data",
+        action="store_true",
+        default=False,
+        help="Extract and populate EVERY molecule from the FreeSolv database (642+ molecules) into data/test_data/",
+    )
+    data_group.add_argument(
+        "--run-e2e",
+        action="store_true",
+        default=False,
+        help="Execute full end-to-end simulation across benchmark materials before verifying against FreeSolv",
+    )
+    data_group.add_argument(
+        "--results-dir",
+        type=str,
+        default=None,
+        help="Directory containing pipeline_summary.jsonl for verification (defaults to latest in runs/)",
+    )
+    data_group.add_argument(
+        "--database",
+        type=str,
+        default=None,
+        help="Path to FreeSolv database.pickle (default: FreeSolv/database.pickle)",
+    )
+    data_group.add_argument(
+        "--report-out",
+        type=str,
+        default="data/e2e_freesolv_verification_report.md",
+        help="Destination path for FreeSolv verification Markdown report",
+    )
+
+    # -------------------------------------------------------------------------
+    # Compiler & Execution Performance Options
+    # -------------------------------------------------------------------------
+    perf_group = parser.add_argument_group("Compiler & Execution Performance")
+    perf_group.add_argument(
+        "--batch-size",
+        "-b",
+        type=int,
+        default=512,
+        help="Molecule batch size for parallel tensor evaluation along Axis 0 (default: 512)",
+    )
+    perf_group.add_argument(
+        "--workers",
+        "-w",
+        type=int,
+        default=min(4, os.cpu_count() or 1),
+        help=f"Number of concurrent worker processes (default: {min(4, os.cpu_count() or 1)})",
+    )
+    perf_group.add_argument(
+        "--timeout",
+        type=float,
+        default=180.0,
+        help="Maximum execution timeout per material in seconds (default: 180s)",
+    )
+    perf_group.add_argument(
+        "--beam",
+        type=int,
+        default=2,
+        help="tinygrad compiler BEAM search optimization level (default: 2)",
+    )
+    perf_group.add_argument(
+        "--benchmark",
+        action="store_true",
+        default=False,
+        help="Profile execution time per material and output comprehensive benchmark summary",
+    )
+    perf_group.add_argument(
+        "--debug",
+        action="store_true",
+        default=False,
+        help="Enable DEBUG=2 and write detailed per-material compiler logs to data/logs_<timestamp>/",
+    )
+
+    return parser
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Main unified CLI entrypoint for dens-city."""
+    if argv is None:
+        argv = sys.argv[1:]
+
+    parser = create_parser()
     args = parser.parse_args(argv)
 
-    # Auto-throttle batch size for EGNN to prevent GPU VRAM exhaustion from (B, 128, 128, 128) message tensors
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Set tinygrad compiler optimization environment variables
+    if args.beam:
+        os.environ["BEAM"] = str(args.beam)
+    if args.debug:
+        os.environ["DEBUG"] = "2"
+
+    # =========================================================================
+    # MODE 1: 3D Interactive Raylib Visualizer Mode
+    # =========================================================================
+    if args.interactive:
+        from dens_city.ui.viewer import run_interactive_viewer
+
+        materials = discover_materials(args.data_dir, args.materials)
+        if not materials:
+            print(colored(f"Error: No materials found in data directory: {args.data_dir}", "red"))
+            return 1
+
+        print(colored("==========================================================================", "cyan"))
+        print(colored("  dens-city: 3D Interactive Raylib Molecular Visualizer                  ", "cyan"))
+        print(colored("==========================================================================", "cyan"))
+        print(f"Target Materials   : {materials}")
+        print("Controls           : Left Drag to Orbit | Scroll to Zoom | ← / → to Switch Materials")
+        run_interactive_viewer(material_names=materials)
+        return 0
+
+    # =========================================================================
+    # MODE 2: 5-Stage Generative Molecular Funnel Mode
+    # =========================================================================
+    if args.funnel:
+        from dens_city.swarm.funnel import run_generative_funnel
+
+        spec_file = resolve_spec_path(args.spec, default_dir=args.specs_dir)
+        if not spec_file or not spec_file.exists():
+            print(colored(f"Error: Target specification YAML not found: {args.spec}", "red"), file=sys.stderr)
+            return 1
+
+        out_dir = args.out_dir or "runs/funnel_results"
+        run_generative_funnel(
+            spec=spec_file,
+            train_steps=args.train_steps,
+            num_candidates=args.num_candidates,
+            batch_size=args.batch_size,
+            top_k=args.top_k,
+            out_dir=out_dir,
+            checkpoint=args.checkpoint,
+            num_envs=args.num_envs,
+            horizon=args.horizon,
+            learning_rate=args.learning_rate,
+            hidden_size=args.hidden_size,
+            early_stopping_lookback=args.early_stopping_lookback,
+            early_stopping_delta=args.early_stopping_delta,
+            no_early_stopping=args.no_early_stopping,
+            no_curriculum=args.no_curriculum,
+            no_sa_penalty=args.no_sa_penalty,
+            no_dynamic_entropy=args.no_dynamic_entropy,
+            recurrent=args.recurrent,
+            cdft_steps=args.cdft_steps,
+            bg_steps=args.bg_steps,
+            bg_samples=args.bg_samples,
+            lbfgs_steps=args.lbfgs_steps,
+            lbfgs_tol=args.lbfgs_tol,
+            enable_egnn=args.enable_egnn,
+            egnn_batch_size=args.egnn_batch_size,
+            egnn_layers=args.egnn_layers,
+            egnn_weights=args.egnn_weights,
+            max_sa_score=args.max_sa_score,
+            disable_sa_filter=args.disable_sa_filter,
+            verbose=True,
+        )
+        return 0
+
+    # =========================================================================
+    # MODE 3: Cross-Material 5-Stage Funnel Benchmark Mode
+    # =========================================================================
+    if args.benchmark_specs:
+        from dens_city.swarm.funnel import run_all_specs_funnel_benchmark
+
+        out_dir = args.out_dir or f"runs/full_system_benchmark_{ts}"
+        return run_all_specs_funnel_benchmark(
+            specs_dir=args.specs_dir,
+            train_steps=args.train_steps,
+            num_envs=args.num_envs,
+            horizon=args.horizon,
+            learning_rate=args.learning_rate,
+            hidden_size=args.hidden_size,
+            early_stopping_lookback=args.early_stopping_lookback,
+            early_stopping_delta=args.early_stopping_delta,
+            num_candidates=args.num_candidates if "--num-candidates" in argv else 64,
+            batch_size=args.batch_size if ("-b" in argv or "--batch-size" in argv) else 64,
+            egnn_batch_size=args.egnn_batch_size,
+            top_k=args.top_k if "--top-k" in argv else 10,
+            out_dir=out_dir,
+            max_sa_score=args.max_sa_score,
+            enable_egnn=args.enable_egnn,
+            recurrent=args.recurrent,
+        )
+
+    # =========================================================================
+    # MODE 4: Stage 1 RL Swarm Training Mode
+    # =========================================================================
+    if args.train_swarm:
+        from dens_city.swarm.trainer import train_swarm_policy
+
+        spec_file = resolve_spec_path(args.spec, default_dir=args.specs_dir)
+        if not spec_file or not spec_file.exists():
+            print(colored(f"Error: Target specification YAML not found: {args.spec}", "red"), file=sys.stderr)
+            return 1
+
+        train_swarm_policy(
+            spec=spec_file,
+            total_timesteps=args.train_steps,
+            num_envs=args.num_envs,
+            horizon=args.horizon,
+            learning_rate=args.learning_rate,
+            hidden_size=args.hidden_size,
+            recurrent=args.recurrent,
+            no_curriculum=args.no_curriculum,
+            no_early_stopping=args.no_early_stopping,
+            early_stopping_lookback=args.early_stopping_lookback,
+            early_stopping_delta=args.early_stopping_delta,
+            no_sa_penalty=args.no_sa_penalty,
+            sa_threshold=args.sa_threshold,
+            sa_penalty_slope=args.sa_penalty_slope,
+            no_dynamic_entropy=args.no_dynamic_entropy,
+            checkpoint_dir=args.checkpoint_dir,
+            export_dir=args.export_dir,
+            seed=args.seed,
+        )
+        return 0
+
+    # =========================================================================
+    # MODE 5: Curriculum Sweep Mode
+    # =========================================================================
+    if args.sweep:
+        from dens_city.swarm.sweep import run_curriculum_sweep
+
+        out_dir = args.out_dir or "runs/constellation_sweeps"
+        return run_curriculum_sweep(
+            specs=args.specs,
+            num_trials_per_spec=args.num_trials_per_spec,
+            steps_per_trial=args.steps_per_trial,
+            num_envs=args.num_envs if "--num-envs" in argv else 8,
+            output_dir=out_dir,
+            seed=args.seed,
+        )
+
+    # =========================================================================
+    # MODE 6: Chemical Diversity & Synthesizability Diagnostics Mode
+    # =========================================================================
+    if args.eval_swarm:
+        from dens_city.swarm.evaluator import evaluate_all_swarm_specs
+
+        out_dir = args.out_dir or "runs/rl_stage_evaluation"
+        return evaluate_all_swarm_specs(
+            specs_dir=args.specs_dir,
+            timesteps=args.train_steps if ("--train-steps" in argv or "--total-timesteps" in argv) else 10000,
+            num_candidates=args.num_candidates if "--num-candidates" in argv else 50,
+            num_envs=args.num_envs,
+            out_dir=out_dir,
+        )
+
+    # =========================================================================
+    # MODE 7: Combinatorial Molecular Library Generation Mode
+    # =========================================================================
+    if args.generate_library:
+        from dens_city.utils.library_generator import run_library_generator
+
+        spec_file = resolve_spec_path(args.spec, default_dir=args.specs_dir)
+        if not spec_file or not spec_file.exists():
+            print(colored(f"Error: Target specification YAML not found: {args.spec}", "red"), file=sys.stderr)
+            return 1
+
+        return run_library_generator(
+            spec_path=spec_file,
+            target_count=args.target_count,
+            out_dir=args.out_dir,
+            workers=args.workers,
+            seed=args.seed,
+            skip_3d=args.skip_3d,
+            skip_write=args.skip_write,
+        )
+
+    # =========================================================================
+    # MODE 8: Populate Test Data & FreeSolv Mode
+    # =========================================================================
+    if args.populate_test_data:
+        from dens_city.utils.test_data_generator import generate_test_data
+
+        target_dir = args.data_dir if "--data-dir" in argv or "-d" in argv else "data/test_data"
+        generate_test_data(
+            dest_dir=target_dir,
+            populate_entire_freesolv=args.all_freesolv,
+        )
+        return 0
+
+    # =========================================================================
+    # MODE 9: FreeSolv Validation & Verification Mode
+    # =========================================================================
+    if args.verify_freesolv:
+        from dens_city.utils.verification import verify_pipeline_against_freesolv
+
+        return verify_pipeline_against_freesolv(
+            results_dir=args.results_dir,
+            database_path=args.database,
+            report_out=args.report_out,
+            run_e2e=args.run_e2e,
+            populate_all_freesolv=args.all_freesolv,
+        )
+
+    # =========================================================================
+    # MODE 10: Standard Coupled cDFT Screening Mode (Default)
+    # =========================================================================
+    out_dir = args.out_dir or f"runs/batch_{ts}"
+    os.makedirs(out_dir, exist_ok=True)
+    jsonl_log_path = os.path.join(out_dir, "pipeline_summary.jsonl")
+
+    # Auto-throttle batch size for EGNN to prevent GPU VRAM exhaustion from (B, 128, 128, 128) tensors
     if args.energy_engine == "egnn" and "--batch-size" not in argv and "-b" not in argv:
         args.batch_size = 32
         print(
@@ -366,32 +1010,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     elif args.energy_engine == "egnn":
         print(colored(f"[ENGINE] Routing to EGNN MLFF engine (batch size: {args.batch_size})", "cyan"))
 
-    # Configure tinygrad compiler environment
-    if args.beam:
-        os.environ["BEAM"] = str(args.beam)
-    if args.debug:
-        os.environ["DEBUG"] = "2"
-
     materials = discover_materials(args.data_dir, args.materials)
     if not materials:
         print(colored(f"Error: No materials found in data directory: {args.data_dir}", "red"))
         return 1
-
-    # 1. Interactive 3D Raylib Visualizer Mode
-    if args.interactive:
-        from dens_city.ui.viewer import run_interactive_viewer
-
-        print(colored("==========================================================================", "cyan"))
-        print(colored("  dens-city: 3D Interactive Raylib Molecular Visualizer                  ", "cyan"))
-        print(colored("==========================================================================", "cyan"))
-        print(f"Target Materials   : {materials}")
-        print("Controls           : Left Drag to Orbit | Scroll to Zoom | ← / → to Switch Materials")
-        run_interactive_viewer(material_names=materials)
-        return 0
-
-    # 2. Setup output and debug logging directories
-    os.makedirs(args.out_dir, exist_ok=True)
-    jsonl_log_path = os.path.join(args.out_dir, "pipeline_summary.jsonl")
 
     debug_log_dir = None
     if args.debug:
@@ -399,7 +1021,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         debug_log_dir.mkdir(parents=True, exist_ok=True)
 
     print_banner(
-        out_dir=args.out_dir,
+        out_dir=out_dir,
         num_materials=len(materials),
         workers=args.workers,
         temp_k=args.temp,
@@ -414,7 +1036,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     tasks = [
         MaterialPipelineTask(
             material_path_or_name=m,
-            out_dir=args.out_dir,
+            out_dir=out_dir,
             temperature_k=args.temp,
             pressure_bar=args.pressure,
             chemical_potential_kbt=args.mu,
@@ -467,7 +1089,6 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     t_batch_total = time.perf_counter() - t_batch_start
 
-    # Final summary statistics
     n_success = sum(
         1 for r in results if r.status in [PipelineStatus.SUCCESS.value, PipelineStatus.SUCCESS_CDFT_ONLY.value]
     )

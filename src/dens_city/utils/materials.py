@@ -357,9 +357,9 @@ class MaterialLoader:
         if cls._ff_cache is None:
             if not FF_JSON_PATH.exists():
                 try:
-                    from scripts.generate_test_data import generate_all
+                    from dens_city.utils.test_data_generator import generate_test_data
 
-                    generate_all(populate_entire_freesolv=True)
+                    generate_test_data(populate_entire_freesolv=True)
                 except Exception:
                     pass
             if not FF_JSON_PATH.exists():
@@ -693,9 +693,9 @@ class MaterialLoader:
         """Returns all available .mol2 files in test_data/."""
         if not TEST_DATA_DIR.exists() or not list(TEST_DATA_DIR.glob("*.mol2")):
             try:
-                from scripts.generate_test_data import generate_all
+                from dens_city.utils.test_data_generator import generate_test_data
 
-                generate_all(populate_entire_freesolv=True)
+                generate_test_data(populate_entire_freesolv=True)
             except Exception:
                 pass
         return sorted([p.stem for p in TEST_DATA_DIR.glob("*.mol2")])

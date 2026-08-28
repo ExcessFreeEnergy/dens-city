@@ -9,7 +9,7 @@
 
 ---
 
-## Architecture
+## 1. System Architecture
 
 ```
 [Target Material YAMLs] (OLED, Electrolytes, Inhibitors, Sponges, Resins)
@@ -41,62 +41,215 @@
 
 ---
 
-## Quickstart
+## 2. CLI Reference & Parameter Guide (`uv run dens-city`)
 
-### 1. Installation
+The `dens-city` command-line interface provides a single, unified entrypoint for all simulation, visualization, generative design, library generation, and benchmark modes.
+
 ```bash
-uv sync
+uv run dens-city [MODE_SELECTOR] [OPTIONS...]
 ```
 
-### 2. End-to-End Generative Molecular Funnel
-```bash
-# Run 5-stage generative funnel on a single material spec
-uv run python scripts/run_generative_funnel.py \
-  --spec tests/data/conjugated_oled_semiconductors.yaml \
-  --train-steps 25000 \
-  --num-candidates 512 \
-  --batch-size 512 \
-  --egnn-batch-size 32 \
-  --top-k 20 \
-  --out-dir runs/funnel_results
+### 2.1 Execution Modes
 
-# Run funnel across all material classes
-for spec in tests/data/*.yaml; do
-  uv run python scripts/run_generative_funnel.py --spec "$spec" --train-steps 25000 --num-candidates 512 --batch-size 512 --top-k 20 --out-dir runs/funnel_results
-done
-```
+| Mode Selector Flag | Description | Typical Use Case |
+| :--- | :--- | :--- |
+| *(None / Default)* | **Coupled cDFT + Boltzmann Batch Screening** | Screen `.mol2` files through cDFT thermodynamics & Boltzmann flows |
+| `--interactive`, `-i` | **3D Interactive Raylib Visualizer** | Real-time orbital 3D viewer for molecular conformations |
+| `--funnel`, `--run-funnel` | **5-Stage Generative Molecular Funnel** | Run end-to-end RL design $\to$ cDFT $\to$ Boltzmann $\to$ EGNN $\to$ Pareto export |
+| `--benchmark-specs`, `--all-specs` | **Cross-Spec Funnel Benchmark** | Run the 5-stage funnel across all 10 material classes in `tests/data/` |
+| `--train-swarm`, `--train-rl` | **Stage 1 RL Swarm Training** | Train PPO policy with curriculum learning and export `trained_policy.pt` |
+| `--sweep`, `--curriculum-sweep` | **Constellation Curriculum Sweeps** | Run multi-trial hyperparameter sweep for Constellation 3D viewer |
+| `--eval-swarm`, `--evaluate-specs`| **Spec Evaluation & Chemical Diagnostics** | Evaluate validity %, SA score, diversity (1-T), and unique SMILES % |
+| `--generate-library`, `--gen-library` | **Combinatorial Library Generator** | High-speed C / multi-core 2D/3D combinatorial molecular generation |
+| `--populate-test-data` | **Dataset & Benchmark Population** | Populate `data/test_data/` with benchmark `.mol2` files & force fields |
+| `--verify-freesolv`, `--verify-e2e` | **FreeSolv Statistical Validation** | Compare predictions against FreeSolv hydration database & build report |
 
-### 3. Stage 1: RL Swarm Hyperparameter Sweeps (Constellation 3D)
-```bash
-# Multi-trial hyperparameter sweep for Constellation 3D viewer
-uv run python scripts/run_curriculum_sweep.py --num-trials-per-spec 3 --steps-per-trial 10000
-```
+---
 
-### 4. High-Throughput Batch Screening (FreeSolv & Database)
+### 2.2 Parameter Options Reference
+
+#### Material & Input Configuration
+- `--materials`, `-m` : Target material names (e.g. `argon water 5cb`), path to `.mol2` files, or `'all'` (default: `argon`).
+- `--data-dir`, `-d` : Directory containing `.mol2` material files (default: `data/test_data`).
+- `--out-dir`, `-o` : Destination directory for structured artifacts, trajectories, summaries, and logs.
+- `--spec`, `-s` : Path or keyword for material specification YAML (e.g. `tests/data/conjugated_oled_semiconductors.yaml` or `'oled'`).
+- `--specs` : List of YAML specification files for curriculum sweeps.
+- `--specs-dir` : Directory containing material specification YAML files (default: `tests/data`).
+
+#### Thermodynamics & cDFT Solver Options
+- `--temp`, `-t` : Reservoir temperature in Kelvin (default: `300.0` K).
+- `--pressure`, `-p` : Reservoir pressure in bar (default: `1.0` bar).
+- `--mu` : Chemical potential in $k_B T$ (overrides bulk pressure calculation).
+- `--grid`, `-g` : Spatial grid points for cDFT 1D discretization (default: `128`).
+- `--cdft-steps` : Variational cDFT optimization steps (default: `60`).
+- `--cdft-lr` : cDFT solver learning rate (default: `0.02`).
+- `--skip-bg` : Halt immediately after cDFT screening, skipping Boltzmann Generator training.
+
+#### Boltzmann Generator & Geometry Relaxation Options
+- `--bg-steps` : Boltzmann Generator training iterations (default: `40`).
+- `--bg-lr` : Boltzmann Generator learning rate (default: `0.01`).
+- `--bg-samples` : Number of 3D equilibrium conformations sampled into `.xyz` trajectory (default: `100`).
+- `--bg-w-tor` : Torsional rotamer loss biasing weight (default: `0.0`).
+- `--bg-mcmc-steps` : Latent Metropolis Monte Carlo relaxation steps per sample (default: `0`).
+- `--bg-mcmc-step-size` : Step size for Gaussian latent perturbations (default: `0.1`).
+- `--lbfgs-steps` : Batched GPU L-BFGS Quasi-Newton geometry relaxation steps (default: `50`).
+- `--lbfgs-tol` : RMS force convergence threshold for L-BFGS (default: `1e-3`).
+
+#### Quantum MLFF & EGNN Options
+- `--energy-engine` : Microscopic Hamiltonian physics engine: `'classical'` (GAFF LJ + Coulomb, default) or `'egnn'` (7-layer $E(n)$-equivariant MLFF).
+- `--enable-egnn` / `--no-enable-egnn` : Enable/disable Stage 4 EGNN quantum surrogate screening (default: `True`).
+- `--egnn-batch-size` : GPU batch size for EGNN message-passing evaluation (default: `32`).
+- `--egnn-layers` : Number of message-passing layers in the EGNN architecture (default: `7`).
+- `--egnn-weights` : Optional path to pretrained EGNN weights `.npz` archive.
+
+#### RL Swarm & Generative Funnel Options
+- `--train-steps`, `--total-timesteps` : RL curriculum training timesteps (default: `5,000,000`).
+- `--num-candidates` : Number of candidates to sample from trained policy via C-FFI (default: `512`).
+- `--top-k` : Number of top Pareto-optimal candidates to export (default: `20`).
+- `--checkpoint` : Path to existing policy `.pt` checkpoint file to skip Stage 1 training.
+- `--num-envs` : Number of parallel C-FFI environment workers (default: `16`).
+- `--horizon` : Rollout horizon per environment (default: `16`).
+- `--learning-rate`, `--lr` : PPO learning rate (default: `3e-4`).
+- `--hidden-size` : Policy latent dimension (default: `256`).
+- `--recurrent` : Enable recurrent MinGRU backbone instead of MLP (default: `False`).
+- `--early-stopping-lookback` : Step lookback window for EMA reward flatline detection (default: `500,000`).
+- `--early-stopping-delta` : EMA reward threshold for early stopping (default: `0.01`).
+- `--no-early-stopping` : Disable dynamic EMA early stopping.
+- `--no-curriculum` : Disable 3-stage curriculum scheduler.
+- `--no-sa-penalty` : Disable in-the-loop batch SA score penalty.
+- `--sa-threshold` : SA score hinge threshold above which penalty is applied.
+- `--sa-penalty-slope` : Slope multiplier for SA score excess penalty.
+- `--no-dynamic-entropy` : Disable molecular-weight-scaling dynamic entropy coefficient.
+- `--max-sa-score` : Maximum allowable Synthetic Accessibility (SA) Score ceiling (default: `6.0`).
+- `--disable-sa-filter` : Disable Stage 5 synthesizability safety gate.
+- `--checkpoint-dir` : Directory to save `trained_policy.pt` (default: `runs/checkpoints`).
+- `--export-dir` : Directory to save candidate `.mol2` files (default: `runs/candidates`).
+
+#### Combinatorial Library Generator Options
+- `--target-count`, `-n` : Target number of unique molecules to generate (default: from YAML `target_molecules`).
+- `--skip-3d` : Skip 3D conformer embedding (2D combinatorial generation only).
+- `--skip-write` : Skip writing `.mol2` files to disk (in-memory benchmark mode).
+- `--seed` : Random seed for deterministic sampling (default: `42`).
+
+#### FreeSolv & Dataset Options
+- `--all-freesolv`, `--all-data` : Populate entire FreeSolv database (642+ molecules) into `data/test_data/`.
+- `--run-e2e` : Run end-to-end simulation across materials before verifying against FreeSolv.
+- `--results-dir` : Directory containing `pipeline_summary.jsonl` (defaults to latest in `runs/`).
+- `--database` : Path to FreeSolv `database.pickle` (default: `FreeSolv/database.pickle`).
+- `--report-out` : Destination path for FreeSolv verification report (default: `data/e2e_freesolv_verification_report.md`).
+
+#### Execution & Compiler Performance
+- `--batch-size`, `-b` : Molecule batch size for parallel tensor evaluation (default: `512`).
+- `--workers`, `-w` : Concurrent worker processes (default: `min(4, CPU_COUNT)`).
+- `--timeout` : Maximum execution timeout per material in seconds (default: `180s`).
+- `--beam` : tinygrad compiler BEAM search optimization level (default: `2`).
+- `--benchmark` : Profile execution time and output comprehensive throughput table.
+- `--debug` : Enable `DEBUG=2` and write per-material compiler logs to `data/logs_<timestamp>/`.
+
+---
+
+## 3. Practical Usage Examples
+
+### 1. High-Throughput Batch Screening
 ```bash
-# High-throughput batch run (default batch size 512)
+# Screen 4 benchmark fluids with coupled cDFT + Boltzmann Generator (batch size 512)
 uv run dens-city --materials argon water methane 5cb --batch-size 512
 
-# Full 674-material FreeSolv benchmark
-uv run dens-city --materials all --benchmark
+# Run full FreeSolv benchmark with BEAM=2 compiler optimization
+uv run dens-city --materials all --benchmark --beam 2
+
+# Fast cDFT screening only (skipping Boltzmann training)
+uv run dens-city --materials all --skip-bg
 ```
 
-### 5. Interactive 3D Viewer (Single Material)
+### 2. 3D Interactive Raylib Visualizer
 ```bash
-# Launch real-time Raylib visualizer for a single material
+# Launch interactive 3D visualizer for argon
 uv run dens-city --interactive --materials argon
+
+# View multiple molecules (cycle using Left/Right arrow keys, orbit with mouse drag)
+uv run dens-city --interactive --materials water benzene 5cb
 ```
 
-### 6. Automated Tests & Quality
+### 3. 5-Stage Generative Molecular Funnel
 ```bash
-uv run pytest tests/ -v
-uv run ruff check src/ tests/ scripts/
-uv run ruff format --check src/ tests/ scripts/
+# Run 5-stage generative funnel on OLED semiconductors (25k training steps, 512 candidates)
+uv run dens-city --funnel --spec tests/data/conjugated_oled_semiconductors.yaml \
+  --train-steps 25000 --num-candidates 512 --batch-size 512 --top-k 20
+
+# Run generative funnel on battery electrolytes with keyword resolution and existing checkpoint
+uv run dens-city --funnel --spec electrolytes \
+  --checkpoint runs/checkpoints/trained_policy.pt --num-candidates 512 --top-k 20
+```
+
+### 4. Cross-Material Multi-Specification Funnel Benchmark
+```bash
+# Execute 5-stage funnel across all 10 material classes in tests/data/
+uv run dens-city --benchmark-specs --train-steps 25000 --num-candidates 64 --batch-size 64
+```
+
+### 5. Stage 1 RL Swarm Training
+```bash
+# Train PPO policy with curriculum learning for 5M steps on 16 parallel C environments
+uv run dens-city --train-swarm --spec conjugated_oled_semiconductors \
+  --train-steps 5000000 --num-envs 16 --checkpoint-dir runs/checkpoints
+```
+
+### 6. Constellation Curriculum Hyperparameter Sweeps
+```bash
+# Run multi-trial hyperparameter sweep for Constellation 3D viewer
+uv run dens-city --sweep --num-trials-per-spec 3 --steps-per-trial 10000
+```
+
+### 7. Chemical Diversity & Synthesizability Diagnostics
+```bash
+# Evaluate chemical validity, SA score, and Tanimoto diversity across all specs
+uv run dens-city --eval-swarm --specs-dir tests/data --timesteps 10000 --num-candidates 50
+```
+
+### 8. High-Performance Combinatorial Molecular Library Generation
+```bash
+# Generate 50,000 unique 3D molecules with OpenMP C .mol2 export and GAFF database
+uv run dens-city --generate-library --spec tests/data/conjugated_oled_semiconductors.yaml --target-count 50000
+
+# Fast in-memory 2D combinatorial generation benchmark
+uv run dens-city --generate-library --spec fluorinated_battery_electrolytes --target-count 10000 --skip-3d --skip-write
+```
+
+### 9. Test Data & FreeSolv Dataset Population
+```bash
+# Populate 32 core benchmark fluids in data/test_data/
+uv run dens-city --populate-test-data
+
+# Extract and populate all 642+ FreeSolv molecules
+uv run dens-city --populate-test-data --all-freesolv
+```
+
+### 10. FreeSolv Statistical Verification & Validation Report
+```bash
+# Run full simulation and verify against FreeSolv hydration free energies
+uv run dens-city --verify-freesolv --run-e2e
+
+# Verify existing simulation results in runs/ directory
+uv run dens-city --verify-freesolv --results-dir runs/batch_20260828
 ```
 
 ---
 
-## Citations
+## 4. Automated Tests & Quality Assurance
+
+```bash
+# Run complete test suite
+uv run pytest tests/ -v
+
+# Run linting and code formatting
+uv run ruff check src/ tests/
+uv run ruff format --check src/ tests/
+```
+
+---
+
+## 5. Citations
 
 - A. T. Bui, S. J. Cox, "Dielectrocapillarity for exquisite control of fluids", *arXiv:2503.09855* (2025).
 - A. T. Bui, S. J. Cox, "Learning classical density functionals for ionic fluids", *Phys. Rev. Lett.* **134**, 148001 (2025). [doi:10.1103/PhysRevLett.134.148001](https://doi.org/10.1103/PhysRevLett.134.148001)
@@ -108,7 +261,6 @@ uv run ruff format --check src/ tests/ scripts/
 
 ---
 
-## License
+## 6. License
 
 GNU General Public License v3.0. See [LICENSE](LICENSE) for details.
-

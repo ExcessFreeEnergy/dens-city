@@ -8,6 +8,7 @@ Validates:
 5. Benchmark mode reporting and throughput calculation.
 """
 
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -169,3 +170,188 @@ def test_unified_cli_benchmark_and_debug_flags():
             os.environ["DEBUG"] = orig_debug
         else:
             os.environ.pop("DEBUG", None)
+
+
+def test_resolve_spec_path():
+    """Validates specification path resolution from full paths, filenames, and keywords."""
+    from dens_city.ui.cli import resolve_spec_path
+
+    # Direct valid path
+    p = resolve_spec_path("tests/data/conjugated_oled_semiconductors.yaml")
+    assert p is not None and p.exists()
+
+    # Keyword match
+    p_oled = resolve_spec_path("oled")
+    assert p_oled is not None and p_oled.exists()
+    assert "oled" in p_oled.name
+
+    p_electrolytes = resolve_spec_path("fluorinated_battery_electrolytes")
+    assert p_electrolytes is not None and p_electrolytes.exists()
+
+    p_drug = resolve_spec_path("drug")
+    assert p_drug is not None and p_drug.exists()
+
+
+def test_cli_parser_help_and_epilog():
+    """Validates that create_parser builds complete parser with formatted examples."""
+    from dens_city.ui.cli import create_parser
+
+    parser = create_parser()
+    assert parser.prog == "dens-city"
+    help_str = parser.format_help()
+    assert "--funnel" in help_str
+    assert "--benchmark-specs" in help_str
+    assert "--train-swarm" in help_str
+    assert "--sweep" in help_str
+    assert "--eval-swarm" in help_str
+    assert "--generate-library" in help_str
+    assert "--populate-test-data" in help_str
+    assert "--verify-freesolv" in help_str
+    assert "Execution Modes & Examples" in help_str
+
+
+def test_cli_populate_test_data_dispatch(tmp_path):
+    """Tests CLI --populate-test-data execution mode."""
+    ret = main(["--populate-test-data", "--data-dir", str(tmp_path)])
+    assert ret == 0
+    assert (tmp_path / "water.mol2").exists()
+    assert (tmp_path / "argon.mol2").exists()
+    assert (tmp_path / "forcefield_parameters.json").exists()
+
+
+def test_cli_generate_library_dispatch(tmp_path):
+    """Tests CLI --generate-library execution mode in-memory."""
+    ret = main(
+        [
+            "--generate-library",
+            "--spec",
+            "oled",
+            "--target-count",
+            "3",
+            "--skip-write",
+            "--seed",
+            "42",
+        ]
+    )
+    assert ret == 0
+
+
+def test_cli_train_swarm_fast(tmp_path):
+    """Tests CLI --train-swarm execution with minimal steps."""
+    ret = main(
+        [
+            "--train-swarm",
+            "--spec",
+            "oled",
+            "--train-steps",
+            "32",
+            "--num-envs",
+            "2",
+            "--horizon",
+            "8",
+            "--checkpoint-dir",
+            str(tmp_path / "ckpts"),
+            "--export-dir",
+            str(tmp_path / "cands"),
+        ]
+    )
+    assert ret == 0
+    assert (tmp_path / "ckpts" / "trained_policy.pt").exists()
+
+
+def test_cli_funnel_fast(tmp_path):
+    """Tests CLI --funnel execution with small candidate count and fast steps."""
+    ret = main(
+        [
+            "--funnel",
+            "--spec",
+            "oled",
+            "--train-steps",
+            "32",
+            "--num-envs",
+            "2",
+            "--horizon",
+            "8",
+            "--num-candidates",
+            "4",
+            "--batch-size",
+            "4",
+            "--cdft-steps",
+            "5",
+            "--bg-steps",
+            "5",
+            "--lbfgs-steps",
+            "0",
+            "--enable-egnn",
+            "--egnn-batch-size",
+            "4",
+            "--top-k",
+            "2",
+            "--out-dir",
+            str(tmp_path),
+        ]
+    )
+    assert ret == 0
+    report_file = tmp_path / "conjugated_oled_semiconductors" / "funnel_report.md"
+    csv_file = tmp_path / "conjugated_oled_semiconductors" / "funnel_summary.csv"
+    assert report_file.exists()
+    assert csv_file.exists()
+
+
+def test_cli_sweep_fast(tmp_path):
+    """Tests CLI --sweep execution mode with 1 trial and small step count."""
+    ret = main(
+        [
+            "--sweep",
+            "--specs",
+            "tests/data/conjugated_oled_semiconductors.yaml",
+            "--num-trials-per-spec",
+            "1",
+            "--steps-per-trial",
+            "32",
+            "--num-envs",
+            "2",
+            "--out-dir",
+            str(tmp_path),
+        ]
+    )
+    assert ret == 0
+    assert (tmp_path / "sweep_summary.json").exists()
+
+
+def test_cli_verify_freesolv_dispatch(tmp_path):
+    """Tests CLI --verify-freesolv execution mode."""
+    # Write mock summary jsonl
+    summary_path = tmp_path / "pipeline_summary.jsonl"
+    report_path = tmp_path / "verification_report.md"
+    mock_res = {
+        "material_name": "methane",
+        "status": "SUCCESS",
+        "runtime_seconds": 0.5,
+        "num_sites": 5,
+        "bulk_density_a3": 0.02,
+        "wall_pressure_bar": 12.0,
+        "cdft_final_loss": 0.05,
+    }
+    with open(summary_path, "w", encoding="utf-8") as f:
+        f.write(json.dumps(mock_res) + "\n")
+
+    # FreeSolv database mock or real
+    db_path = Path("FreeSolv/database.pickle")
+    if not db_path.exists():
+        db_path = Path("data/database.pickle")
+
+    if db_path.exists():
+        ret = main(
+            [
+                "--verify-freesolv",
+                "--results-dir",
+                str(tmp_path),
+                "--database",
+                str(db_path),
+                "--report-out",
+                str(report_path),
+            ]
+        )
+        assert ret == 0
+        assert report_path.exists()
