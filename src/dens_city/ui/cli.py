@@ -541,8 +541,8 @@ Execution Modes & Examples:
     rl_group.add_argument(
         "--num-envs",
         type=int,
-        default=16,
-        help="Number of parallel C-FFI environment workers (default: 16)",
+        default=64,
+        help="Number of parallel C-FFI environment workers (default: 64)",
     )
     rl_group.add_argument(
         "--horizon",

@@ -13,7 +13,6 @@ from typing import Any, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
-from torch.distributions.categorical import Categorical
 
 
 def layer_init(layer: nn.Linear, std: float = 1.414, bias_const: float = 0.0) -> nn.Linear:
@@ -38,9 +37,10 @@ class MolecularPortEncoder(nn.Module):
         self.port_dim = 4  # (nx, ny, nz, state_empty)
         self.global_dim = 24  # 16 graph features + 8 target bounds
 
-        # Port entity processing MLP (Global + Port features -> Port Embedding)
-        self.port_mlp = nn.Sequential(
-            layer_init(nn.Linear(self.global_dim + self.port_dim, 128)),
+        # Factorized Port entity projection: W_g * global + W_p * port + b
+        self.global_port_proj = layer_init(nn.Linear(self.global_dim, 128))
+        self.port_proj = layer_init(nn.Linear(self.port_dim, 128, bias=False))
+        self.port_mlp_out = nn.Sequential(
             nn.GELU(),
             layer_init(nn.Linear(128, hidden_size)),
             nn.GELU(),
@@ -77,17 +77,17 @@ class MolecularPortEncoder(nn.Module):
         ports_raw = flat_obs[:, self.global_dim : self.global_dim + self.num_ports * self.port_dim]
         ports = ports_raw.reshape(batch_size, self.num_ports, self.port_dim)
 
-        # 2. Port Entity Embeddings
-        global_expanded = global_feats.unsqueeze(1).expand(batch_size, self.num_ports, self.global_dim)
-        port_input = torch.cat([global_expanded, ports], dim=-1)
-        port_embs = self.port_mlp(port_input)  # (B, 16, H)
+        # 2. Factorized Port Entity Embeddings (0 Cat allocations, 16x fewer global ops)
+        g_proj = self.global_port_proj(global_feats).unsqueeze(1)
+        p_proj = self.port_proj(ports)
+        port_embs = self.port_mlp_out(g_proj + p_proj)  # (B, 16, H)
 
         # 3. Masked Geometric Pooling over active open ports
         empty_mask = ports[:, :, 3:4]  # 1.0 if empty, 0.0 if filled/inactive
         masked_port_embs = port_embs * empty_mask
 
-        # Max pooling with -1e9 mask on filled ports
-        fill_penalty = (1.0 - empty_mask) * -1e9
+        # Max pooling with -1e4 mask on filled ports (FP16/BF16 safe)
+        fill_penalty = (1.0 - empty_mask) * -1e4
         pooled_max = (masked_port_embs + fill_penalty).max(dim=1)[0]
         # Guard against all ports being capped
         pooled_max = torch.where(empty_mask.sum(dim=1) > 0, pooled_max, torch.zeros_like(pooled_max))
@@ -108,7 +108,7 @@ class MolecularPortEncoder(nn.Module):
 class MolecularActionDecoder(nn.Module):
     """
     Dual-head MultiDiscrete decoder for Port selection (16) and Fragment choice (13).
-    Applies -1e9 action mask to prevent proposing physically invalid actions.
+    Applies -1e4 action mask to prevent proposing physically invalid actions (safe for FP16/BF16).
     """
 
     def __init__(self, hidden_size: int = 256):
@@ -142,8 +142,8 @@ class MolecularActionDecoder(nn.Module):
             port_mask = mask[..., : self.num_ports]
             frag_mask = mask[..., self.num_ports : self.num_ports + self.num_frags]
 
-            port_logits = torch.where(port_mask > 0.5, port_logits, torch.tensor(-1e9, device=hidden.device))
-            frag_logits = torch.where(frag_mask > 0.5, frag_logits, torch.tensor(-1e9, device=hidden.device))
+            port_logits = torch.where(port_mask > 0.5, port_logits, -1e4)
+            frag_logits = torch.where(frag_mask > 0.5, frag_logits, -1e4)
 
         return (port_logits, frag_logits), values
 
@@ -207,6 +207,48 @@ class MinGRUBackbone(nn.Module):
             out = self._g(hidden) * gate.sigmoid()
             h_out = self._highway(h_out, out, proj)
         return h_out
+
+
+def sample_logits(
+    port_logits: torch.Tensor,
+    frag_logits: torch.Tensor,
+    action: Optional[torch.Tensor] = None,
+    deterministic: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    High-performance fused tensor sampling matching PufferLib Ocean.
+    Avoids torch.distributions overhead and computes log_prob, entropy,
+    and actions via direct tensor math.
+    """
+    port_logsumexp = torch.logsumexp(port_logits, dim=-1, keepdim=True)
+    port_logprobs = port_logits - port_logsumexp
+    port_probs = torch.exp(port_logprobs)
+    port_entropy = -(port_probs * port_logprobs).sum(dim=-1)
+
+    frag_logsumexp = torch.logsumexp(frag_logits, dim=-1, keepdim=True)
+    frag_logprobs = frag_logits - frag_logsumexp
+    frag_probs = torch.exp(frag_logprobs)
+    frag_entropy = -(frag_probs * frag_logprobs).sum(dim=-1)
+
+    if action is None:
+        if deterministic:
+            a_port = port_logits.argmax(dim=-1)
+            a_frag = frag_logits.argmax(dim=-1)
+        else:
+            a_port = torch.multinomial(port_probs, num_samples=1).squeeze(-1)
+            a_frag = torch.multinomial(frag_probs, num_samples=1).squeeze(-1)
+        action = torch.stack([a_port, a_frag], dim=-1)
+    else:
+        a_port = action[..., 0].long()
+        a_frag = action[..., 1].long()
+
+    port_lp = port_logprobs.gather(-1, a_port.unsqueeze(-1)).squeeze(-1)
+    frag_lp = frag_logprobs.gather(-1, a_frag.unsqueeze(-1)).squeeze(-1)
+
+    total_logprob = port_lp + frag_lp
+    total_entropy = port_entropy + frag_entropy
+
+    return action, total_logprob, total_entropy
 
 
 class MolecularSwarmPolicy(nn.Module):
@@ -274,32 +316,21 @@ class MolecularSwarmPolicy(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         """
         Samples or evaluates MultiDiscrete actions (port, fragment), calculating
-        joint log-probabilities, entropy, and baseline values.
+        joint log-probabilities, entropy, and baseline values with fused tensor math.
         """
         h, _ = self.encoder(obs)
-        h = self.network.forward_train(h.unsqueeze(1)).squeeze(1) if obs.dim() == 2 else self.network.forward_train(h)
+        h = self.network.forward_train(h)
         (port_logits, frag_logits), values = self.decoder(h, action_mask=action_mask)
 
-        dist_port = Categorical(logits=port_logits)
-        dist_frag = Categorical(logits=frag_logits)
-
-        if action is None:
-            if deterministic:
-                a_port = port_logits.argmax(dim=-1)
-                a_frag = frag_logits.argmax(dim=-1)
-            else:
-                a_port = dist_port.sample()
-                a_frag = dist_frag.sample()
-            action = torch.stack([a_port, a_frag], dim=-1)
-        else:
-            a_port = action[..., 0].long()
-            a_frag = action[..., 1].long()
-
-        logprob = dist_port.log_prob(a_port) + dist_frag.log_prob(a_frag)
-        entropy = dist_port.entropy() + dist_frag.entropy()
+        act, logprob, entropy = sample_logits(
+            port_logits=port_logits,
+            frag_logits=frag_logits,
+            action=action,
+            deterministic=deterministic,
+        )
 
         return {
-            "action": action,
+            "action": act,
             "logprob": logprob,
             "entropy": entropy,
             "value": values.squeeze(-1),

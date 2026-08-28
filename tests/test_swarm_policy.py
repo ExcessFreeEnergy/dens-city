@@ -50,7 +50,7 @@ def test_molecular_port_encoder_forward():
 
 
 def test_molecular_action_decoder_masking():
-    """Verifies that MolecularActionDecoder applies -1e9 mask to invalid ports and fragments."""
+    """Verifies that MolecularActionDecoder applies -1e4 mask to invalid ports and fragments (FP16/BF16 safe)."""
     decoder = MolecularActionDecoder(hidden_size=128)
     hidden = torch.randn(4, 128)
 
@@ -65,14 +65,14 @@ def test_molecular_action_decoder_masking():
     assert frag_logits.shape == (4, 13)
     assert values.shape == (4, 1)
 
-    # Valid port 0 and frag 3 should have finite logits
-    assert (port_logits[:, 0] > -1e8).all()
-    assert (frag_logits[:, 3] > -1e8).all()
+    # Valid port 0 and frag 3 should have finite normal logits
+    assert (port_logits[:, 0] > -1e3).all()
+    assert (frag_logits[:, 3] > -1e3).all()
 
-    # Invalid slots should have large negative penalty (-1e9)
-    assert (port_logits[:, 1:] <= -1e8).all()
-    assert (frag_logits[:, :3] <= -1e8).all()
-    assert (frag_logits[:, 4:] <= -1e8).all()
+    # Invalid slots should have large negative penalty (-1e4)
+    assert (port_logits[:, 1:] <= -1e3).all()
+    assert (frag_logits[:, :3] <= -1e3).all()
+    assert (frag_logits[:, 4:] <= -1e3).all()
 
 
 def test_molecular_swarm_policy_sample_action():

@@ -12,7 +12,7 @@ import torch.optim as optim
 from rdkit import Chem
 from rdkit.Contrib.SA_Score import sascorer
 
-from dens_city.swarm.env import CDFTSwarmEnv
+from dens_city.swarm.env import VectorizedSwarmEnv
 from dens_city.swarm.policy import MolecularSwarmPolicy
 
 
@@ -27,104 +27,6 @@ def _compute_sa_score_static(smi: str) -> float:
         return float(sascorer.calculateScore(mol))
     except Exception:
         return 1.0
-
-
-class VectorizedSwarmEnv:
-    """
-    Manages a pool of N parallel C-native CDFTSwarmEnv instances.
-    Provides vectorized reset, step, action masking, and direct C-memory TargetSpec mutation.
-    """
-
-    def __init__(
-        self,
-        num_envs: int = 16,
-        spec_yaml_path: Optional[str | Path] = None,
-        target_spec: Optional[Dict[str, float]] = None,
-        seed: int = 42,
-    ):
-        self.num_envs = num_envs
-        self.envs: List[CDFTSwarmEnv] = []
-        for i in range(num_envs):
-            env = CDFTSwarmEnv(
-                spec_yaml_path=spec_yaml_path,
-                target_spec=target_spec,
-                seed=seed + i * 1000,
-            )
-            self.envs.append(env)
-
-        self.obs_size = 88
-        self.action_mask_size = 29
-        self.num_atns = 2
-
-    def reset(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resets all parallel environments and returns stacked (obs, action_mask)."""
-        obs_list = []
-        mask_list = []
-        for env in self.envs:
-            obs, info = env.reset()
-            obs_list.append(obs)
-            mask_list.append(info["action_mask"])
-        obs_tensor = torch.from_numpy(np.stack(obs_list)).float()
-        mask_tensor = torch.from_numpy(np.stack(mask_list)).float()
-        return obs_tensor, mask_tensor
-
-    def step(
-        self, actions: torch.Tensor | np.ndarray
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[Dict[str, Any]]]:
-        """
-        Executes a parallel step across all N environments.
-        Returns:
-            obs: (N, 88)
-            rewards: (N,)
-            terminals: (N,)
-            action_masks: (N, 29)
-            infos: List of N info dicts
-        """
-        if isinstance(actions, torch.Tensor):
-            actions_np = actions.detach().cpu().numpy()
-        else:
-            actions_np = np.asarray(actions)
-
-        obs_list = []
-        reward_list = []
-        term_list = []
-        mask_list = []
-        info_list = []
-
-        for i, env in enumerate(self.envs):
-            a_port = int(actions_np[i, 0])
-            a_frag = int(actions_np[i, 1])
-            obs, reward, term, truncated, info = env.step((a_port, a_frag))
-
-            obs_list.append(obs)
-            reward_list.append(reward)
-            term_list.append(1.0 if term else 0.0)
-            mask_list.append(info["action_mask"])
-            info_list.append(info)
-
-        obs_tensor = torch.from_numpy(np.stack(obs_list)).float()
-        reward_tensor = torch.from_numpy(np.array(reward_list, dtype=np.float32))
-        term_tensor = torch.from_numpy(np.array(term_list, dtype=np.float32))
-        mask_tensor = torch.from_numpy(np.stack(mask_list)).float()
-
-        return obs_tensor, reward_tensor, term_tensor, mask_tensor, info_list
-
-    def set_targets(self, targets: Dict[str, float]) -> None:
-        """
-        Directly broadcasts updated target parameters into the C TargetSpec memory of all N environments.
-        """
-        for env in self.envs:
-            env.set_targets(targets)
-
-    def export_best_candidate_mol2(self, env_idx: int, mol_name: str = "candidate") -> str:
-        """Exports Tripos .mol2 string of the current molecule in environment env_idx."""
-        return self.envs[env_idx].export_mol2_string(mol_name)
-
-    def close(self) -> None:
-        """Frees all C environment resources."""
-        for env in self.envs:
-            env.close()
-        self.envs.clear()
 
 
 class SwarmCurriculumManager:
@@ -212,8 +114,8 @@ class SwarmPuffeRLTrainer:
         vf_coef: float = 0.5,
         ent_coef: float = 0.01,
         max_grad_norm: float = 0.5,
-        minibatch_size: int = 64,
-        update_epochs: int = 4,
+        minibatch_size: int = 256,
+        update_epochs: int = 2,
         use_curriculum: bool = True,
         early_stopping: bool = True,
         early_stopping_lookback: int = 500000,
@@ -225,6 +127,16 @@ class SwarmPuffeRLTrainer:
         checkpoint_dir: Optional[str | Path] = None,
         device: str | torch.device = "cpu",
     ):
+        # Isolate PyTorch CPU thread pool to 1 thread, reserving all CPU cores for OpenMP C vectorization
+        try:
+            torch.set_num_threads(1)
+        except Exception:
+            pass
+        try:
+            torch.set_num_interop_threads(1)
+        except Exception:
+            pass
+
         self.vec_env = vec_env
         self.policy = policy.to(device)
         self.final_targets = final_target_spec
@@ -396,14 +308,17 @@ class SwarmPuffeRLTrainer:
 
         # 2. Reset or get current env states
         obs, action_mask = self.vec_env.reset() if self.global_step == 0 else (self.last_obs, self.last_mask)
-        obs = obs.to(self.device)
-        action_mask = action_mask.to(self.device)
+        obs = obs.to(self.device, non_blocking=True)
+        action_mask = action_mask.to(self.device, non_blocking=True)
 
         # 3. Rollout Collection
-        terminal_records: List[Tuple[int, int, str, Dict[str, Any]]] = []
         p_walls = []
         omega_solvs = []
+        sa_scores_list = []
+        sa_penalties_list = []
+        ep_rewards = []
         total_episodes = 0
+        valid_molecules = 0
 
         self.policy.eval()
         for step in range(self.horizon):
@@ -415,65 +330,49 @@ class SwarmPuffeRLTrainer:
                 logprobs = out["logprob"]
                 values = out["value"]
 
-            self.obs_buf[step] = obs
-            self.mask_buf[step] = action_mask
-            self.actions_buf[step] = actions
-            self.logprobs_buf[step] = logprobs
-            self.values_buf[step] = values
+            self.obs_buf[step].copy_(obs, non_blocking=True)
+            self.mask_buf[step].copy_(action_mask, non_blocking=True)
+            self.actions_buf[step].copy_(actions, non_blocking=True)
+            self.logprobs_buf[step].copy_(logprobs, non_blocking=True)
+            self.values_buf[step].copy_(values, non_blocking=True)
 
-            # Vectorized step (Pure C execution, 0 GIL locks)
+            # Vectorized step (Pure C OpenMP execution across CPU cores)
             next_obs, rewards, terminals, next_masks, infos = self.vec_env.step(actions)
-            self.rewards_buf[step] = rewards.to(self.device)
-            self.terminals_buf[step] = terminals.to(self.device)
+            self.rewards_buf[step].copy_(rewards, non_blocking=True)
+            self.terminals_buf[step].copy_(terminals, non_blocking=True)
 
             for i, info in enumerate(infos):
                 if terminals[i] > 0.5:
                     total_episodes += 1
-                    rd_mol = self.vec_env.envs[i].get_current_rdkit_mol()
-                    smi = Chem.MolToSmiles(rd_mol, canonical=True) if rd_mol is not None else ""
-                    terminal_records.append((step, i, smi, info))
+                    ep_r = float(rewards[i])
+                    ep_rewards.append(ep_r)
+                    if info is not None:
+                        if "p_wall_bar" in info:
+                            p_walls.append(info["p_wall_bar"])
+                        if "omega_solv_kcal" in info:
+                            omega_solvs.append(info["omega_solv_kcal"])
+                        if "sa_score" in info:
+                            sa_scores_list.append(info["sa_score"])
+                        if "r_sa_penalty" in info:
+                            sa_penalties_list.append(info["r_sa_penalty"])
+                    if ep_r > 0.0:
+                        valid_molecules += 1
+                    if ep_r > self.best_reward:
+                        self.best_reward = ep_r
+                        self.best_mol2_str = self.vec_env.export_best_candidate_mol2(i, "best_candidate")
 
-            obs = next_obs.to(self.device)
-            action_mask = next_masks.to(self.device)
+            obs = next_obs.to(self.device, non_blocking=True)
+            action_mask = next_masks.to(self.device, non_blocking=True)
 
         self.last_obs = obs
         self.last_mask = action_mask
 
-        # 3b. Batch SA Score Calculation & Retroactive Reward Penalty Injection
-        sa_scores_list: List[float] = []
-        sa_penalties_list: List[float] = []
-        if self.sa_penalty and terminal_records:
-            smis = [rec[2] for rec in terminal_records]
-            scores = list(self.executor.map(_compute_sa_score_static, smis))
-            for (t_step, env_idx, _smi, _info), sa in zip(terminal_records, scores):
-                sa_scores_list.append(sa)
-                if sa > self.sa_threshold:
-                    r_sa = -self.sa_penalty_slope * (sa - self.sa_threshold)
-                    self.rewards_buf[t_step, env_idx] += r_sa
-                    sa_penalties_list.append(r_sa)
-
-        # Collect finalized episodic rewards after retroactive SA penalty injection
-        ep_rewards: List[float] = []
-        valid_molecules = 0
-        for t_step, env_idx, _smi, info in terminal_records:
-            ep_r = float(self.rewards_buf[t_step, env_idx].item())
-            ep_rewards.append(ep_r)
-            if "p_wall_bar" in info:
-                p_walls.append(info["p_wall_bar"])
-            if "omega_solv_kcal" in info:
-                omega_solvs.append(info["omega_solv_kcal"])
-            if ep_r > 0.0:
-                valid_molecules += 1
-            if ep_r > self.best_reward:
-                self.best_reward = ep_r
-                self.best_mol2_str = self.vec_env.export_best_candidate_mol2(env_idx, "best_candidate")
-
-        # 4. GAE-Lambda Advantage Estimation (on retroactively adjusted rewards)
+        # 4. GPU-Resident In-Place GAE-Lambda Advantage Estimation
         with torch.no_grad():
             out = self.policy.get_action_and_value(obs, action_mask=action_mask)
             next_value = out["value"]
             advantages = torch.zeros_like(self.rewards_buf)
-            lastgaelam = 0
+            lastgaelam = torch.zeros(self.num_envs, device=self.device)
             for t in reversed(range(self.horizon)):
                 if t == self.horizon - 1:
                     nextnonterminal = 1.0 - self.terminals_buf[t]
@@ -675,6 +574,16 @@ def train_swarm_policy(
     exp_dir.mkdir(parents=True, exist_ok=True)
     ckpt_dir = Path(checkpoint_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    # Restrict PyTorch CPU thread pool to 1 thread, reserving CPU cores for OpenMP vectorization
+    try:
+        torch.set_num_threads(1)
+    except Exception:
+        pass
+    try:
+        torch.set_num_interop_threads(1)
+    except Exception:
+        pass
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Initializing Vectorized C Environment Pool ({num_envs} envs, device={device})...")

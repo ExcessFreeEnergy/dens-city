@@ -31,6 +31,7 @@ typedef struct {
     float heavy_atom_penalty;       // Penalty for halogens / heavy metalloids
     float tpsa_proxy;               // Topological Polar Surface Area (Å^2)
     float molecular_weight;         // Total mass in amu
+    float sa_score;                 // Synthetic Accessibility Score proxy (1.0 to 10.0 scale)
 } MechanicsProfile;
 
 // Jacobi eigenvalue solver for symmetric 3x3 inertia matrix
@@ -288,6 +289,35 @@ static inline MechanicsProfile evaluate_mechanics(const MolecularGraph* graph) {
     float ellip_volume = (4.0f / 3.0f) * (float)M_PI * a_ellip * b_ellip * c_ellip;
 
     prof.fractional_free_volume = (ellip_volume > vdw_volume) ? ((ellip_volume - vdw_volume) / ellip_volume) : 0.1f;
+
+    // 7. Synthetic Accessibility (SA) Score Proxy (calibrated to Ertl & Schuffenhauer SAScore scale 1.0 - 10.0)
+    float ring_penalty = 0.0f;
+    int num_unique_rings = 0;
+    for (int r = 1; r < 8; r++) {
+        if (ring_counts[r] > 0) num_unique_rings++;
+    }
+    if (num_unique_rings > 1) ring_penalty = 0.35f * (float)(num_unique_rings - 1);
+
+    float size_penalty = 0.025f * (float)heavy_atoms;
+    float rot_penalty = 0.04f * (float)rotatable_bonds;
+
+    int stereo_centers = 0;
+    for (int i = 0; i < n_atoms; i++) {
+        const AtomSite* a = &graph->atoms[i];
+        if (a->atomic_number == 6 && !a->is_aromatic) {
+            int bonded_heavy = 0;
+            for (int b = 0; b < graph->num_bonds; b++) {
+                if (graph->bonds[b].atom_u == i || graph->bonds[b].atom_v == i) {
+                    int neighbor = (graph->bonds[b].atom_u == i) ? graph->bonds[b].atom_v : graph->bonds[b].atom_u;
+                    if (neighbor < n_atoms && graph->atoms[neighbor].atomic_number > 1) bonded_heavy++;
+                }
+            }
+            if (bonded_heavy >= 3) stereo_centers++;
+        }
+    }
+    float stereo_penalty = 0.25f * (float)stereo_centers;
+
+    prof.sa_score = 1.80f + size_penalty + ring_penalty + rot_penalty + stereo_penalty + 0.15f * prof.heavy_atom_penalty;
 
     return prof;
 }

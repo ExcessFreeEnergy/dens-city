@@ -25,6 +25,8 @@ typedef struct {
     float p_bulk_bar;     // Bulk reservoir pressure in bar
 } FluidCDFTParams;
 
+#define MAX_K_HALF 48
+
 // Precomputed, 64-byte cache-aligned memory blocks for single environment execution (zero malloc in loop)
 typedef struct {
     // 1D FMT Planar Weight Kernels (Analytical cell-integrated)
@@ -34,6 +36,17 @@ typedef struct {
     float w3[N_GRID]   __attribute__((aligned(64)));
     float wv1[N_GRID]  __attribute__((aligned(64)));
     float wv2[N_GRID]  __attribute__((aligned(64)));
+
+    // Symmetric compact support kernels for bounded zero-padded SIMD convolutions
+    int k_half_fmt;
+    int k_half_att;
+    float w0_sym[2 * MAX_K_HALF + 1]   __attribute__((aligned(64)));
+    float w1_sym[2 * MAX_K_HALF + 1]   __attribute__((aligned(64)));
+    float w2_sym[2 * MAX_K_HALF + 1]   __attribute__((aligned(64)));
+    float w3_sym[2 * MAX_K_HALF + 1]   __attribute__((aligned(64)));
+    float wv1_sym[2 * MAX_K_HALF + 1]  __attribute__((aligned(64)));
+    float wv2_sym[2 * MAX_K_HALF + 1]  __attribute__((aligned(64)));
+    float wca_sym[2 * MAX_K_HALF + 1]  __attribute__((aligned(64)));
 
     // WCA Attractive Dispersion Kernel & Slit Wall External Potential
     float wca_kernel[N_GRID] __attribute__((aligned(64)));
@@ -46,6 +59,7 @@ typedef struct {
     float v_eff[N_GRID]   __attribute__((aligned(64)));
     float v_fmt[N_GRID]   __attribute__((aligned(64)));
     float v_wca[N_GRID]   __attribute__((aligned(64)));
+    float pad_buf[N_GRID + 2 * MAX_K_HALF] __attribute__((aligned(64)));
 
     // FMT Weighted Densities n[6][N_GRID] and functional derivatives df_dn[6][N_GRID]
     // 0: n0, 1: n1, 2: n2, 3: n3, 4: nv1, 5: nv2
@@ -153,7 +167,8 @@ static inline void init_cdft_context(CDFT_Env_Context* ctx, const FluidCDFTParam
     float R = sigma * 0.5f;
 
     int k_half = (int)ceilf(R / dz) + 1;
-    if (k_half >= N_GRID / 2) k_half = N_GRID / 2 - 1;
+    if (k_half > MAX_K_HALF) k_half = MAX_K_HALF;
+    ctx->k_half_fmt = k_half;
 
     // 1. Analytical Cell-Integrated FMT Kernels
     for (int i = -k_half; i <= k_half; i++) {
@@ -173,6 +188,10 @@ static inline void init_cdft_context(CDFT_Env_Context* ctx, const FluidCDFTParam
             ctx->w3[idx] = int_w3 / dz;
             ctx->w2[idx] = int_w2 / dz;
             ctx->wv2[idx] = int_wv2 / dz;
+
+            ctx->w3_sym[i + k_half] = int_w3 / dz;
+            ctx->w2_sym[i + k_half] = int_w2 / dz;
+            ctx->wv2_sym[i + k_half] = int_wv2 / dz;
         }
     }
 
@@ -183,12 +202,18 @@ static inline void init_cdft_context(CDFT_Env_Context* ctx, const FluidCDFTParam
         ctx->w0[i] = ctx->w2[i] / denom_4piR2;
         ctx->wv1[i] = ctx->wv2[i] / denom_4piR;
     }
+    for (int k = 0; k <= 2 * k_half; k++) {
+        ctx->w1_sym[k] = ctx->w2_sym[k] / denom_4piR;
+        ctx->w0_sym[k] = ctx->w2_sym[k] / denom_4piR2;
+        ctx->wv1_sym[k] = ctx->wv2_sym[k] / denom_4piR;
+    }
 
     // 2. Analytical 1D WCA Attractive Dispersion Kernel
     float r_cut = 5.0f * sigma;
     float r_min = powf(2.0f, 1.0f / 6.0f) * sigma;
     int att_half = (int)ceilf(r_cut / dz) + 1;
-    if (att_half >= N_GRID / 2) att_half = N_GRID / 2 - 1;
+    if (att_half > MAX_K_HALF) att_half = MAX_K_HALF;
+    ctx->k_half_att = att_half;
 
     for (int i = -att_half; i <= att_half; i++) {
         int idx = (i + N_GRID) % N_GRID;
@@ -204,6 +229,7 @@ static inline void init_cdft_context(CDFT_Env_Context* ctx, const FluidCDFTParam
                 v_1d = 8.0f * (float)M_PI * eps_k * (-(powf(sigma, 12.0f) / (10.0f * powf(z, 10.0f))) + (powf(sigma, 6.0f) / (4.0f * powf(z, 4.0f))));
             }
             ctx->wca_kernel[idx] = v_1d * dz / params->temperature_k; // in k_B * T units
+            ctx->wca_sym[i + att_half] = v_1d * dz / params->temperature_k;
         }
     }
 
@@ -252,15 +278,26 @@ static inline void init_cdft_context(CDFT_Env_Context* ctx, const FluidCDFTParam
 }
 
 // -------------------------------------------------------------
-// Vectorized SIMD 1D Convolution
+// Vectorized SIMD 1D Zero-Padded Linear Bounded Convolution
+// (Slit hard wall boundary truncation without circular wrap-around)
 // -------------------------------------------------------------
-static inline void simd_conv1d_128(const float* restrict input, const float* restrict kernel, float* restrict output) {
-    #pragma omp simd aligned(input, kernel, output : 64)
+static inline void simd_conv1d_bounded(
+    const float* restrict input,
+    const float* restrict kernel_sym,
+    int k_half,
+    float* restrict output,
+    float* restrict pad_buf
+) {
+    memset(pad_buf, 0, k_half * sizeof(float));
+    memcpy(&pad_buf[k_half], input, N_GRID * sizeof(float));
+    memset(&pad_buf[k_half + N_GRID], 0, k_half * sizeof(float));
+
     for (int i = 0; i < N_GRID; i++) {
         float sum = 0.0f;
-        for (int j = 0; j < N_GRID; j++) {
-            int idx = (i - j + N_GRID) % N_GRID;
-            sum += input[idx] * kernel[j];
+        const float* in_ptr = &pad_buf[i];
+        #pragma omp simd reduction(+:sum)
+        for (int k = 0; k <= 2 * k_half; k++) {
+            sum += in_ptr[2 * k_half - k] * kernel_sym[k];
         }
         output[i] = sum;
     }
@@ -281,17 +318,19 @@ static inline CDFT_Result solve_cdft_pufferlib_step(CDFT_Env_Context* ctx, const
 
     float max_diff = 1.0f;
     int iter = 0;
+    int k_fmt = ctx->k_half_fmt;
+    int k_att = ctx->k_half_att;
 
     while (max_diff > CDFT_TOLERANCE && iter < MAX_CDFT_ITERS) {
         max_diff = 0.0f;
 
-        // A. Forward FMT Convolutions
-        simd_conv1d_128(ctx->rho, ctx->w0, ctx->n[0]);
-        simd_conv1d_128(ctx->rho, ctx->w1, ctx->n[1]);
-        simd_conv1d_128(ctx->rho, ctx->w2, ctx->n[2]);
-        simd_conv1d_128(ctx->rho, ctx->w3, ctx->n[3]);
-        simd_conv1d_128(ctx->rho, ctx->wv1, ctx->n[4]);
-        simd_conv1d_128(ctx->rho, ctx->wv2, ctx->n[5]);
+        // A. Forward FMT Bounded Convolutions
+        simd_conv1d_bounded(ctx->rho, ctx->w0_sym, k_fmt, ctx->n[0], ctx->pad_buf);
+        simd_conv1d_bounded(ctx->rho, ctx->w1_sym, k_fmt, ctx->n[1], ctx->pad_buf);
+        simd_conv1d_bounded(ctx->rho, ctx->w2_sym, k_fmt, ctx->n[2], ctx->pad_buf);
+        simd_conv1d_bounded(ctx->rho, ctx->w3_sym, k_fmt, ctx->n[3], ctx->pad_buf);
+        simd_conv1d_bounded(ctx->rho, ctx->wv1_sym, k_fmt, ctx->n[4], ctx->pad_buf);
+        simd_conv1d_bounded(ctx->rho, ctx->wv2_sym, k_fmt, ctx->n[5], ctx->pad_buf);
 
         // B. Rosenfeld FMT Free Energy Density Derivatives (df/dn_alpha)
         #pragma omp simd
@@ -321,30 +360,30 @@ static inline CDFT_Result solve_cdft_pufferlib_step(CDFT_Env_Context* ctx, const
             ctx->df_dn[5][i] = (-nv1 / one_m_n3) - (n2 * nv2) / (4.0f * (float)M_PI * one_m_n3_2);
         }
 
-        // C. Reverse Convolutions to Accumulate V_FMT
+        // C. Reverse Bounded Convolutions to Accumulate V_FMT
         memset(ctx->v_fmt, 0, sizeof(ctx->v_fmt));
         float conv_buf[N_GRID] __attribute__((aligned(64)));
 
-        simd_conv1d_128(ctx->df_dn[0], ctx->w0, conv_buf);
+        simd_conv1d_bounded(ctx->df_dn[0], ctx->w0_sym, k_fmt, conv_buf, ctx->pad_buf);
         for (int i = 0; i < N_GRID; i++) ctx->v_fmt[i] += conv_buf[i];
 
-        simd_conv1d_128(ctx->df_dn[1], ctx->w1, conv_buf);
+        simd_conv1d_bounded(ctx->df_dn[1], ctx->w1_sym, k_fmt, conv_buf, ctx->pad_buf);
         for (int i = 0; i < N_GRID; i++) ctx->v_fmt[i] += conv_buf[i];
 
-        simd_conv1d_128(ctx->df_dn[2], ctx->w2, conv_buf);
+        simd_conv1d_bounded(ctx->df_dn[2], ctx->w2_sym, k_fmt, conv_buf, ctx->pad_buf);
         for (int i = 0; i < N_GRID; i++) ctx->v_fmt[i] += conv_buf[i];
 
-        simd_conv1d_128(ctx->df_dn[3], ctx->w3, conv_buf);
+        simd_conv1d_bounded(ctx->df_dn[3], ctx->w3_sym, k_fmt, conv_buf, ctx->pad_buf);
         for (int i = 0; i < N_GRID; i++) ctx->v_fmt[i] += conv_buf[i];
 
-        simd_conv1d_128(ctx->df_dn[4], ctx->wv1, conv_buf);
+        simd_conv1d_bounded(ctx->df_dn[4], ctx->wv1_sym, k_fmt, conv_buf, ctx->pad_buf);
         for (int i = 0; i < N_GRID; i++) ctx->v_fmt[i] -= conv_buf[i]; // Vector reverse parity
 
-        simd_conv1d_128(ctx->df_dn[5], ctx->wv2, conv_buf);
+        simd_conv1d_bounded(ctx->df_dn[5], ctx->wv2_sym, k_fmt, conv_buf, ctx->pad_buf);
         for (int i = 0; i < N_GRID; i++) ctx->v_fmt[i] -= conv_buf[i];
 
-        // D. WCA Attractive Dispersion Convolution
-        simd_conv1d_128(ctx->rho, ctx->wca_kernel, ctx->v_wca);
+        // D. WCA Attractive Dispersion Bounded Convolution
+        simd_conv1d_bounded(ctx->rho, ctx->wca_sym, k_att, ctx->v_wca, ctx->pad_buf);
 
         // E. Total Effective Potential & Picard Mixing
         #pragma omp simd

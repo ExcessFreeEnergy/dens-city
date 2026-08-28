@@ -36,6 +36,8 @@ typedef struct {
     float min_wall_pressure_bar; // Target lower bound for wall contact pressure (e.g. 10.0 bar)
     float max_molecular_weight;  // Maximum molecular weight ceiling (e.g. 850.0 amu)
     int min_valency;             // Minimum reactive crosslinking sites required (e.g. 2)
+    float sa_threshold;          // SA score penalty threshold (e.g. 4.5)
+    float sa_penalty_slope;      // SA score excess penalty slope (e.g. 2.0)
 } TargetSpec;
 
 // Required PufferLib Log struct (all floats, n last)
@@ -50,6 +52,8 @@ typedef struct {
     float p_wall;
     float omega_solv;
     float valid_molecules;
+    float sa_score;
+    float r_sa_penalty;
     float n; // Required as last field
 } Log;
 
@@ -108,13 +112,19 @@ static inline void compute_action_mask(Env* env) {
     bool port_has_valid_frag[MAX_PORTS] = {false};
     bool frag_has_valid_port[NUM_FRAGMENT_CHOICES] = {false};
 
+    // Precompute 128-bit adjacency masks for all atoms in graph
+    Bitmask128 adj[MAX_ATOMS];
+    compute_graph_adjacency_128(&env->graph, adj);
+
     // Evaluate pair-wise feasibility across all open ports and fragment choices
     for (int p = 0; p < env->graph.num_ports; p++) {
         if (env->graph.ports[p].state != PORT_STATE_EMPTY) continue;
         empty_port_count++;
+        int origin = env->graph.ports[p].origin_atom;
+        const Bitmask128* origin_adj = (origin >= 0 && origin < MAX_ATOMS) ? &adj[origin] : NULL;
 
         for (int f = 0; f < NUM_FRAGMENT_CHOICES; f++) {
-            if (is_attachment_valid(&env->graph, p, f, env->targets.max_molecular_weight, NULL, NULL, NULL)) {
+            if (is_attachment_valid_with_adj(&env->graph, p, f, env->targets.max_molecular_weight, NULL, NULL, NULL, origin_adj)) {
                 port_has_valid_frag[p] = true;
                 frag_has_valid_port[f] = true;
             }
@@ -198,8 +208,6 @@ static inline void compute_observations(Env* env) {
     obs[idx++] = env->targets.min_wall_pressure_bar / 100.0f;
     obs[idx++] = env->targets.max_molecular_weight / 1000.0f;
     obs[idx++] = (float)env->targets.min_valency / 4.0f;
-
-    compute_action_mask(env);
 }
 
 // -------------------------------------------------------------
@@ -223,9 +231,12 @@ static inline void c_reset(Env* env) {
         env->targets.min_wall_pressure_bar = 15.0f;
         env->targets.max_molecular_weight = 850.0f;
         env->targets.min_valency = 2;
+        env->targets.sa_threshold = 4.5f;
+        env->targets.sa_penalty_slope = 2.0f;
     }
 
     compute_observations(env);
+    compute_action_mask(env);
 }
 
 // -------------------------------------------------------------
@@ -357,6 +368,16 @@ static inline void c_step(Env* env) {
             r_penalties += 5.0f * mw_ratio + 15.0f * (mw_ratio * mw_ratio);
         }
 
+        // Synthetic Accessibility (SA) Score Penalty
+        float r_sa = 0.0f;
+        float sa_score = env->mechanics.sa_score;
+        if (env->targets.sa_threshold > 0.0f && sa_score > env->targets.sa_threshold) {
+            float sa_excess = sa_score - env->targets.sa_threshold;
+            float slope = (env->targets.sa_penalty_slope > 0.0f) ? env->targets.sa_penalty_slope : 2.0f;
+            r_sa = -slope * sa_excess;
+            r_penalties -= r_sa; // Subtracting negative penalty adds to total penalties
+        }
+
         float total_reward = r_thermo + r_elasticity + r_tensile + r_toughness + r_lightweight - r_penalties;
         env->rewards[0] += total_reward;
 
@@ -368,6 +389,8 @@ static inline void c_step(Env* env) {
         env->log.r_lightweight += r_lightweight;
         env->log.p_wall = env->cdft_res.p_wall_bar;
         env->log.omega_solv = env->cdft_res.omega_solv_kcal;
+        env->log.sa_score = sa_score;
+        env->log.r_sa_penalty += r_sa;
         env->log.score += total_reward;
         env->log.perf += (total_reward > 0.0f) ? 1.0f : 0.0f;
 
@@ -380,9 +403,11 @@ static inline void c_step(Env* env) {
         env->terminal_cdft_res = env->cdft_res;
         c_reset(env);
         env->cdft_res = env->terminal_cdft_res;
+        return;
     }
 
     compute_observations(env);
+    compute_action_mask(env);
 }
 
 // -------------------------------------------------------------

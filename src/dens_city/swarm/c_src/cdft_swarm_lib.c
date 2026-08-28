@@ -152,3 +152,174 @@ int env_get_atom_exclusions(Env* env, float* excl_out) {
     compute_12_13_exclusions(g, excl_out);
     return g->num_atoms;
 }
+
+// -------------------------------------------------------------
+// Vectorized Multi-Environment Batch Engine (PufferLib OpenMP)
+// -------------------------------------------------------------
+#include <omp.h>
+
+typedef struct {
+    int num_envs;
+    Env** envs;
+    float* obs;
+    float* actions;
+    float* rewards;
+    unsigned char* terminals;
+    unsigned char* action_masks;
+    float* p_walls;
+    float* omega_solvs;
+    float* molecular_weights;
+    float* rotatable_fractions;
+    float* pmi_linearities;
+    float* sa_scores;
+    float* r_sa_penalties;
+    int* converged;
+} VecSwarm;
+
+VecSwarm* vec_swarm_create(int num_envs, unsigned int seed) {
+    VecSwarm* v = (VecSwarm*)malloc(sizeof(VecSwarm));
+    if (!v) return NULL;
+    v->num_envs = num_envs;
+    v->envs = (Env**)malloc(num_envs * sizeof(Env*));
+    v->obs = (float*)aligned_alloc(64, (size_t)num_envs * TOTAL_OBS_SIZE * sizeof(float));
+    v->actions = (float*)aligned_alloc(64, (size_t)num_envs * 2 * sizeof(float));
+    v->rewards = (float*)aligned_alloc(64, (size_t)num_envs * 1 * sizeof(float));
+    v->terminals = (unsigned char*)aligned_alloc(64, (size_t)num_envs * 1 * sizeof(unsigned char));
+    v->action_masks = (unsigned char*)aligned_alloc(64, (size_t)num_envs * TOTAL_ACTION_MASK_SIZE * sizeof(unsigned char));
+    v->p_walls = (float*)aligned_alloc(64, (size_t)num_envs * sizeof(float));
+    v->omega_solvs = (float*)aligned_alloc(64, (size_t)num_envs * sizeof(float));
+    v->molecular_weights = (float*)aligned_alloc(64, (size_t)num_envs * sizeof(float));
+    v->rotatable_fractions = (float*)aligned_alloc(64, (size_t)num_envs * sizeof(float));
+    v->pmi_linearities = (float*)aligned_alloc(64, (size_t)num_envs * sizeof(float));
+    v->sa_scores = (float*)aligned_alloc(64, (size_t)num_envs * sizeof(float));
+    v->r_sa_penalties = (float*)aligned_alloc(64, (size_t)num_envs * sizeof(float));
+    v->converged = (int*)aligned_alloc(64, (size_t)num_envs * sizeof(int));
+
+    memset(v->obs, 0, (size_t)num_envs * TOTAL_OBS_SIZE * sizeof(float));
+    memset(v->actions, 0, (size_t)num_envs * 2 * sizeof(float));
+    memset(v->rewards, 0, (size_t)num_envs * 1 * sizeof(float));
+    memset(v->terminals, 0, (size_t)num_envs * 1 * sizeof(unsigned char));
+    memset(v->action_masks, 0, (size_t)num_envs * TOTAL_ACTION_MASK_SIZE * sizeof(unsigned char));
+    memset(v->p_walls, 0, (size_t)num_envs * sizeof(float));
+    memset(v->omega_solvs, 0, (size_t)num_envs * sizeof(float));
+    memset(v->molecular_weights, 0, (size_t)num_envs * sizeof(float));
+    memset(v->rotatable_fractions, 0, (size_t)num_envs * sizeof(float));
+    memset(v->pmi_linearities, 0, (size_t)num_envs * sizeof(float));
+    memset(v->sa_scores, 0, (size_t)num_envs * sizeof(float));
+    memset(v->r_sa_penalties, 0, (size_t)num_envs * sizeof(float));
+    memset(v->converged, 0, (size_t)num_envs * sizeof(int));
+
+    for (int i = 0; i < num_envs; i++) {
+        v->envs[i] = (Env*)aligned_alloc(64, sizeof(Env));
+        memset(v->envs[i], 0, sizeof(Env));
+        v->envs[i]->num_agents = 1;
+        v->envs[i]->rng = seed + (unsigned int)i * 1000 + 1;
+        v->envs[i]->observations = &v->obs[i * TOTAL_OBS_SIZE];
+        v->envs[i]->actions = &v->actions[i * 2];
+        v->envs[i]->rewards = &v->rewards[i];
+        v->envs[i]->terminals = &v->terminals[i];
+        v->envs[i]->action_mask = &v->action_masks[i * TOTAL_ACTION_MASK_SIZE];
+        c_reset(v->envs[i]);
+    }
+    return v;
+}
+
+void vec_swarm_set_targets(VecSwarm* v, float elast, float tens, float tough, float light, float max_solv, float min_pwall, float max_mw, int min_val, float sa_thresh, float sa_slope) {
+    if (!v) return;
+    for (int i = 0; i < v->num_envs; i++) {
+        v->envs[i]->targets.target_elasticity = elast;
+        v->envs[i]->targets.target_tensile = tens;
+        v->envs[i]->targets.target_toughness = tough;
+        v->envs[i]->targets.target_lightweight = light;
+        v->envs[i]->targets.max_solvation_kcal = max_solv;
+        v->envs[i]->targets.min_wall_pressure_bar = min_pwall;
+        v->envs[i]->targets.max_molecular_weight = max_mw;
+        v->envs[i]->targets.min_valency = min_val;
+        v->envs[i]->targets.sa_threshold = sa_thresh;
+        v->envs[i]->targets.sa_penalty_slope = sa_slope;
+    }
+}
+
+void vec_swarm_reset(VecSwarm* v) {
+    if (!v) return;
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < v->num_envs; i++) {
+        c_reset(v->envs[i]);
+    }
+}
+
+void vec_swarm_step(VecSwarm* v) {
+    if (!v) return;
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < v->num_envs; i++) {
+        c_step(v->envs[i]);
+        Env* env = v->envs[i];
+        if (env->terminal_graph.num_atoms > 0) {
+            v->p_walls[i] = env->terminal_cdft_res.p_wall_bar;
+            v->omega_solvs[i] = env->terminal_cdft_res.omega_solv_kcal;
+            v->molecular_weights[i] = env->terminal_mechanics.molecular_weight;
+            v->rotatable_fractions[i] = env->terminal_mechanics.rotatable_bond_fraction;
+            v->pmi_linearities[i] = env->terminal_mechanics.pmi_linearity;
+            v->sa_scores[i] = env->terminal_mechanics.sa_score;
+            float r_sa = 0.0f;
+            if (env->targets.sa_threshold > 0.0f && env->terminal_mechanics.sa_score > env->targets.sa_threshold) {
+                float slope = (env->targets.sa_penalty_slope > 0.0f) ? env->targets.sa_penalty_slope : 2.0f;
+                r_sa = -slope * (env->terminal_mechanics.sa_score - env->targets.sa_threshold);
+            }
+            v->r_sa_penalties[i] = r_sa;
+            v->converged[i] = env->terminal_cdft_res.converged;
+        } else {
+            v->p_walls[i] = env->cdft_res.p_wall_bar;
+            v->omega_solvs[i] = env->cdft_res.omega_solv_kcal;
+            v->molecular_weights[i] = env->mechanics.molecular_weight;
+            v->rotatable_fractions[i] = env->mechanics.rotatable_bond_fraction;
+            v->pmi_linearities[i] = env->mechanics.pmi_linearity;
+            v->sa_scores[i] = env->mechanics.sa_score;
+            float r_sa = 0.0f;
+            if (env->targets.sa_threshold > 0.0f && env->mechanics.sa_score > env->targets.sa_threshold) {
+                float slope = (env->targets.sa_penalty_slope > 0.0f) ? env->targets.sa_penalty_slope : 2.0f;
+                r_sa = -slope * (env->mechanics.sa_score - env->targets.sa_threshold);
+            }
+            v->r_sa_penalties[i] = r_sa;
+            v->converged[i] = env->cdft_res.converged;
+        }
+    }
+}
+
+void vec_swarm_free(VecSwarm* v) {
+    if (!v) return;
+    for (int i = 0; i < v->num_envs; i++) {
+        if (v->envs[i]) free(v->envs[i]);
+    }
+    if (v->envs) free(v->envs);
+    if (v->obs) free(v->obs);
+    if (v->actions) free(v->actions);
+    if (v->rewards) free(v->rewards);
+    if (v->terminals) free(v->terminals);
+    if (v->action_masks) free(v->action_masks);
+    if (v->p_walls) free(v->p_walls);
+    if (v->omega_solvs) free(v->omega_solvs);
+    if (v->molecular_weights) free(v->molecular_weights);
+    if (v->rotatable_fractions) free(v->rotatable_fractions);
+    if (v->pmi_linearities) free(v->pmi_linearities);
+    if (v->sa_scores) free(v->sa_scores);
+    if (v->r_sa_penalties) free(v->r_sa_penalties);
+    if (v->converged) free(v->converged);
+    free(v);
+}
+
+float* vec_swarm_get_obs(VecSwarm* v) { return v ? v->obs : NULL; }
+float* vec_swarm_get_actions(VecSwarm* v) { return v ? v->actions : NULL; }
+float* vec_swarm_get_rewards(VecSwarm* v) { return v ? v->rewards : NULL; }
+unsigned char* vec_swarm_get_terminals(VecSwarm* v) { return v ? v->terminals : NULL; }
+unsigned char* vec_swarm_get_action_masks(VecSwarm* v) { return v ? v->action_masks : NULL; }
+float* vec_swarm_get_p_walls(VecSwarm* v) { return v ? v->p_walls : NULL; }
+float* vec_swarm_get_omega_solvs(VecSwarm* v) { return v ? v->omega_solvs : NULL; }
+float* vec_swarm_get_molecular_weights(VecSwarm* v) { return v ? v->molecular_weights : NULL; }
+float* vec_swarm_get_rotatable_fractions(VecSwarm* v) { return v ? v->rotatable_fractions : NULL; }
+float* vec_swarm_get_pmi_linearities(VecSwarm* v) { return v ? v->pmi_linearities : NULL; }
+float* vec_swarm_get_sa_scores(VecSwarm* v) { return v ? v->sa_scores : NULL; }
+float* vec_swarm_get_r_sa_penalties(VecSwarm* v) { return v ? v->r_sa_penalties : NULL; }
+int* vec_swarm_get_converged(VecSwarm* v) { return v ? v->converged : NULL; }
+Env* vec_swarm_get_env_ptr(VecSwarm* v, int i) { return (v && i >= 0 && i < v->num_envs) ? v->envs[i] : NULL; }
+

@@ -734,6 +734,37 @@ static inline bool check_valence_saturation(const MolecularGraph* graph, int por
     return true;
 }
 
+#include <stdint.h>
+
+typedef struct {
+    uint64_t w[2];
+} Bitmask128;
+
+static inline void bitmask128_set(Bitmask128* m, int idx) {
+    if (idx >= 0 && idx < 128) {
+        m->w[idx / 64] |= (1ULL << (idx % 64));
+    }
+}
+
+static inline bool bitmask128_get(const Bitmask128* m, int idx) {
+    if (idx >= 0 && idx < 128) {
+        return (m->w[idx / 64] & (1ULL << (idx % 64))) != 0;
+    }
+    return false;
+}
+
+static inline void compute_graph_adjacency_128(const MolecularGraph* graph, Bitmask128 adj[MAX_ATOMS]) {
+    memset(adj, 0, sizeof(Bitmask128) * MAX_ATOMS);
+    for (int b = 0; b < graph->num_bonds; b++) {
+        int u = graph->bonds[b].atom_u;
+        int v = graph->bonds[b].atom_v;
+        if (u >= 0 && u < MAX_ATOMS && v >= 0 && v < MAX_ATOMS) {
+            bitmask128_set(&adj[u], v);
+            bitmask128_set(&adj[v], u);
+        }
+    }
+}
+
 // Computes SE(3) rigid forward-projection coordinates for a candidate fragment on a target port
 static inline void compute_fragment_transformed_positions(
     const AttachmentPort* p_a,
@@ -774,20 +805,22 @@ static inline void compute_fragment_transformed_positions(
     *out_centroid = c_transformed;
 }
 
-// 2. Hard-Sphere Steric Probing Mask: Rejects actions if distance r < 1.5 Å (severe 1-4 collision)
+// 2. Hierarchical 3-Level Hard-Sphere Steric Probing Mask
 static inline bool check_hard_sphere_collision(
     const MolecularGraph* graph,
     int port_idx,
     const FragmentTemplate* ft,
     const Vec3* transformed_pos,
-    Vec3 frag_centroid
+    Vec3 frag_centroid,
+    const Bitmask128* origin_adj_mask
 ) {
     const AttachmentPort* p_a = &graph->ports[port_idx];
+    int origin_atom = p_a->origin_atom;
 
-    // Check fragment centroid distance against all existing atoms (excluding direct origin atom)
+    // Level 1: Centroid proximity rejection
     if (ft->num_atoms > 1) {
         for (int j = 0; j < graph->num_atoms; j++) {
-            if (j == p_a->origin_atom) continue;
+            if (j == origin_atom) continue;
             float c_dist = vec3_dist(frag_centroid, graph->atoms[j].pos);
             if (c_dist < 1.5f) {
                 return false; // Severe centroid clash
@@ -795,30 +828,25 @@ static inline bool check_hard_sphere_collision(
         }
     }
 
-    // Check all atom-atom pairwise clearances
+    // Level 2 & 3: Pairwise distance check with Bitmask 1-3 exclusion
     for (int i = 0; i < ft->num_atoms; i++) {
+        Vec3 pos_i = transformed_pos[i];
+        float sigma_i = ft->atoms[i].sigma;
+
         for (int j = 0; j < graph->num_atoms; j++) {
-            if (j == p_a->origin_atom) continue;
+            if (j == origin_atom) continue;
 
-            // Check if j is a direct neighbor of the origin atom (1-3 bond angle check)
-            bool is_direct_nbr = false;
-            for (int b = 0; b < graph->num_bonds; b++) {
-                if ((graph->bonds[b].atom_u == p_a->origin_atom && graph->bonds[b].atom_v == j) ||
-                    (graph->bonds[b].atom_v == p_a->origin_atom && graph->bonds[b].atom_u == j)) {
-                    is_direct_nbr = true;
-                    break;
-                }
-            }
-
-            float dist = vec3_dist(transformed_pos[i], graph->atoms[j].pos);
+            float dist = vec3_dist(pos_i, graph->atoms[j].pos);
 
             // Universal 1.5 Å hard-sphere collision floor (guaranteed severe 1-4 VdW collision)
             if (dist < 1.5f) {
                 return false;
             }
 
+            // Level 2: Bitmask 1-3 exclusion (is j a direct neighbor of origin_atom?)
+            bool is_direct_nbr = origin_adj_mask ? bitmask128_get(origin_adj_mask, j) : false;
             if (!is_direct_nbr) {
-                float min_dist = 0.65f * 0.5f * (ft->atoms[i].sigma + graph->atoms[j].sigma);
+                float min_dist = 0.65f * 0.5f * (sigma_i + graph->atoms[j].sigma);
                 if (dist < min_dist) {
                     return false;
                 }
@@ -881,14 +909,15 @@ static inline bool check_heteroatom_isolation(const MolecularGraph* graph, int p
 }
 
 // Unified attachment validation combining all 4 Universal C-Level Action Masks
-static inline bool is_attachment_valid(
+static inline bool is_attachment_valid_with_adj(
     const MolecularGraph* graph,
     int port_idx,
     int frag_idx,
     float max_mw,
     Vec3* out_pos,
     Mat3* out_R,
-    Vec3* out_trans
+    Vec3* out_trans,
+    const Bitmask128* origin_adj_mask
 ) {
     if (port_idx < 0 || port_idx >= graph->num_ports) return false;
     if (graph->ports[port_idx].state != PORT_STATE_EMPTY) return false;
@@ -907,14 +936,26 @@ static inline bool is_attachment_valid(
     // 3. Heteroatom Isolation
     if (!check_heteroatom_isolation(graph, port_idx, &ft)) return false;
 
-    // 4. Hard-Sphere Steric Probing
+    // 4. Hard-Sphere Steric Probing with 128-bit bitmask 1-3 exclusion
     Vec3 transformed_pos[16];
     Mat3 R;
     Vec3 trans;
     Vec3 centroid;
     compute_fragment_transformed_positions(&graph->ports[port_idx], &ft, transformed_pos, &R, &trans, &centroid);
 
-    if (!check_hard_sphere_collision(graph, port_idx, &ft, transformed_pos, centroid)) {
+    Bitmask128 local_adj;
+    const Bitmask128* mask_to_use = origin_adj_mask;
+    if (!mask_to_use) {
+        int origin = graph->ports[port_idx].origin_atom;
+        memset(&local_adj, 0, sizeof(Bitmask128));
+        for (int b = 0; b < graph->num_bonds; b++) {
+            if (graph->bonds[b].atom_u == origin) bitmask128_set(&local_adj, graph->bonds[b].atom_v);
+            else if (graph->bonds[b].atom_v == origin) bitmask128_set(&local_adj, graph->bonds[b].atom_u);
+        }
+        mask_to_use = &local_adj;
+    }
+
+    if (!check_hard_sphere_collision(graph, port_idx, &ft, transformed_pos, centroid, mask_to_use)) {
         return false;
     }
 
@@ -925,6 +966,18 @@ static inline bool is_attachment_valid(
     if (out_trans) *out_trans = trans;
 
     return true;
+}
+
+static inline bool is_attachment_valid(
+    const MolecularGraph* graph,
+    int port_idx,
+    int frag_idx,
+    float max_mw,
+    Vec3* out_pos,
+    Mat3* out_R,
+    Vec3* out_trans
+) {
+    return is_attachment_valid_with_adj(graph, port_idx, frag_idx, max_mw, out_pos, out_R, out_trans, NULL);
 }
 
 // -------------------------------------------------------------
