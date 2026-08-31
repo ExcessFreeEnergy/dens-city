@@ -107,7 +107,7 @@ flowchart TD
   - `regularize_energy(energy, e_high=None, e_max=None)`: Regularizes high-energy configurations using instance thresholds.
   - `eval_energy`: JIT-compiled function wrapper (`TinyJit(self.__call__)`).
 - **`EGNNMicroscopicEnergy` & `EGNNForceField`**:
-  - `EGNNForceField(n_layers=3, hidden_dim=64, in_node_features=6)`: $E(n)$-equivariant message passing neural network predicting SE(3)-invariant microscopic potential energies and equivariant analytical Cartesian forces.
+  - `EGNNForceField(num_layers=7, hidden_dim=128, r_cut=5.0)`: 7-layer $E(n)$-equivariant message passing neural network predicting SE(3)-invariant microscopic potential energies and equivariant analytical Cartesian forces with smooth cosine radial cutoff ($r_{\rm cut}=5.0\text{ \AA}$) and active neighbor degree normalization to guarantee extensive $O(N)$ energy scaling.
 
 ### 3.3 `lbfgs.py` — Batched Quasi-Newton (L-BFGS) GPU Geometry Relaxation
 - **`BatchedLBFGS`**:

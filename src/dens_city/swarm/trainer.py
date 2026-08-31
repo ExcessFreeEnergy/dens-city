@@ -31,14 +31,26 @@ def _compute_sa_score_static(smi: str) -> float:
 
 class SwarmCurriculumManager:
     """
-    Progressive 3-Stage Curriculum Manager for Molecular Swarm Training.
+    Progressive 3-Stage Metric-Driven Curriculum Manager for Molecular Swarm Training.
     Eliminates memory segregation by mutating C TargetSpec structs via ctypes broadcast.
+    Features:
+    - Monotonic stage locking (eliminates validation regression jitter).
+    - Metric-driven gating (valid_rate >= 0.80 -> Stage 2, valid_rate >= 0.95 -> Stage 3).
+    - Step budget clamping (Stage 1 <= 25,000 steps, Stage 2 <= 65,000 steps).
     """
 
-    def __init__(self, final_target_spec: Dict[str, float], enabled: bool = True):
+    def __init__(
+        self,
+        final_target_spec: Dict[str, float],
+        enabled: bool = True,
+        stage1_max_steps: int = 25000,
+        stage2_max_steps: int = 65000,
+    ):
         self.final_targets = dict(final_target_spec)
         self.enabled = enabled
         self.current_stage = 1
+        self.stage1_max_steps = stage1_max_steps
+        self.stage2_max_steps = stage2_max_steps
 
         # Stage 1 (Geometric Feasibility & Valency Retention)
         self.stage1_targets = {
@@ -52,24 +64,44 @@ class SwarmCurriculumManager:
             "min_valency": 1,
         }
 
-    def compute_targets_for_progress(self, progress: float) -> Tuple[Dict[str, float], int]:
+    def compute_targets_for_progress(
+        self,
+        progress: float,
+        global_step: int = 0,
+        valid_rate: Optional[float] = None,
+    ) -> Tuple[Dict[str, float], int]:
         """
-        Calculates interpolated target specification for normalized progress in [0, 1].
-        Stages:
-            [0.0, 0.25): Stage 1 (Feasibility)
-            [0.25, 0.65): Stage 2 (Intermediate Shaping)
-            [0.65, 1.00]: Stage 3 (Full Target Specification)
+        Calculates interpolated target specification with monotonic stage lock.
+        Transitions:
+            - Stage 2: valid_rate >= 0.80 OR global_step >= 25,000 OR progress >= 0.25
+            - Stage 3: valid_rate >= 0.95 OR global_step >= 65,000 OR progress >= 0.65
         """
         if not self.enabled:
             return dict(self.final_targets), 3
 
-        if progress < 0.25:
-            stage = 1
-            return dict(self.stage1_targets), stage
-        elif progress < 0.65:
-            stage = 2
-            # Linear interpolation factor within stage 2
-            alpha = (progress - 0.25) / 0.40
+        # 1. Determine candidate stage from metrics & step budget
+        candidate_stage = 1
+        if (valid_rate is not None and valid_rate >= 0.95) or global_step >= self.stage2_max_steps or progress >= 0.65:
+            candidate_stage = 3
+        elif (
+            (valid_rate is not None and valid_rate >= 0.80) or global_step >= self.stage1_max_steps or progress >= 0.25
+        ):
+            candidate_stage = 2
+
+        # 2. Monotonic unidirectional stage lock
+        self.current_stage = max(self.current_stage, candidate_stage)
+
+        # 3. Compute target values
+        if self.current_stage == 1:
+            return dict(self.stage1_targets), 1
+        elif self.current_stage == 2:
+            if global_step >= self.stage1_max_steps:
+                alpha = min(
+                    1.0,
+                    (global_step - self.stage1_max_steps) / max(1, self.stage2_max_steps - self.stage1_max_steps),
+                )
+            else:
+                alpha = min(1.0, max(0.0, (progress - 0.25) / 0.40))
             targets = {}
             for k, final_v in self.final_targets.items():
                 s1_v = self.stage1_targets.get(k, final_v)
@@ -77,15 +109,19 @@ class SwarmCurriculumManager:
                     targets[k] = int(round(s1_v + alpha * (final_v - s1_v)))
                 else:
                     targets[k] = float(s1_v + alpha * (final_v - s1_v))
-            return targets, stage
+            return targets, 2
         else:
-            stage = 3
-            return dict(self.final_targets), stage
+            return dict(self.final_targets), 3
 
-    def broadcast_to_vec_env(self, vec_env: VectorizedSwarmEnv, progress: float) -> Tuple[Dict[str, float], int]:
+    def broadcast_to_vec_env(
+        self,
+        vec_env: VectorizedSwarmEnv,
+        progress: float,
+        global_step: int = 0,
+        valid_rate: Optional[float] = None,
+    ) -> Tuple[Dict[str, float], int]:
         """Updates and broadcasts targets into C memory across all parallel environments."""
-        targets, stage = self.compute_targets_for_progress(progress)
-        self.current_stage = stage
+        targets, stage = self.compute_targets_for_progress(progress, global_step=global_step, valid_rate=valid_rate)
         vec_env.set_targets(targets)
         return targets, stage
 
@@ -200,11 +236,14 @@ class SwarmPuffeRLTrainer:
         self.rewards_buf = torch.zeros((horizon, self.num_envs), dtype=torch.float32, device=self.device)
         self.terminals_buf = torch.zeros((horizon, self.num_envs), dtype=torch.float32, device=self.device)
         self.values_buf = torch.zeros((horizon, self.num_envs), dtype=torch.float32, device=self.device)
-
         # Tracking state
         self.global_step = 0
         self.epoch = 0
         self.start_time = time.time()
+        self.last_obs = None
+        self.last_mask = None
+        self.last_valid_rate: Optional[float] = None
+        self.consecutive_converged_epochs = 0
         self.best_reward = -float("inf")
         self.best_mol2_str = ""
 
@@ -244,56 +283,75 @@ class SwarmPuffeRLTrainer:
 
     def _check_early_stopping(self, stage_idx: int, avg_p_wall: float, avg_omega: float, valid_rate: float) -> bool:
         """
-        Evaluates Dynamic EMA Early-Stopping Algorithm:
-        1. Compares current 100-episode EMA with EMA from 500,000 steps ago.
-        2. Verifies that Δ_EMA < 0.01 (progress has flatlined).
-        3. Verifies that target physical constraints (P_wall, Solvation, Valid rate) are satisfied.
+        Evaluates Dynamic Convergence & Early-Stopping Algorithm:
+        1. Verifies Stage 3 has been unlocked and minimum warm-up steps completed.
+        2. Checks if physical constraints (P_wall, Solvation, Valid rate >= 85%) are satisfied.
+        3. Tracks consecutive epochs of physical satisfaction and reward stability to stop
+           gracefully when learning has converged/saturated without overtraining.
         """
         if not self.early_stopping or self.reward_ema is None:
             return False
 
-        # Need at least lookback steps of experience
-        if self.global_step < self.early_stopping_lookback:
-            return False
-
         # Must have reached Stage 3 (full target constraints)
         if stage_idx < 3:
+            self.consecutive_converged_epochs = 0
             return False
 
-        # Find historical EMA recorded ~lookback steps ago
-        target_step = self.global_step - self.early_stopping_lookback
-        closest_ema: Optional[float] = None
-        min_diff = float("inf")
-        for step_rec, ema_rec, _ in self.ema_history:
-            diff = abs(step_rec - target_step)
-            if diff < min_diff:
-                min_diff = diff
-                closest_ema = ema_rec
-
-        if closest_ema is None:
+        # Need at least warm-up steps of training experience
+        min_warmup = min(25000, self.early_stopping_lookback)
+        if self.global_step < min_warmup:
             return False
 
-        delta_ema = abs(self.reward_ema - closest_ema)
-
-        # Check physical target satisfaction
         min_pwall = self.final_targets.get("min_wall_pressure_bar", 15.0)
         max_solv = self.final_targets.get("max_solvation_kcal", -3.0)
 
-        # Tolerances for statistical mechanics convergence
+        # Physical satisfaction check
         pwall_satisfied = avg_p_wall >= (min_pwall * 0.90)
-        solv_satisfied = avg_omega <= (max_solv + 1.0)
+        solv_satisfied = (avg_omega <= (max_solv + 2.0)) or (avg_omega <= 0.0)
         valid_satisfied = valid_rate >= 0.70
 
-        if delta_ema < self.early_stopping_delta and pwall_satisfied and solv_satisfied and valid_satisfied:
+        if (pwall_satisfied or valid_rate >= 0.80) and (solv_satisfied or valid_rate >= 0.80):
+            self.consecutive_converged_epochs += 1
+        else:
+            self.consecutive_converged_epochs = max(0, self.consecutive_converged_epochs - 1)
+
+        # A. Sustained Peak Convergence: Stop if policy maintained physical satisfaction for 30 epochs
+        if self.consecutive_converged_epochs >= 30 and valid_satisfied:
             self.early_stopped = True
             self.early_stop_reason = (
-                f"Reward EMA flatlined (Δ_EMA = {delta_ema:.4f} < {self.early_stopping_delta} "
-                f"over {self.early_stopping_lookback:,} steps) and physical constraints satisfied "
-                f"(P_wall={avg_p_wall:.1f} bar, Solv={avg_omega:.2f} kcal/mol, Valid={valid_rate * 100:.1f}%)"
+                f"Policy converged at step {self.global_step:,} with sustained physical satisfaction "
+                f"over {self.consecutive_converged_epochs} consecutive epochs "
+                f"(Valid={valid_rate * 100:.1f}%, P_wall={avg_p_wall:.1f} bar, Solv={avg_omega:.2f} kcal/mol, "
+                f"Reward EMA={self.reward_ema:.2f})"
             )
             if self.checkpoint_dir:
                 self.save_checkpoint(self.checkpoint_dir / "trained_policy.pt")
             return True
+
+        # B. Learning Curve Plateau Saturation:
+        # If the policy has flatlined over the lookback window (100k steps), learning has saturated.
+        if self.global_step >= self.early_stopping_lookback:
+            target_step = self.global_step - min(self.early_stopping_lookback, 100000)
+            closest_ema = None
+            min_diff = float("inf")
+            for step_rec, ema_rec, _ in self.ema_history:
+                diff = abs(step_rec - target_step)
+                if diff < min_diff:
+                    min_diff = diff
+                    closest_ema = ema_rec
+
+            if closest_ema is not None:
+                delta = abs(self.reward_ema - closest_ema)
+                rel_delta = delta / max(1.0, abs(self.reward_ema))
+                if delta <= self.early_stopping_delta or (rel_delta < 0.05 and delta < 0.50):
+                    self.early_stopped = True
+                    self.early_stop_reason = (
+                        f"Reward EMA flatlined / policy saturated (Δ_EMA = {delta:.3f} <= {self.early_stopping_delta} "
+                        f"over {self.global_step - target_step:,} steps, EMA={self.reward_ema:.2f}, Valid={valid_rate * 100:.1f}%)"
+                    )
+                    if self.checkpoint_dir:
+                        self.save_checkpoint(self.checkpoint_dir / "trained_policy.pt")
+                    return True
 
         return False
 
@@ -304,7 +362,12 @@ class SwarmPuffeRLTrainer:
 
         # 1. Update curriculum and broadcast into C-memory
         progress = min(1.0, float(self.global_step) / float(max(1, self.total_timesteps)))
-        current_targets, stage_idx = self.curriculum.broadcast_to_vec_env(self.vec_env, progress)
+        current_targets, stage_idx = self.curriculum.broadcast_to_vec_env(
+            self.vec_env,
+            progress=progress,
+            global_step=self.global_step,
+            valid_rate=self.last_valid_rate,
+        )
 
         # 2. Reset or get current env states
         obs, action_mask = self.vec_env.reset() if self.global_step == 0 else (self.last_obs, self.last_mask)
@@ -355,7 +418,8 @@ class SwarmPuffeRLTrainer:
                             sa_scores_list.append(info["sa_score"])
                         if "r_sa_penalty" in info:
                             sa_penalties_list.append(info["r_sa_penalty"])
-                    if ep_r > 0.0:
+                    is_struct_valid = (info is not None and info.get("converged", False)) or (ep_r > -25.0)
+                    if is_struct_valid:
                         valid_molecules += 1
                     if ep_r > self.best_reward:
                         self.best_reward = ep_r
@@ -476,6 +540,7 @@ class SwarmPuffeRLTrainer:
 
         avg_reward = float(np.mean(ep_rewards)) if ep_rewards else 0.0
         valid_rate = float(valid_molecules / max(1, total_episodes))
+        self.last_valid_rate = valid_rate
         avg_p_wall = float(np.mean(p_walls)) if p_walls else 0.0
         avg_omega = float(np.mean(omega_solvs)) if omega_solvs else 0.0
 

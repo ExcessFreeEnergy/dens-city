@@ -36,11 +36,27 @@ from dens_city.utils.funnel_ranker import FunnelRanker
 from dens_city.utils.pipeline import MaterialPipelineResult, PipelineStatus
 
 
+def detect_optimal_gpu_batch_size(requested_batch_size: Optional[int] = None) -> int:
+    """Auto-detects GPU VRAM and selects optimal static power-of-2 batch size."""
+    if requested_batch_size is not None and requested_batch_size > 0:
+        return requested_batch_size
+    try:
+        if torch.cuda.is_available():
+            vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            if vram_gb >= 20.0:  # e.g. RTX 4090, A100 (24GB+)
+                return 128
+            elif vram_gb >= 12.0:  # e.g. RTX 3080/4070 (12-16GB)
+                return 64
+    except Exception:
+        pass
+    return 32
+
+
 def run_generative_funnel(
     spec: str | Path,
     train_steps: int = 5000000,
     num_candidates: int = 512,
-    batch_size: int = 512,
+    batch_size: Optional[int] = None,
     top_k: int = 20,
     out_dir: str | Path = "runs/funnel_results",
     checkpoint: Optional[str | Path] = None,
@@ -48,8 +64,8 @@ def run_generative_funnel(
     horizon: int = 16,
     learning_rate: float = 3e-4,
     hidden_size: int = 256,
-    early_stopping_lookback: int = 500000,
-    early_stopping_delta: float = 0.01,
+    early_stopping_lookback: int = 100000,
+    early_stopping_delta: float = 0.05,
     no_early_stopping: bool = False,
     no_curriculum: bool = False,
     no_sa_penalty: bool = False,
@@ -61,7 +77,8 @@ def run_generative_funnel(
     lbfgs_steps: int = 50,
     lbfgs_tol: float = 1e-3,
     enable_egnn: bool = True,
-    egnn_batch_size: int = 32,
+    egnn_relax_steps: int = 50,
+    egnn_batch_size: Optional[int] = None,
     egnn_layers: int = 7,
     egnn_weights: Optional[str | Path] = None,
     max_sa_score: float = 6.0,
@@ -71,6 +88,9 @@ def run_generative_funnel(
     """
     Executes the complete 5-stage generative molecular funnel on a single material specification.
     """
+    batch_size = detect_optimal_gpu_batch_size(batch_size)
+    egnn_batch_size = detect_optimal_gpu_batch_size(egnn_batch_size)
+
     spec_path = Path(spec)
     if not spec_path.exists():
         raise FileNotFoundError(f"Specification YAML not found at {spec_path}")
@@ -290,7 +310,13 @@ def run_generative_funnel(
             n_particles=candidate_batch.n_particles,
         )
 
-        jit_eval = egnn.get_jit_evaluator()
+        if egnn_relax_steps > 0:
+            if verbose:
+                print(f"  [EGNN] Enabling {egnn_relax_steps}-step unrolled GPU quantum geometry relaxation...")
+            jit_eval = egnn.get_jit_relaxation_evaluator(relax_steps=egnn_relax_steps)
+        else:
+            jit_eval = egnn.get_jit_evaluator()
+
         num_egnn_chunks = max(1, math.ceil(candidate_batch.num_candidates / egnn_batch_size))
 
         x_buf = Tensor.zeros(egnn_batch_size, candidate_batch.n_particles, 3, dtype=dtypes.float32).realize()
@@ -322,7 +348,13 @@ def run_generative_funnel(
             mask_buf.assign(Tensor(mask_chunk)).realize()
             mol_mask_buf.assign(Tensor(mol_mask_chunk)).realize()
 
-            u_tensor, f_tensor = jit_eval(x_buf, z_buf, mask_buf, mol_mask_buf)
+            if egnn_relax_steps > 0:
+                x_relaxed_tensor, u_tensor, f_tensor = jit_eval(x_buf, z_buf, mask_buf, mol_mask_buf)
+                x_relaxed_np = x_relaxed_tensor.numpy().astype(np.float32)
+                coords_relaxed_all[start_i:end_i] = x_relaxed_np[:count_i]
+            else:
+                u_tensor, f_tensor = jit_eval(x_buf, z_buf, mask_buf, mol_mask_buf)
+
             u_np = u_tensor.numpy().astype(np.float32)
             f_np = f_tensor.numpy().astype(np.float32)
 
@@ -407,11 +439,12 @@ def run_all_specs_funnel_benchmark(
     horizon: int = 16,
     learning_rate: float = 3e-4,
     hidden_size: int = 256,
-    early_stopping_lookback: int = 500000,
-    early_stopping_delta: float = 0.01,
+    early_stopping_lookback: int = 100000,
+    early_stopping_delta: float = 0.05,
     num_candidates: int = 64,
-    batch_size: int = 64,
-    egnn_batch_size: int = 32,
+    batch_size: Optional[int] = None,
+    egnn_batch_size: Optional[int] = None,
+    egnn_relax_steps: int = 50,
     top_k: int = 10,
     out_dir: str | Path = "runs/full_system_benchmark",
     max_sa_score: float = 6.0,
@@ -458,6 +491,7 @@ def run_all_specs_funnel_benchmark(
                 early_stopping_delta=early_stopping_delta,
                 recurrent=recurrent,
                 enable_egnn=enable_egnn,
+                egnn_relax_steps=egnn_relax_steps,
                 egnn_batch_size=egnn_batch_size,
                 max_sa_score=max_sa_score,
                 verbose=True,

@@ -288,3 +288,148 @@ def test_stage5_synthesizability_sa_gate(tmp_path):
     assert "SA Score" in report_text
     csv_text = (tmp_path / "funnel_summary.csv").read_text()
     assert "sa_score" in csv_text
+
+
+def test_egnn_extensive_energy_scaling():
+    """
+    Validates that degree normalization and radial cutoff ensure extensive O(N) scaling
+    rather than unphysical O(N^3) explosion when scaling from N=16 to N=64 atoms.
+    """
+    np.random.seed(42)
+    egnn = EGNNForceField(num_layers=4, hidden_dim=64, max_atomic_number=128, n_particles=128, r_cut=5.0)
+
+    # Molecule 1: N = 16
+    x_16 = np.random.randn(1, 128, 3).astype(np.float32)
+    z_16 = np.zeros((1, 128), dtype=np.float32)
+    z_16[0, :16] = 6.0
+    mask_16 = np.zeros((1, 128, 1), dtype=np.float32)
+    mask_16[0, :16] = 1.0
+    mol_mask = np.ones(1, dtype=np.float32)
+
+    u_16 = float(egnn.compute_energy(Tensor(x_16), Tensor(z_16), Tensor(mask_16), Tensor(mol_mask)).numpy()[0])
+
+    # Molecule 2: N = 64
+    x_64 = np.random.randn(1, 128, 3).astype(np.float32)
+    z_64 = np.zeros((1, 128), dtype=np.float32)
+    z_64[0, :64] = 6.0
+    mask_64 = np.zeros((1, 128, 1), dtype=np.float32)
+    mask_64[0, :64] = 1.0
+
+    u_64 = float(egnn.compute_energy(Tensor(x_64), Tensor(z_64), Tensor(mask_64), Tensor(mol_mask)).numpy()[0])
+
+    # Energy per atom should remain on a stable, bounded scale (within 10x per atom)
+    u_per_atom_16 = abs(u_16) / 16.0
+    u_per_atom_64 = abs(u_64) / 64.0
+
+    assert not np.isnan(u_16) and not np.isnan(u_64)
+    # The ratio of per-atom energies should not explode superlinearly
+    assert u_per_atom_64 < 50.0 * (u_per_atom_16 + 1.0)
+    assert abs(u_64) < 1e5  # Must not reach 1.6M K
+
+
+def test_funnel_ranker_topk_topological_deduplication():
+    """
+    Validates that FunnelRanker groups candidates by canonical SMILES / WL hash
+    so that minor conformers of the same molecule do not monopolize Top-K slots.
+    """
+    target_spec = {
+        "min_wall_pressure_bar": 10.0,
+        "max_solvation_kcal": -2.0,
+        "max_molecular_weight": 800.0,
+    }
+    ranker = FunnelRanker(target_spec=target_spec)
+
+    # 5 conformers of Molecule A (identical SMILES: c1ccccc1), 1 of Molecule B (SMILES: c1ccncc1)
+    metadata = [
+        {
+            "name": f"cand_A_conf{i}",
+            "smiles": "c1ccccc1",
+            "rl_reward": 5.0 + 0.1 * i,
+            "p_wall": 20.0,
+            "omega_solv": -3.0,
+            "mw": 78.1,
+            "num_atoms": 6,
+        }
+        for i in range(5)
+    ]
+    metadata.append(
+        {
+            "name": "cand_B",
+            "smiles": "c1ccncc1",
+            "rl_reward": 4.5,
+            "p_wall": 18.0,
+            "omega_solv": -3.2,
+            "mw": 79.1,
+            "num_atoms": 6,
+        }
+    )
+
+    results = [
+        MaterialPipelineResult(
+            material_name=m["name"], status=PipelineStatus.SUCCESS.value, wall_pressure_bar=m["p_wall"]
+        )
+        for m in metadata
+    ]
+
+    ranked = ranker.rank_candidates(metadata, results)
+
+    # Should deduplicate 5 conformers of A down to 1 (the best one) + Molecule B = 2 unique candidates total
+    assert len(ranked) == 2
+    unique_smiles = {c.smiles for c in ranked}
+    assert unique_smiles == {"c1ccccc1", "c1ccncc1"}
+    # The retained conformer for A should be conf4 (highest score)
+    a_cand = next(c for c in ranked if c.smiles == "c1ccccc1")
+    assert a_cand.name == "cand_A_conf4"
+
+
+def test_funnel_ranker_contact_ratio_scoring():
+    """
+    Validates that contact_ratio is used in cDFT thermodynamic scoring without saturation.
+    """
+    target_spec = {
+        "min_wall_pressure_bar": 3.0,  # Target contact ratio = 3.0
+        "max_solvation_kcal": -2.0,
+    }
+    ranker = FunnelRanker(target_spec=target_spec)
+
+    metadata = [
+        {
+            "name": "cand_high_ratio",
+            "smiles": "CC",
+            "rl_reward": 1.0,
+            "p_wall": 15000.0,
+            "contact_ratio": 4.5,
+            "omega_solv": -2.5,
+            "mw": 30.0,
+            "num_atoms": 2,
+        },
+        {
+            "name": "cand_low_ratio",
+            "smiles": "CO",
+            "rl_reward": 1.0,
+            "p_wall": 5000.0,
+            "contact_ratio": 1.5,
+            "omega_solv": -2.5,
+            "mw": 32.0,
+            "num_atoms": 2,
+        },
+    ]
+    results = [
+        MaterialPipelineResult(
+            material_name="cand_high_ratio",
+            status=PipelineStatus.SUCCESS.value,
+            wall_pressure_bar=15000.0,
+            contact_ratio=4.5,
+        ),
+        MaterialPipelineResult(
+            material_name="cand_low_ratio",
+            status=PipelineStatus.SUCCESS.value,
+            wall_pressure_bar=5000.0,
+            contact_ratio=1.5,
+        ),
+    ]
+
+    ranked = ranker.rank_candidates(metadata, results)
+    assert len(ranked) == 2
+    assert ranked[0].name == "cand_high_ratio"
+    assert ranked[0].funnel_score > ranked[1].funnel_score

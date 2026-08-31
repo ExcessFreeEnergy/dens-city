@@ -96,10 +96,27 @@ typedef struct CDFT_Swarm_Env {
     int step_count;
     int current_scaffold_idx;
 
+    // Rolling topological hash ring buffer for sub-microsecond novelty scoring
+    uint64_t recent_hashes[64];
+    int hash_ring_idx;
+    int hash_count;
+
     void* client;
 } CDFT_Swarm_Env;
 
 #define Env CDFT_Swarm_Env
+
+static inline bool check_and_insert_hash(Env* env, uint64_t h) {
+    if (h == 0) return false;
+    for (int i = 0; i < env->hash_count; i++) {
+        if (env->recent_hashes[i] == h) return false; // Duplicate topology encountered
+    }
+    env->recent_hashes[env->hash_ring_idx] = h;
+    env->hash_ring_idx = (env->hash_ring_idx + 1) % 64;
+    if (env->hash_count < 64) env->hash_count++;
+    return true;
+}
+
 
 // -------------------------------------------------------------
 // Action Masking Computation (MY_ACTION_MASK)
@@ -182,7 +199,7 @@ static inline void compute_observations(Env* env) {
     obs[idx++] = (float)env->mechanics.multivalency_count / 8.0f;
     obs[idx++] = (float)env->step_count / (float)MAX_EPISODE_STEPS;
     obs[idx++] = env->cdft_res.converged ? 1.0f : 0.0f;
-    obs[idx++] = env->cdft_res.p_wall_bar / 100.0f;
+    obs[idx++] = env->cdft_res.contact_ratio / 10.0f;
 
     // 2. Open Port Geometric Vectors (16 * 4 = 64 floats)
     for (int p = 0; p < MAX_PORTS; p++) {
@@ -205,7 +222,7 @@ static inline void compute_observations(Env* env) {
     obs[idx++] = env->targets.target_toughness;
     obs[idx++] = env->targets.target_lightweight;
     obs[idx++] = env->targets.max_solvation_kcal;
-    obs[idx++] = env->targets.min_wall_pressure_bar / 100.0f;
+    obs[idx++] = env->targets.min_wall_pressure_bar / 10.0f;
     obs[idx++] = env->targets.max_molecular_weight / 1000.0f;
     obs[idx++] = (float)env->targets.min_valency / 4.0f;
 }
@@ -284,31 +301,40 @@ static inline void c_step(Env* env) {
         env->terminals[0] = 1;
         env->log.n += 1.0f;
 
-        // 1. Solve 1D cDFT Thermodynamics
+        // 1. Solve 1D cDFT Thermodynamics + Universal Generalized Born Electrostatics
         derive_fluid_parameters_from_graph(&env->graph, &env->params);
         init_cdft_context(&env->ctx, &env->params);
         env->cdft_res = solve_cdft_pufferlib_step(&env->ctx, &env->params);
 
+        // Universal Born Solvation free energy correction in dielectric medium (epsilon_solvent = 40.0)
+        float delta_g_born = compute_generalized_born_solvation_kcal(&env->graph, 40.0f);
+        env->cdft_res.omega_solv_kcal += delta_g_born;
+
         // 2. Compute Dual Reward Components
-        // A. Thermodynamic Survival Check (Asymptotically Bounded via tanh)
+        // A. Thermodynamic Survival Check (Smooth Differentiable Bounds)
         float r_thermo = 0.0f;
         if (!env->cdft_res.converged) {
             r_thermo = -5.0f; // Harsh penalty for unphysical non-convergence
         } else {
-            // Solvation check: bounded bonus in [-3.0, +2.0]
+            // Smooth Softplus penalty for solvation free energy exceeding target maximum bound
             float solv_diff = env->targets.max_solvation_kcal - env->cdft_res.omega_solv_kcal;
             if (solv_diff >= 0.0f) {
                 r_thermo += 2.0f * tanhf(0.1f * solv_diff);
             } else {
-                r_thermo -= 1.0f + 2.0f * tanhf(0.1f * fabsf(solv_diff));
+                // Infinitely differentiable Softplus transition: -2.0 * ln(1 + exp(excess))
+                float excess = -solv_diff;
+                float clamped_excess = fmaxf(-20.0f, fminf(20.0f, excess));
+                r_thermo -= 2.0f * log1pf(expf(clamped_excess));
             }
 
-            // Wall wetting contact pressure check: bounded bonus in [-3.0, +2.0]
-            float p_diff = env->cdft_res.p_wall_bar - env->targets.min_wall_pressure_bar;
+            // Wall wetting contact ratio check: bounded bonus in [-3.0, +2.0]
+            float contact_ratio = env->cdft_res.contact_ratio;
+            float target_ratio = env->targets.min_wall_pressure_bar;
+            float p_diff = contact_ratio - target_ratio;
             if (p_diff >= 0.0f) {
-                r_thermo += 2.0f * tanhf(0.02f * p_diff);
+                r_thermo += 2.0f * tanhf(0.20f * p_diff);
             } else {
-                r_thermo -= 1.0f + 2.0f * tanhf(0.05f * fabsf(p_diff));
+                r_thermo -= 1.0f + 2.0f * tanhf(0.20f * fabsf(p_diff));
             }
         }
 
@@ -335,6 +361,11 @@ static inline void c_step(Env* env) {
             2.0f * env->mechanics.fractional_free_volume -
             1.0f * env->mechanics.heavy_atom_penalty
         );
+
+        // C. Topological Novelty Bonus (Sub-Microsecond Weisfeiler-Lehman Graph Hash)
+        uint64_t g_hash = compute_wl_graph_hash(&env->graph);
+        bool is_novel = check_and_insert_hash(env, g_hash);
+        float r_novelty = is_novel ? 1.0f : 0.0f;
 
         // Valence constraint penalty & Mechanical Obliteration
         int active_valency = 0;
@@ -368,17 +399,24 @@ static inline void c_step(Env* env) {
             r_penalties += 5.0f * mw_ratio + 15.0f * (mw_ratio * mw_ratio);
         }
 
-        // Synthetic Accessibility (SA) Score Penalty
+        // Synthetic Accessibility (SA) Score Penalty: Size-Normalized Complexity (SA_density)
         float r_sa = 0.0f;
         float sa_score = env->mechanics.sa_score;
-        if (env->targets.sa_threshold > 0.0f && sa_score > env->targets.sa_threshold) {
-            float sa_excess = sa_score - env->targets.sa_threshold;
+        int n_heavy = env->graph.num_atoms;
+        if (n_heavy <= 0) n_heavy = 1;
+        float sa_allowance = 0.15f * (float)n_heavy + 1.0f;
+        if (env->targets.sa_threshold > 0.0f) {
+            sa_allowance = fmaxf(sa_allowance, env->targets.sa_threshold);
+        }
+
+        if (sa_score > sa_allowance) {
+            float sa_excess = sa_score - sa_allowance;
             float slope = (env->targets.sa_penalty_slope > 0.0f) ? env->targets.sa_penalty_slope : 2.0f;
             r_sa = -slope * sa_excess;
             r_penalties -= r_sa; // Subtracting negative penalty adds to total penalties
         }
 
-        float total_reward = r_thermo + r_elasticity + r_tensile + r_toughness + r_lightweight - r_penalties;
+        float total_reward = r_thermo + r_elasticity + r_tensile + r_toughness + r_lightweight + r_novelty - r_penalties;
         env->rewards[0] += total_reward;
 
         // Logging statistics

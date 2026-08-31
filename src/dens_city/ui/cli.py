@@ -502,6 +502,12 @@ Execution Modes & Examples:
         help="Number of message-passing layers in the EGNN architecture (default: 7)",
     )
     egnn_group.add_argument(
+        "--egnn-relax-steps",
+        type=int,
+        default=50,
+        help="Number of unrolled GPU quantum geometry relaxation steps prior to EGNN evaluation (default: 50)",
+    )
+    egnn_group.add_argument(
         "--egnn-weights",
         type=str,
         default=None,
@@ -573,14 +579,14 @@ Execution Modes & Examples:
     rl_group.add_argument(
         "--early-stopping-lookback",
         type=int,
-        default=500000,
-        help="Step lookback window for EMA reward flatline detection (default: 500,000)",
+        default=100000,
+        help="Step lookback window for EMA reward flatline detection (default: 100,000)",
     )
     rl_group.add_argument(
         "--early-stopping-delta",
         type=float,
-        default=0.01,
-        help="EMA reward change threshold for early stopping (default: 0.01)",
+        default=0.05,
+        help="EMA reward change threshold for early stopping (default: 0.05)",
     )
     rl_group.add_argument(
         "--no-early-stopping",
@@ -844,6 +850,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             lbfgs_steps=args.lbfgs_steps,
             lbfgs_tol=args.lbfgs_tol,
             enable_egnn=args.enable_egnn,
+            egnn_relax_steps=args.egnn_relax_steps,
             egnn_batch_size=args.egnn_batch_size,
             egnn_layers=args.egnn_layers,
             egnn_weights=args.egnn_weights,
@@ -870,8 +877,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             early_stopping_lookback=args.early_stopping_lookback,
             early_stopping_delta=args.early_stopping_delta,
             num_candidates=args.num_candidates if "--num-candidates" in argv else 64,
-            batch_size=args.batch_size if ("-b" in argv or "--batch-size" in argv) else 64,
-            egnn_batch_size=args.egnn_batch_size,
+            batch_size=args.batch_size if ("-b" in argv or "--batch-size" in argv) else None,
+            egnn_batch_size=args.egnn_batch_size if "--egnn-batch-size" in argv else None,
+            egnn_relax_steps=args.egnn_relax_steps,
             top_k=args.top_k if "--top-k" in argv else 10,
             out_dir=out_dir,
             max_sa_score=args.max_sa_score,

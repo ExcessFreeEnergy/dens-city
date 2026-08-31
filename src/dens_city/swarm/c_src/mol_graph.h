@@ -6,6 +6,7 @@
 #include <math.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #define MAX_ATOMS 64
 #define MAX_BONDS 128
@@ -67,6 +68,11 @@ static inline Vec3 vec3_normalize(Vec3 a) {
 
 static inline float vec3_dist(Vec3 a, Vec3 b) {
     return vec3_norm(vec3_sub(a, b));
+}
+
+static inline float vec3_dist_sq(Vec3 a, Vec3 b) {
+    Vec3 d = vec3_sub(a, b);
+    return vec3_dot(d, d);
 }
 
 static inline Vec3 mat3_vec3_mul(Mat3 m, Vec3 v) {
@@ -171,6 +177,8 @@ typedef struct {
     float bounding_radius;
 } MolecularGraph;
 
+static inline void equilibrate_graph_charges_eem(MolecularGraph* graph);
+
 // Computes 1-2 (bonded), 1-3 (angle), and 1-4 (torsion/intra-ring) symmetric exclusion matrix (N x N)
 static inline void compute_12_13_exclusions(const MolecularGraph* graph, float* excl_out) {
     int n = graph->num_atoms;
@@ -229,6 +237,53 @@ static inline void compute_12_13_exclusions(const MolecularGraph* graph, float* 
             }
         }
     }
+}
+
+// 2-Hop Weisfeiler-Lehman (WL) Topological Graph Hash for sub-microsecond uniqueness scoring
+static inline uint64_t compute_wl_graph_hash(const MolecularGraph* graph) {
+    int n = graph->num_atoms;
+    if (n <= 0) return 0;
+    uint64_t node_labels[MAX_ATOMS];
+    uint64_t next_labels[MAX_ATOMS];
+
+    // Initial atomic labels: atomic number and initial index entropy
+    for (int i = 0; i < n; i++) {
+        int z = graph->atoms[i].atomic_number;
+        node_labels[i] = ((uint64_t)z * 0x9E3779B97F4A7C15ULL) ^ (uint64_t)(i + 1);
+    }
+
+    // 2-hop WL vertex refinement
+    for (int hop = 0; hop < 2; hop++) {
+        for (int i = 0; i < n; i++) {
+            uint64_t agg = node_labels[i] * 0x517cc1b727220a95ULL;
+            for (int b = 0; b < graph->num_bonds; b++) {
+                int u = graph->bonds[b].atom_u;
+                int v = graph->bonds[b].atom_v;
+                int order = graph->bonds[b].bond_order;
+                int neighbor = -1;
+                if (u == i) neighbor = v;
+                else if (v == i) neighbor = u;
+
+                if (neighbor >= 0 && neighbor < n) {
+                    uint64_t nh = node_labels[neighbor] ^ ((uint64_t)order * 0x85ebca6bULL);
+                    agg += nh * 0xc2b2ae3d27d4eb4fULL;
+                    agg = (agg << 13) | (agg >> 51);
+                }
+            }
+            next_labels[i] = agg;
+        }
+        for (int i = 0; i < n; i++) {
+            node_labels[i] = next_labels[i];
+        }
+    }
+
+    // Global permutation-invariant FNV-1a graph hash
+    uint64_t graph_hash = 0xCBF29CE484222325ULL;
+    for (int i = 0; i < n; i++) {
+        graph_hash ^= node_labels[i];
+        graph_hash *= 0x100000001B3ULL;
+    }
+    return graph_hash;
 }
 
 // Fragment definition template for library
@@ -1035,7 +1090,117 @@ static inline bool rigid_body_attach(MolecularGraph* graph, int port_idx, int fr
     }
 
     graph->num_attached_fragments++;
+    equilibrate_graph_charges_eem(graph);
     return true;
+}
+
+// -------------------------------------------------------------
+// Analytical Electronegativity Equalization Method (EEM)
+// -------------------------------------------------------------
+static inline void get_atom_eem_parameters(int z, float* chi, float* eta) {
+    switch (z) {
+        case 1:  *chi = 4.52f; *eta = 6.92f; break; // H
+        case 5:  *chi = 3.65f; *eta = 4.20f; break; // B
+        case 6:  *chi = 5.34f; *eta = 5.01f; break; // C
+        case 7:  *chi = 6.89f; *eta = 6.43f; break; // N
+        case 8:  *chi = 8.51f; *eta = 7.42f; break; // O
+        case 9:  *chi = 10.41f; *eta = 8.94f; break; // F
+        case 14: *chi = 4.16f; *eta = 3.38f; break; // Si
+        case 16: *chi = 6.22f; *eta = 4.60f; break; // S
+        case 17: *chi = 8.29f; *eta = 6.08f; break; // Cl
+        case 35: *chi = 7.59f; *eta = 5.25f; break; // Br
+        default: *chi = 5.00f; *eta = 5.00f; break;
+    }
+}
+
+static inline void equilibrate_graph_charges_eem(MolecularGraph* graph) {
+    int n = graph->num_atoms;
+    if (n <= 0) return;
+
+    float delta_q[MAX_ATOMS];
+    memset(delta_q, 0, n * sizeof(float));
+
+    // Bond dipole charge transfer along covalent connectivity
+    for (int b = 0; b < graph->num_bonds; b++) {
+        int u = graph->bonds[b].atom_u;
+        int v = graph->bonds[b].atom_v;
+        if (u < 0 || u >= n || v < 0 || v >= n) continue;
+
+        float chi_u, eta_u, chi_v, eta_v;
+        get_atom_eem_parameters(graph->atoms[u].atomic_number, &chi_u, &eta_u);
+        get_atom_eem_parameters(graph->atoms[v].atomic_number, &chi_v, &eta_v);
+
+        // Polarization proportional to electronegativity difference and bond order
+        float order_scale = (float)fmaxf(1.0f, (float)graph->bonds[b].bond_order);
+        float dq = 0.25f * order_scale * (chi_v - chi_u) / (eta_u + eta_v);
+
+        delta_q[u] += dq;
+        delta_q[v] -= dq;
+    }
+
+    // Apply net charge neutralisation
+    float total_q = 0.0f;
+    for (int i = 0; i < n; i++) {
+        graph->atoms[i].charge += delta_q[i];
+        total_q += graph->atoms[i].charge;
+    }
+
+    // Neutralize residual monopole sum across heavy atoms
+    float correction = total_q / (float)n;
+    for (int i = 0; i < n; i++) {
+        graph->atoms[i].charge -= correction;
+    }
+}
+
+// -------------------------------------------------------------
+// Universal Still Generalized Born (GB) Solvation Energy
+// -------------------------------------------------------------
+static inline float compute_generalized_born_solvation_kcal(const MolecularGraph* graph, float epsilon_solvent) {
+    int n = graph->num_atoms;
+    if (n <= 0) return 0.0f;
+
+    float q_sq_sum = 0.0f;
+    for (int i = 0; i < n; i++) {
+        q_sq_sum += graph->atoms[i].charge * graph->atoms[i].charge;
+    }
+    // Mathematically vanishes for non-polar molecules (e.g. pure aliphatic hydrocarbons)
+    if (q_sq_sum < 1e-4f) return 0.0f;
+
+    float eps_factor = 1.0f - (1.0f / fmaxf(1.0f, epsilon_solvent));
+    const float COULOMB_KCAL_A = 332.0637f;
+    const float KAPPA_EEM_SCALE = 0.35f;
+
+    float gb_sum = 0.0f;
+
+    // 1. Self-energy Born terms: sum_i (kappa * q_i)^2 / (2 * alpha_i)
+    for (int i = 0; i < n; i++) {
+        float q_i = KAPPA_EEM_SCALE * graph->atoms[i].charge;
+        float alpha_i = fmaxf(0.8f, 0.5f * graph->atoms[i].sigma); // Born radius in Å
+        gb_sum += (q_i * q_i) / (2.0f * alpha_i);
+    }
+
+    // 2. Pairwise Still interaction equation: sum_{i < j} (kappa * q_i) * (kappa * q_j) / f_GB(r_ij)
+    for (int i = 0; i < n; i++) {
+        float q_i = KAPPA_EEM_SCALE * graph->atoms[i].charge;
+        if (fabsf(q_i) < 1e-4f) continue;
+        float alpha_i = fmaxf(0.8f, 0.5f * graph->atoms[i].sigma);
+        Vec3 pi = graph->atoms[i].pos;
+
+        for (int j = i + 1; j < n; j++) {
+            float q_j = KAPPA_EEM_SCALE * graph->atoms[j].charge;
+            if (fabsf(q_j) < 1e-4f) continue;
+            float alpha_j = fmaxf(0.8f, 0.5f * graph->atoms[j].sigma);
+            Vec3 pj = graph->atoms[j].pos;
+
+            float r2 = vec3_dist_sq(pi, pj);
+            float a_prod = alpha_i * alpha_j;
+            float f_gb = sqrtf(r2 + a_prod * expf(-r2 / (4.0f * a_prod)));
+            gb_sum += (q_i * q_j) / f_gb;
+        }
+    }
+
+    float delta_g_born = -eps_factor * COULOMB_KCAL_A * gb_sum;
+    return delta_g_born;
 }
 
 // -------------------------------------------------------------
@@ -1059,6 +1224,7 @@ static inline void init_base_scaffold(MolecularGraph* graph, int scaffold_frag_i
     for (int p = 0; p < ft.num_ports; p++) {
         graph->ports[p] = ft.ports[p];
     }
+    equilibrate_graph_charges_eem(graph);
 }
 
 #endif // MOL_GRAPH_H

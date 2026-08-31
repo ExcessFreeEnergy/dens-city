@@ -50,11 +50,13 @@ The `EGNNForceField` consists of an initial embedding layer, $L=7$ sequential me
     ▼                                                                                 ▼
 Layer 1 ──► Layer 2 ──► Layer 3 ──► Layer 4 ──► Layer 5 ──► Layer 6 ──► Layer 7: h^7 in R^(B x 128 x 128)
 Inside Each Layer:                                                                    │
-1. Distances: d_ij^2 = ||x_i - x_j||^2 in R^(B x 128 x 128 x 1)                       │
-2. Decomposed Edge Projection: e_ij = SiLU(W_hi h_i + W_hj h_j + W_d d_ij^2 + W_a a_ij)│
-3. Edge Message: m_ij = SiLU(W_2 e_ij + b_2) * a_ij                                   │
-4. Neighbor Aggregation: m_i = sum_j m_ij in R^(B x 128 x 128)                        │
-5. Node Update: h_i^(l+1) = (h_i^l + phi_h([h_i^l, m_i])) * atom_mask_i               │
+1. Distances: d_ij^2 = ||x_i - x_j||^2, r_ij = sqrt(d_ij^2 + 1e-8) in R^(B x 128 x 128 x 1)
+2. Radial Cutoff: f_cut(r_ij) = 0.5 * (cos(pi * r_ij / r_cut) + 1) * [r_ij < r_cut]    │
+3. Decomposed Edge Projection: e_ij = SiLU(W_hi h_i + W_hj h_j + W_d d_ij^2 + W_a a_ij)│
+4. Edge Message: m_ij = SiLU(W_2 e_ij + b_2) * a_ij * f_cut(r_ij)                      │
+5. Degree Normalization: deg_i = max(1, sum_j a_ij * [r_ij < r_cut])                  │
+6. Normalized Aggregation: m_i = (sum_j m_ij) / deg_i in R^(B x 128 x 128)            │
+7. Node Update: h_i^(l+1) = (h_i^l + phi_h([h_i^l, m_i])) * atom_mask_i               │
                                                                                       │
                                              ┌────────────────────────────────────────┘
                                              ▼
@@ -85,10 +87,16 @@ $$
 
 ### 2.3 Layer-Wise Message Passing ($l = 0, \dots, 6$)
 
-#### Step A: Pairwise Relative Squared Distances
+#### Step A: Pairwise Relative Squared Distances & Smooth Radial Cutoff Envelope
 $$
-d_{ij}^2 = \sum_{c=0}^2 (x_{i, c} - x_{j, c})^2 \in \mathbb{R}^{B \times 128 \times 128 \times 1}
+d_{ij}^2 = \sum_{c=0}^2 (x_{i, c} - x_{j, c})^2 \in \mathbb{R}^{B \times 128 \times 128 \times 1}, \quad r_{ij} = \sqrt{d_{ij}^2 + 10^{-8}}
 $$
+
+$$
+f_{\rm cut}(r_{ij}) = \begin{cases} \frac{1}{2}\left[\cos\left(\frac{\pi r_{ij}}{r_{\rm cut}}\right) + 1\right] & \text{if } r_{ij} \le r_{\rm cut} \\ 0 & \text{if } r_{ij} > r_{\rm cut} \end{cases}
+$$
+
+where $r_{\rm cut} = 5.0\text{ \AA}$.
 
 #### Step B: Memory-Optimized Decomposed Edge Projection ($\phi_e$)
 To prevent memory exhaustion from materializing $(B, 128, 128, 258)$ edge tensors, the first linear transformation is mathematically decomposed:
@@ -98,12 +106,18 @@ e_{ij} = \text{SiLU}\left( W_{hi} h_i^l + W_{hj} h_j^l + W_d d_{ij}^2 + W_a a_{i
 $$
 
 $$
-m_{ij} = \text{SiLU}\left( W_2 e_{ij} + b_2 \right) \cdot a_{ij}
+m_{ij} = \text{SiLU}\left( W_2 e_{ij} + b_2 \right) \cdot a_{ij} \cdot f_{\rm cut}(r_{ij})
 $$
 
-#### Step C: Neighborhood Aggregation
+#### Step C: Degree-Normalized Neighborhood Aggregation
+To eliminate $O(N^3)$ non-extensivity and stabilize energy/force scales across variable molecule sizes ($N=10$ to $N=128$), message aggregation is normalized by active neighborhood degree:
+
 $$
-m_i = \sum_{j=1}^{128} m_{ij} \in \mathbb{R}^{B \times 128 \times 128}
+\text{deg}_i = \max\left(1.0, \sum_{j=1}^{128} a_{ij} \cdot \mathbf{1}_{r_{ij} \le r_{\rm cut}}\right) \in \mathbb{R}^{B \times 128 \times 1}
+$$
+
+$$
+m_i = \frac{1}{\text{deg}_i} \sum_{j=1}^{128} m_{ij} \in \mathbb{R}^{B \times 128 \times 128}
 $$
 
 #### Step D: Node State Update ($\phi_h$) with Residual Connection

@@ -87,6 +87,7 @@ class MaterialPipelineResult:
     chemical_potential_kbt: float = 0.0
     bulk_pressure_bar: float = 0.0
     wall_pressure_bar: float = 0.0
+    contact_ratio: float = 1.0
     excess_adsorption_a2: float = 0.0
     cdft_final_loss: float = 0.0
     bg_final_loss: Optional[float] = None
@@ -204,6 +205,7 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
 
         rho_profile = cdft.get_density_profile()
         p_wall = cdft.get_wall_contact_pressure()
+        contact_ratio = cdft.get_contact_ratio()
         gamma_ex = cdft.get_excess_adsorption()
         cdft_loss = (
             cdft_res.get("final_loss", 0.0) if isinstance(cdft_res, dict) else (cdft_res[-1] if cdft_res else 0.0)
@@ -266,6 +268,7 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
             chemical_potential_kbt=material.bulk_mu,
             bulk_pressure_bar=material.bulk_pressure_bar,
             wall_pressure_bar=p_wall,
+            contact_ratio=contact_ratio,
             excess_adsorption_a2=gamma_ex,
             cdft_final_loss=cdft_loss,
             artifact_dir=mat_out_dir,
@@ -389,6 +392,7 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
             chemical_potential_kbt=material.bulk_mu,
             bulk_pressure_bar=material.bulk_pressure_bar,
             wall_pressure_bar=p_wall,
+            contact_ratio=contact_ratio,
             excess_adsorption_a2=gamma_ex,
             cdft_final_loss=cdft_loss,
             artifact_dir=mat_out_dir,
@@ -408,6 +412,7 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
         chemical_potential_kbt=material.bulk_mu,
         bulk_pressure_bar=material.bulk_pressure_bar,
         wall_pressure_bar=p_wall,
+        contact_ratio=contact_ratio,
         excess_adsorption_a2=gamma_ex,
         cdft_final_loss=cdft_loss,
         bg_final_loss=bg_loss,
@@ -758,6 +763,7 @@ def execute_prepared_batch(
 
     cdft_profiles = batched_cdft.get_density_profiles()
     cdft_pressures = batched_cdft.get_wall_contact_pressures()
+    cdft_ratios = batched_cdft.get_contact_ratios()
     cdft_gammas = batched_cdft.get_excess_adsorptions()
     final_cdft_loss = cdft_losses[-1] if cdft_losses else 0.0
 
@@ -805,6 +811,7 @@ def execute_prepared_batch(
                 chemical_potential_kbt=mat.bulk_mu,
                 bulk_pressure_bar=mat.bulk_pressure_bar,
                 wall_pressure_bar=cdft_pressures[local_idx],
+                contact_ratio=cdft_ratios[local_idx],
                 excess_adsorption_a2=cdft_gammas[local_idx],
                 cdft_final_loss=final_cdft_loss,
                 solvation_free_energy_kcal_mol=getattr(mat, "solvation_free_energy_kcal_mol", 0.0),
@@ -874,6 +881,7 @@ def execute_prepared_batch(
             chemical_potential_kbt=mat.bulk_mu,
             bulk_pressure_bar=mat.bulk_pressure_bar,
             wall_pressure_bar=cdft_pressures[local_idx],
+            contact_ratio=cdft_ratios[local_idx],
             excess_adsorption_a2=cdft_gammas[local_idx],
             cdft_final_loss=final_cdft_loss,
             bg_final_loss=bg_loss,

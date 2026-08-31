@@ -208,7 +208,7 @@ class SwarmCandidateSampler:
                         n_atoms = raw_data["num_atoms"]
 
                         is_valid = (
-                            reward > 0.0
+                            reward > -30.0
                             and n_atoms >= 6
                             and raw_data["mw"] <= self.max_molecular_weight
                             and raw_data["p_wall"] > 0.0
@@ -283,10 +283,12 @@ class SwarmCandidateSampler:
                                     "num_atoms": n_atoms,
                                     "mw": raw_data["mw"],
                                     "p_wall": raw_data["p_wall"],
+                                    "contact_ratio": raw_data.get("contact_ratio", 1.0),
                                     "omega_solv": raw_data["omega_solv"],
                                     "pmi_linearity": raw_data["pmi_linearity"],
                                     "aromatic_density": raw_data["aromatic_density"],
                                     "rotatable_fraction": raw_data["rotatable_fraction"],
+                                    "wl_hash": raw_data.get("wl_hash", 0),
                                     "smiles": smiles_str,
                                     "mol2": mol2_str,
                                     "effective_sigma": eff_sig,

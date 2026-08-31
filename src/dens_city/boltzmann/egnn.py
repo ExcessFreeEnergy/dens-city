@@ -8,6 +8,7 @@ Adheres strictly to tinygrad best practices and power-of-2 vector alignments (N=
 
 from __future__ import annotations
 
+import math
 from typing import Callable, List, Optional, Tuple
 
 from tinygrad import Tensor, TinyJit, dtypes, nn
@@ -17,12 +18,14 @@ class EGNNLayer:
     """
     Single E(n)-invariant message passing layer.
     Computes edge interaction messages from node embeddings, relative squared distances,
-    and edge masks, then updates node embeddings with residual connections.
+    and edge masks with smooth radial cutoff attenuation and degree normalization,
+    then updates node embeddings with residual connections.
     Uses decomposed linear projections to avoid materializing huge (B, N, N, 2F+2) tensors in memory.
     """
 
-    def __init__(self, hidden_dim: int = 128, edge_in_dim: Optional[int] = None):
+    def __init__(self, hidden_dim: int = 128, edge_in_dim: Optional[int] = None, r_cut: float = 5.0):
         self.hidden_dim = hidden_dim
+        self.r_cut = r_cut
 
         # Decomposed first linear projection of edge features
         self.edge_hi = nn.Linear(hidden_dim, hidden_dim, bias=False)
@@ -65,13 +68,20 @@ class EGNNLayer:
         # 2. Sum linear projections and apply SiLU
         e_hidden = (h_i_proj + h_j_proj + d_proj + a_proj).silu()
 
-        # 3. Message generation via second linear layer & masking
-        m_ij = self.edge_l2(e_hidden).silu() * edge_mask
+        # 3. Smooth cosine radial distance cutoff envelope: f_cut(r_ij) = 0.5 * (cos(pi * r / r_cut) + 1)
+        r_ij = (d_sq + 1e-8).sqrt()
+        cutoff_mask = (r_ij < self.r_cut).cast(dtypes.float32)
+        f_cut = cutoff_mask * 0.5 * ((r_ij * (math.pi / self.r_cut)).cos() + 1.0)
+        effective_edge_mask = edge_mask * f_cut
 
-        # 4. Message aggregation over neighbors
-        m_i = m_ij.sum(axis=2)
+        # 4. Message generation via second linear layer & smooth cutoff masking
+        m_ij = self.edge_l2(e_hidden).silu() * effective_edge_mask
 
-        # 5. Node update with residual connection
+        # 5. Message aggregation normalized by active neighbor degree to guarantee extensive O(N) energy scaling
+        deg_i = (edge_mask * cutoff_mask).sum(axis=2).maximum(1.0)  # (B, N, 1)
+        m_i = m_ij.sum(axis=2) / deg_i  # (B, N, F)
+
+        # 6. Node update with residual connection
         node_inputs = Tensor.cat(h, m_i, dim=-1)
         h_delta = node_inputs.sequential(self.node_mlp)
         h_next = (h + h_delta) * atom_mask
@@ -92,17 +102,19 @@ class EGNNForceField:
         hidden_dim: int = 128,
         max_atomic_number: int = 128,
         n_particles: int = 128,
+        r_cut: float = 5.0,
     ):
         self.num_layers = num_layers
         self.hidden_dim = hidden_dim
         self.max_atomic_number = max_atomic_number
         self.n_particles = n_particles
+        self.r_cut = r_cut
 
         # Linear embedding layer for atomic numbers Z -> h^0 in R^(128)
         self.embedding = nn.Linear(max_atomic_number, hidden_dim)
 
-        # 7 sequential message-passing layers
-        self.layers = [EGNNLayer(hidden_dim=hidden_dim) for _ in range(num_layers)]
+        # 7 sequential message-passing layers with smooth radial cutoff and degree normalization
+        self.layers = [EGNNLayer(hidden_dim=hidden_dim, r_cut=r_cut) for _ in range(num_layers)]
 
         # Readout MLP: node-wise energy contribution eps_i
         self.readout_mlp: List[Callable[[Tensor], Tensor]] = [
@@ -257,3 +269,72 @@ class EGNNForceField:
 
             self._jit_evaluator = TinyJit(_step)
         return self._jit_evaluator
+
+    def get_jit_relaxation_evaluator(
+        self,
+        relax_steps: int = 50,
+        lr: float = 0.008,
+        momentum: float = 0.85,
+        force_tol: float = 5.0,
+        max_disp: float = 0.15,
+    ) -> Callable[[Tensor, Tensor, Tensor, Tensor], Tuple[Tensor, Tensor, Tensor]]:
+        """
+        Returns a lazily-instantiated TinyJit compiled relaxation and evaluator function
+        mapping (x_init, atomic_numbers, atom_mask, molecule_mask) -> (x_relaxed, u_final, forces_final).
+        Performs an unrolled K-step Heavy-Ball momentum accelerated relaxation with adaptive displacement
+        clamping and masked gradient-norm convergence on GPU.
+        """
+        attr_name = f"_jit_relax_evaluator_{relax_steps}_{lr}_{momentum}_{force_tol}_{max_disp}"
+        if getattr(self, attr_name, None) is None:
+            for p in nn.state.get_parameters(self):
+                p.realize()
+
+            force_tol_sq = float(force_tol * force_tol)
+
+            def _step_relax(
+                x_in: Tensor, z_in: Tensor, a_mask: Tensor, m_mask: Tensor
+            ) -> Tuple[Tensor, Tensor, Tensor]:
+                x_curr = x_in
+                v_curr = Tensor.zeros_like(x_in)
+                decay = 0.98
+
+                for s in range(relax_steps):
+                    x_curr.requires_grad = True
+                    u = self.compute_energy(x=x_curr, atomic_numbers=z_in, atom_mask=a_mask, molecule_mask=m_mask)
+                    u.sum().backward()
+                    grad = x_curr.grad if x_curr.grad is not None else Tensor.zeros_like(x_curr)
+                    forces = -grad * a_mask
+
+                    # 1. Clip extreme gradient spikes on steric overlap
+                    clipped_grad = (grad * a_mask).clip(-100.0, 100.0)
+
+                    # 2. Heavy-Ball momentum velocity update with step decay
+                    current_lr = lr * (decay**s)
+                    v_next = momentum * v_curr + current_lr * clipped_grad
+
+                    # 3. Adaptive displacement limit (starts at max_disp=0.15 A, decays to 0.05 A near minima)
+                    disp_limit = max(0.05, max_disp * (decay**s))
+                    step = v_next.clip(-disp_limit, disp_limit) * a_mask
+                    x_cand = x_curr - step
+
+                    # 4. Per-molecule maximum force magnitude squared
+                    f_norm_sq = (forces * forces).sum(axis=-1, keepdim=True)
+                    f_max_sq = (f_norm_sq * a_mask).max(axis=1, keepdim=True)
+
+                    # 5. Masked convergence freezing: freeze coordinates and zero velocity for equilibrium molecules
+                    converged_mask = f_max_sq < force_tol_sq
+                    x_next = converged_mask.where(x_curr, x_cand).realize()
+                    v_next_masked = converged_mask.where(Tensor.zeros_like(v_curr), v_next).realize()
+
+                    x_curr = x_next.detach()
+                    v_curr = v_next_masked.detach()
+
+                x_curr.requires_grad = True
+                u_final = self.compute_energy(x=x_curr, atomic_numbers=z_in, atom_mask=a_mask, molecule_mask=m_mask)
+                u_final.sum().backward()
+                grad_final = x_curr.grad if x_curr.grad is not None else Tensor.zeros_like(x_curr)
+                forces_final = (-grad_final * a_mask).realize()
+                return x_curr.realize(), u_final.realize(), forces_final.realize()
+
+            setattr(self, attr_name, TinyJit(_step_relax))
+        return getattr(self, attr_name)

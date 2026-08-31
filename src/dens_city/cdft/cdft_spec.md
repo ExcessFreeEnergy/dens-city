@@ -73,11 +73,17 @@ $$
 
    where $V_{\rm ext}(z)$ describes confining walls (e.g. Steele 9-3 graphite slit or steric hard walls) with true asymptotic divergence ($V_{\max} = 10^6 k_B T$) at steric boundaries.
 
-5. **Exact Mechanical Balance (Irving-Kirkwood Virial Theorem)**:
+5. **Exact Mechanical Balance (Irving-Kirkwood Virial Theorem) & Dimensionless Contact Ratio**:
    Wall contact pressure is evaluated via the exact momentum balance integral over the external potential gradient:
 
    $$
-   P_{\rm wall} = -\int_0^{L_z/2} \rho(z) \frac{d V_{\rm ext}(z)}{dz} \, dz
+   P_{\rm wall} = -\int_0^{L_z/2} \rho(z) \frac{d V_{\rm ext}(z)}{dz} \, dz = f_{\rm virial}
+   $$
+
+   To ensure scale-invariant thermodynamic scoring across liquid densities without dimensional saturation, the dimensionless contact ratio $R_{\rm contact}$ compares microscopic wall contact density against bulk reservoir density:
+
+   $$
+   R_{\rm contact} = \frac{P_{\rm wall}}{\rho_{\rm bulk} k_B T} = \frac{f_{\rm virial}}{\rho_{\rm bulk}} \approx \frac{\rho(z_{\rm contact})}{\rho_{\rm bulk}} \in [1.5, 10.0]
    $$
 
 ---

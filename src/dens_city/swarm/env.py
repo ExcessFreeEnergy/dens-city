@@ -115,6 +115,12 @@ class CDFTSwarmEnv:
         self.lib.env_get_p_wall.argtypes = [ctypes.c_void_p]
         self.lib.env_get_p_wall.restype = ctypes.c_float
 
+        self.lib.env_get_contact_ratio.argtypes = [ctypes.c_void_p]
+        self.lib.env_get_contact_ratio.restype = ctypes.c_float
+
+        self.lib.env_get_wl_hash.argtypes = [ctypes.c_void_p]
+        self.lib.env_get_wl_hash.restype = ctypes.c_uint64
+
         self.lib.env_get_omega_solv.argtypes = [ctypes.c_void_p]
         self.lib.env_get_omega_solv.restype = ctypes.c_float
 
@@ -263,10 +269,12 @@ class CDFTSwarmEnv:
         info = {
             "action_mask": mask,
             "p_wall_bar": float(self.lib.env_get_p_wall(self._env_ptr)),
+            "contact_ratio": float(self.lib.env_get_contact_ratio(self._env_ptr)),
             "omega_solv_kcal": float(self.lib.env_get_omega_solv(self._env_ptr)),
             "molecular_weight": float(self.lib.env_get_molecular_weight(self._env_ptr)),
             "rotatable_fraction": float(self.lib.env_get_rotatable_fraction(self._env_ptr)),
             "pmi_linearity": float(self.lib.env_get_pmi_linearity(self._env_ptr)),
+            "wl_hash": int(self.lib.env_get_wl_hash(self._env_ptr)),
             "converged": bool(self.lib.env_get_converged(self._env_ptr)),
         }
 
@@ -465,10 +473,12 @@ class CDFTSwarmEnv:
             "bonds": bonds_list,
             "mw": float(self.lib.env_get_molecular_weight(self._env_ptr)),
             "p_wall": float(self.lib.env_get_p_wall(self._env_ptr)),
+            "contact_ratio": float(self.lib.env_get_contact_ratio(self._env_ptr)),
             "omega_solv": float(self.lib.env_get_omega_solv(self._env_ptr)),
             "pmi_linearity": float(self.lib.env_get_pmi_linearity(self._env_ptr)),
             "aromatic_density": float(self.lib.env_get_aromatic_density(self._env_ptr)),
             "rotatable_fraction": float(self.lib.env_get_rotatable_fraction(self._env_ptr)),
+            "wl_hash": int(self.lib.env_get_wl_hash(self._env_ptr)),
         }
 
 
@@ -541,6 +551,9 @@ class VectorizedSwarmEnv:
         self.lib.vec_swarm_get_p_walls.argtypes = [ctypes.c_void_p]
         self.lib.vec_swarm_get_p_walls.restype = ctypes.c_void_p
 
+        self.lib.vec_swarm_get_contact_ratios.argtypes = [ctypes.c_void_p]
+        self.lib.vec_swarm_get_contact_ratios.restype = ctypes.c_void_p
+
         self.lib.vec_swarm_get_omega_solvs.argtypes = [ctypes.c_void_p]
         self.lib.vec_swarm_get_omega_solvs.restype = ctypes.c_void_p
 
@@ -562,6 +575,9 @@ class VectorizedSwarmEnv:
         self.lib.vec_swarm_get_converged.argtypes = [ctypes.c_void_p]
         self.lib.vec_swarm_get_converged.restype = ctypes.c_void_p
 
+        self.lib.vec_swarm_get_wl_hashes.argtypes = [ctypes.c_void_p]
+        self.lib.vec_swarm_get_wl_hashes.restype = ctypes.c_void_p
+
         self.lib.vec_swarm_get_env_ptr.argtypes = [ctypes.c_void_p, ctypes.c_int]
         self.lib.vec_swarm_get_env_ptr.restype = ctypes.c_void_p
 
@@ -575,6 +591,7 @@ class VectorizedSwarmEnv:
         term_addr = self.lib.vec_swarm_get_terminals(self._vec_ptr)
         mask_addr = self.lib.vec_swarm_get_action_masks(self._vec_ptr)
         pwall_addr = self.lib.vec_swarm_get_p_walls(self._vec_ptr)
+        cratio_addr = self.lib.vec_swarm_get_contact_ratios(self._vec_ptr)
         solv_addr = self.lib.vec_swarm_get_omega_solvs(self._vec_ptr)
         mw_addr = self.lib.vec_swarm_get_molecular_weights(self._vec_ptr)
         rot_addr = self.lib.vec_swarm_get_rotatable_fractions(self._vec_ptr)
@@ -582,6 +599,7 @@ class VectorizedSwarmEnv:
         sa_addr = self.lib.vec_swarm_get_sa_scores(self._vec_ptr)
         rsa_addr = self.lib.vec_swarm_get_r_sa_penalties(self._vec_ptr)
         conv_addr = self.lib.vec_swarm_get_converged(self._vec_ptr)
+        wl_addr = self.lib.vec_swarm_get_wl_hashes(self._vec_ptr)
 
         self._c_obs = (ctypes.c_float * (num_envs * TOTAL_OBS_SIZE)).from_address(obs_addr)
         self._c_act = (ctypes.c_float * (num_envs * 2)).from_address(act_addr)
@@ -589,6 +607,7 @@ class VectorizedSwarmEnv:
         self._c_term = (ctypes.c_uint8 * num_envs).from_address(term_addr)
         self._c_mask = (ctypes.c_uint8 * (num_envs * TOTAL_ACTION_MASK_SIZE)).from_address(mask_addr)
         self._c_pwall = (ctypes.c_float * num_envs).from_address(pwall_addr)
+        self._c_cratio = (ctypes.c_float * num_envs).from_address(cratio_addr)
         self._c_solv = (ctypes.c_float * num_envs).from_address(solv_addr)
         self._c_mw = (ctypes.c_float * num_envs).from_address(mw_addr)
         self._c_rot = (ctypes.c_float * num_envs).from_address(rot_addr)
@@ -596,6 +615,7 @@ class VectorizedSwarmEnv:
         self._c_sa = (ctypes.c_float * num_envs).from_address(sa_addr)
         self._c_rsa = (ctypes.c_float * num_envs).from_address(rsa_addr)
         self._c_conv = (ctypes.c_int * num_envs).from_address(conv_addr)
+        self._c_wl = (ctypes.c_uint64 * num_envs).from_address(wl_addr)
 
         self.obs_tensor = torch.frombuffer(self._c_obs, dtype=torch.float32).reshape(num_envs, TOTAL_OBS_SIZE)
         self.actions_tensor = torch.frombuffer(self._c_act, dtype=torch.float32).reshape(num_envs, 2)
@@ -661,12 +681,14 @@ class VectorizedSwarmEnv:
             for idx in indices_list:
                 infos[idx] = {
                     "p_wall_bar": float(self._c_pwall[idx]),
+                    "contact_ratio": float(self._c_cratio[idx]),
                     "omega_solv_kcal": float(self._c_solv[idx]),
                     "molecular_weight": float(self._c_mw[idx]),
                     "rotatable_fraction": float(self._c_rot[idx]),
                     "pmi_linearity": float(self._c_pmi[idx]),
                     "sa_score": float(self._c_sa[idx]),
                     "r_sa_penalty": float(self._c_rsa[idx]),
+                    "wl_hash": int(self._c_wl[idx]),
                     "converged": bool(self._c_conv[idx]),
                 }
 

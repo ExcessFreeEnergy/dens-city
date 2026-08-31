@@ -9,6 +9,7 @@ and RDKit Synthetic Accessibility (SA Score) constraints.
 from __future__ import annotations
 
 import csv
+import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -56,21 +57,23 @@ class RankedCandidate:
     rl_reward: float
     wall_pressure_bar: float
     target_wall_pressure_bar: float
-    solvation_free_energy_kcal_mol: float
-    target_solvation_kcal: float
-    bg_log_likelihood: float
-    bg_energy_mean: float
-    bg_energy_var: float
-    egnn_energy: float
-    egnn_force_rms: float
-    molecular_weight: float
-    num_sites: int
-    pmi_linearity: float
-    aromatic_density: float
-    rotatable_fraction: float
-    mol2_content: str
+    contact_ratio: float = 1.0
+    solvation_free_energy_kcal_mol: float = 0.0
+    target_solvation_kcal: float = 0.0
+    bg_log_likelihood: float = 0.0
+    bg_energy_mean: float = 0.0
+    bg_energy_var: float = 0.0
+    egnn_energy: float = 0.0
+    egnn_force_rms: float = 0.0
+    molecular_weight: float = 0.0
+    num_sites: int = 0
+    pmi_linearity: float = 0.0
+    aromatic_density: float = 0.0
+    rotatable_fraction: float = 0.0
+    mol2_content: str = ""
     sa_score: Optional[float] = None
     smiles: str = ""
+    wl_hash: int = 0
     is_pareto_optimal: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
@@ -144,19 +147,30 @@ class FunnelRanker:
             smiles_str = meta.get("smiles", "")
             mol2_str = meta.get("mol2", "")
 
-            # 0. Synthesizability (SA Score) Safety Gate
+            # 0. Synthesizability (SA Score) Safety Gate (Size-Normalized Complexity SA_density)
             sa_score = meta.get("sa_score")
             if sa_score is None:
                 sa_score = compute_sa_score(smiles=smiles_str, mol2_content=mol2_str)
             else:
                 sa_score = float(sa_score)
 
-            if self.enable_sa_filter and sa_score is not None and sa_score > self.max_sa_score:
+            num_heavy = max(1, int(meta.get("num_sites", meta.get("num_atoms", 20))))
+            # Size-normalized allowance: SA_max = 0.18 * N_heavy + 1.5 (or explicit YAML target)
+            sa_allowance = max(self.max_sa_score, 0.18 * float(num_heavy) + 1.5)
+
+            if self.enable_sa_filter and sa_score is not None and sa_score > sa_allowance:
                 num_dropped_sa += 1
                 continue  # Drop candidate exceeding synthesizability difficulty threshold
 
             rl_reward = float(meta.get("rl_reward", 0.0))
             p_w = float(res.wall_pressure_bar) if res else float(meta.get("p_wall", 0.0))
+            contact_ratio = (
+                float(res.contact_ratio)
+                if (res and hasattr(res, "contact_ratio") and res.contact_ratio is not None)
+                else float(meta.get("contact_ratio", 1.0))
+            )
+            wl_hash = int(meta.get("wl_hash", 0))
+
             solv_e = (
                 float(res.solvation_free_energy_kcal_mol)
                 if (res and res.solvation_free_energy_kcal_mol is not None)
@@ -172,10 +186,16 @@ class FunnelRanker:
             s_rl = max(0.0, rl_reward)
 
             # 2. cDFT Thermodynamic Score Component
-            # Reward wall pressure exceeding threshold, penalize failing threshold
-            p_ratio = p_w / max(1.0, self.min_p_wall)
+            # Reward contact ratio / wall pressure exceeding threshold, penalize failing threshold
+            p_ratio = (
+                contact_ratio / max(0.5, self.min_p_wall) if contact_ratio > 0.0 else p_w / max(1.0, self.min_p_wall)
+            )
             s_cdft_p = min(3.0, p_ratio)
-            s_cdft_solv = 1.0 if solv_e <= self.max_solv else max(0.0, 1.0 - (solv_e - self.max_solv) / 5.0)
+            if solv_e <= self.max_solv:
+                s_cdft_solv = 1.0 + 0.1 * min(10.0, self.max_solv - solv_e)
+            else:
+                excess = solv_e - self.max_solv
+                s_cdft_solv = max(-2.0, 1.0 - float(math.log1p(math.exp(min(20.0, excess)))))
             s_cdft = 0.7 * s_cdft_p + 0.3 * s_cdft_solv
 
             # 3. Boltzmann Normalizing Flow PDF & Structural Energy Component
@@ -188,11 +208,14 @@ class FunnelRanker:
                 - self.gamma_var * min(50000.0, bg_u_var)
             )
 
-            # 4. EGNN Quantum Force Field Component
-            # Lower U_EGNN -> quantum ground state energetic minimum
-            # Lower ||F_EGNN||_RMS -> true stationary quantum minimum (not a quantum cliff)
-            s_egnn = -self.alpha_egnn_energy * max(-10000.0, min(50000.0, egnn_u)) - self.beta_egnn_force * min(
-                1000.0, egnn_f_rms
+            # 4. EGNN Quantum Force Field Component (Per-Atom Normalized)
+            # Lower U_EGNN / N -> quantum ground state energetic minimum
+            # Lower ||F_EGNN||_RMS / sqrt(N) -> true stationary quantum minimum
+            num_atoms_norm = max(1, int(meta.get("num_atoms", meta.get("num_sites", 20))))
+            u_egnn_per_atom = egnn_u / float(num_atoms_norm)
+            f_egnn_norm = egnn_f_rms / math.sqrt(float(num_atoms_norm))
+            s_egnn = -self.alpha_egnn_energy * max(-1000.0, min(5000.0, u_egnn_per_atom)) - self.beta_egnn_force * min(
+                100.0, f_egnn_norm
             )
 
             # Total Composite Score
@@ -205,6 +228,7 @@ class FunnelRanker:
                 rl_reward=rl_reward,
                 wall_pressure_bar=p_w,
                 target_wall_pressure_bar=self.min_p_wall,
+                contact_ratio=contact_ratio,
                 solvation_free_energy_kcal_mol=solv_e,
                 target_solvation_kcal=self.max_solv,
                 bg_log_likelihood=bg_logp,
@@ -220,23 +244,38 @@ class FunnelRanker:
                 mol2_content=mol2_str,
                 sa_score=sa_score,
                 smiles=smiles_str,
+                wl_hash=wl_hash,
             )
             evaluated.append(cand)
 
         self.last_num_dropped_sa = num_dropped_sa
 
-        # Sort by total score descending
-        evaluated.sort(key=lambda c: c.funnel_score, reverse=True)
+        # Deduplicate across candidate graphs using canonical SMILES or WL graph hash
+        # Keeps the highest-scoring evaluated conformer for each unique topological structure
+        unique_candidates: Dict[str, RankedCandidate] = {}
+        for cand in evaluated:
+            key = (
+                cand.smiles.strip()
+                if cand.smiles and cand.smiles.strip()
+                else (f"wl_{cand.wl_hash}" if cand.wl_hash != 0 else cand.name)
+            )
+            if key not in unique_candidates or cand.funnel_score > unique_candidates[key].funnel_score:
+                unique_candidates[key] = cand
 
-        # Compute Pareto optimality across (P_wall, bg_log_likelihood, -egnn_energy, -egnn_force_rms, rl_reward)
-        for i, c1 in enumerate(evaluated):
+        deduped_evaluated = list(unique_candidates.values())
+
+        # Sort by total score descending
+        deduped_evaluated.sort(key=lambda c: c.funnel_score, reverse=True)
+
+        # Compute Pareto optimality across (contact_ratio / wall_pressure, bg_log_likelihood, -egnn_energy, -egnn_force_rms, rl_reward)
+        for i, c1 in enumerate(deduped_evaluated):
             c1.rank = i + 1
             is_dominated = False
             # If EGNN energy is populated, use quantum energy, else fall back to classical
             u1 = c1.egnn_energy if c1.egnn_energy != 0.0 else c1.bg_energy_mean
             f1 = c1.egnn_force_rms
 
-            for j, c2 in enumerate(evaluated):
+            for j, c2 in enumerate(deduped_evaluated):
                 if i != j:
                     u2 = c2.egnn_energy if c2.egnn_energy != 0.0 else c2.bg_energy_mean
                     f2 = c2.egnn_force_rms
@@ -259,7 +298,7 @@ class FunnelRanker:
                         break
             c1.is_pareto_optimal = not is_dominated
 
-        return evaluated
+        return deduped_evaluated
 
     def export_results(
         self,

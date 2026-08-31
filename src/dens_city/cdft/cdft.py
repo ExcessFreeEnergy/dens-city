@@ -236,6 +236,26 @@ class TinyCDFT:
 
         return p_virial_bar
 
+    def get_contact_ratio(self) -> float:
+        r"""
+        Calculates the exact dimensionless bulk-normalized contact ratio:
+        R_contact = f_virial / rho_bulk = P_wall / (rho_bulk * k_B T)
+        """
+        rho_arr = self.get_density_profile()
+        v_ext_arr = self.v_ext.numpy().reshape(self.n_grid)  # in units of k_B * T
+        dv_dz = np.gradient(v_ext_arr, self.dz_val)
+
+        mid = self.n_grid // 2
+        min_grad_idx = int(np.argmin(dv_dz[:mid]))
+        tol = 1.0 / max(1.0, self.temp_val)
+        plateau_candidates = np.where(np.abs(dv_dz[min_grad_idx:mid]) < tol)[0]
+        bulk_cutoff_idx = (min_grad_idx + int(plateau_candidates[0])) if len(plateau_candidates) > 0 else mid
+
+        f_virial = -float(
+            np.sum(rho_arr[min_grad_idx:bulk_cutoff_idx] * dv_dz[min_grad_idx:bulk_cutoff_idx]) * self.dz_val
+        )
+        return float(f_virial / max(1e-6, self.bulk_rho_val))
+
     def get_excess_adsorption(self) -> float:
         r"""
         Computes exact statistical mechanical Gibbs excess pore adsorption:
@@ -559,6 +579,38 @@ class BatchedTinyCDFT:
             pressures.append(p_virial_bar)
 
         return pressures
+
+    def get_contact_ratios(self) -> List[float]:
+        rho_profiles = self.get_density_profiles()
+        v_ext_all = self.v_ext.reshape(self.batch_size, self.n_grid).numpy()
+        ratios = []
+
+        for b in range(self.batch_size):
+            is_active = (self.materials[b] is not None) or (
+                hasattr(self.batch, "molecule_mask") and float(self.batch.molecule_mask.numpy()[b]) > 0.5
+            )
+            if not is_active:
+                ratios.append(0.0)
+                continue
+            rho_arr = rho_profiles[b]
+            v_ext_arr = v_ext_all[b]
+            dz_val = self.dz_vals[b]
+            temp_val = self.temp_vals[b]
+            rho_bulk = self.rho_bulk_vals[b]
+
+            dv_dz = np.gradient(v_ext_arr, dz_val)
+            mid = self.n_grid // 2
+            min_grad_idx = int(np.argmin(dv_dz[:mid]))
+            tol = 1.0 / max(1.0, temp_val)
+            plateau_candidates = np.where(np.abs(dv_dz[min_grad_idx:mid]) < tol)[0]
+            bulk_cutoff_idx = (min_grad_idx + int(plateau_candidates[0])) if len(plateau_candidates) > 0 else mid
+
+            f_integral = -float(
+                np.sum(rho_arr[min_grad_idx:bulk_cutoff_idx] * dv_dz[min_grad_idx:bulk_cutoff_idx]) * dz_val
+            )
+            ratios.append(float(f_integral / max(1e-6, rho_bulk)))
+
+        return ratios
 
     def get_excess_adsorptions(self) -> List[float]:
         rho_profiles = self.get_density_profiles()

@@ -69,6 +69,7 @@ typedef struct {
 
 typedef struct {
     float p_wall_bar;
+    float contact_ratio;
     float omega_solv_kcal;
     float bulk_density;
     float packing_fraction;
@@ -412,7 +413,9 @@ static inline CDFT_Result solve_cdft_pufferlib_step(CDFT_Env_Context* ctx, const
     for (int i = 0; i < mid; i++) {
         f_virial -= ctx->rho[i] * ctx->dv_ext_dz[i] * params->dz;
     }
-    // 1 k_B T / Å^3 in bar: f_virial * (1.380649e-23 * 300 * 1e30 / 1e5) = f_virial * 41.419 bar
+    // Dimensionless bulk-normalized contact ratio: R_contact = f_virial / rho_bulk
+    result.contact_ratio = (params->bulk_density > 1e-6f) ? (f_virial / params->bulk_density) : 1.0f;
+    // 1 k_B T / Å^3 in bar: f_virial * (1.380649e-23 * 300 * 1e30 / 1e5) = f_virial * 41419.47 bar
     result.p_wall_bar = f_virial * (1.380649e-23f * params->temperature_k * 1e25f);
 
     // G. Grand Potential Integral & Solvation Free Energy: Omega[rho]
