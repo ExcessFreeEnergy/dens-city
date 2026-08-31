@@ -434,6 +434,7 @@ class EGNNMicroscopicEnergy:
             )
             self.is_real_atom = material.atom_mask.realize()
             self.molecule_mask = material.molecule_mask.realize()
+            self.base_charges = getattr(material, "base_charges", None)
         elif material is not None and getattr(material, "sites", None):
             self.is_batched_energy = False
             self.material = material
@@ -448,6 +449,11 @@ class EGNNMicroscopicEnergy:
             self.atomic_numbers = Tensor(z_padded, dtype=dtypes.float32).realize()
             self.is_real_atom = Tensor(mask_padded, dtype=dtypes.float32).realize()
             self.molecule_mask = Tensor([1.0], dtype=dtypes.float32).realize()
+
+            bq = material.base_charges or material.compute_topological_base_charges()
+            bq_padded = np.zeros(128, dtype=np.float32)
+            bq_padded[: min(n_real, 128)] = bq[: min(n_real, 128)]
+            self.base_charges = Tensor(bq_padded, dtype=dtypes.float32).realize()
         elif atomic_numbers is not None:
             self.is_batched_energy = False
             z_arr = np.array(atomic_numbers, dtype=np.float32)
@@ -461,6 +467,7 @@ class EGNNMicroscopicEnergy:
             self.atomic_numbers = Tensor(z_padded, dtype=dtypes.float32).realize()
             self.is_real_atom = Tensor(mask_padded, dtype=dtypes.float32).realize()
             self.molecule_mask = Tensor([1.0], dtype=dtypes.float32).realize()
+            self.base_charges = None
         else:
             self.is_batched_energy = False
             self.n_particles = 128
@@ -468,6 +475,7 @@ class EGNNMicroscopicEnergy:
             self.atomic_numbers = Tensor.full((128,), 6.0, dtype=dtypes.float32).realize()
             self.is_real_atom = Tensor.ones(128, dtype=dtypes.float32).realize()
             self.molecule_mask = Tensor([1.0], dtype=dtypes.float32).realize()
+            self.base_charges = None
 
         # Wall potential parameters
         self.sigma_wf = wall_sigma
@@ -534,6 +542,46 @@ class EGNNMicroscopicEnergy:
             u_wall = (v_wall * self.is_real_atom.unsqueeze(0)).sum(axis=-1)
 
         return u_wall if is_batched else u_wall.squeeze(0)
+
+    def compute_quantum_charges(
+        self,
+        pos: Tensor,
+        total_charge: Optional[Union[Tensor, float]] = None,
+        base_charges: Optional[Tensor] = None,
+    ) -> Tensor:
+        """Evaluates dynamic quantum partial charges q(x) via the EGNN secondary readout head."""
+        is_batched = len(pos.shape) == 3
+        pos_b = pos if is_batched else pos.unsqueeze(0)
+        B, N, _ = pos_b.shape
+
+        if getattr(self, "is_batched_energy", False):
+            z_in = self.atomic_numbers
+            a_mask = self.is_real_atom
+            m_mask = self.molecule_mask
+            bq_in = base_charges if base_charges is not None else getattr(self, "base_charges", None)
+        else:
+            z_in = self.atomic_numbers.reshape(1, N).expand(B, N)
+            a_mask = self.is_real_atom.reshape(1, N).expand(B, N)
+            m_mask = Tensor.ones(B, dtype=dtypes.float32)
+            bq_in = (
+                base_charges
+                if base_charges is not None
+                else (
+                    self.base_charges.reshape(1, N).expand(B, N)
+                    if getattr(self, "base_charges", None) is not None
+                    else None
+                )
+            )
+
+        q = self.egnn_ff.compute_charges(
+            x=pos_b,
+            atomic_numbers=z_in,
+            atom_mask=a_mask,
+            molecule_mask=m_mask,
+            total_charge=total_charge,
+            base_charges=bq_in,
+        )
+        return q if is_batched else q.squeeze(0)
 
     def __call__(self, pos: Tensor, shift: bool = True, regularize: bool = True) -> Tensor:
         """Computes total potential energy U(x) = U_egnn(x) + U_wall(z)."""

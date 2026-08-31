@@ -997,6 +997,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             report_out=args.report_out,
             run_e2e=args.run_e2e,
             populate_all_freesolv=args.all_freesolv,
+            energy_engine=args.energy_engine,
+            batch_size=args.batch_size if ("-b" in argv or "--batch-size" in argv) else None,
         )
 
     # =========================================================================

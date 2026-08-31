@@ -229,6 +229,46 @@ def parse_atomic_number(atom_type: str, site_name: str = "", mass: float = 12.0)
     return 6
 
 
+PAULING_ELECTRONEGATIVITIES: Dict[int, float] = {
+    1: 2.20,  # H
+    2: 0.00,  # He
+    3: 0.98,  # Li
+    4: 1.57,  # Be
+    5: 2.04,  # B
+    6: 2.55,  # C
+    7: 3.04,  # N
+    8: 3.44,  # O
+    9: 3.98,  # F
+    10: 0.00,  # Ne
+    11: 0.93,  # Na
+    12: 1.31,  # Mg
+    13: 1.61,  # Al
+    14: 1.90,  # Si
+    15: 2.19,  # P
+    16: 2.58,  # S
+    17: 3.16,  # Cl
+    18: 0.00,  # Ar
+    19: 0.82,  # K
+    20: 1.00,  # Ca
+    35: 2.96,  # Br
+    53: 2.66,  # I
+}
+
+
+def parse_bond_order(b_type: str) -> float:
+    """Extracts numeric bond order from Tripos bond type string."""
+    b = str(b_type).lower().strip()
+    if b in ("1", "single", "s"):
+        return 1.0
+    elif b in ("2", "double", "d"):
+        return 2.0
+    elif b in ("3", "triple", "t"):
+        return 3.0
+    elif b in ("ar", "aromatic", "am", "amide"):
+        return 1.5
+    return 1.0
+
+
 @dataclass
 class AtomSite:
     site_name: str
@@ -252,6 +292,7 @@ class Material:
     sites: List[AtomSite] = field(default_factory=list)
     bonds: List[Tuple[int, int, str]] = field(default_factory=list)
     dihedral_quadruplets: List[Tuple[int, int, int, int]] = field(default_factory=list)
+    base_charges: Optional[List[float]] = None
     effective_sigma: float = 3.4
     effective_epsilon_k: float = 120.0
     temperature_k: float = 300.0
@@ -269,6 +310,50 @@ class Material:
     @property
     def total_charge(self) -> float:
         return sum(s.charge for s in self.sites)
+
+    def compute_topological_base_charges(self, kappa: float = 0.22, max_val: float = 1.0) -> List[float]:
+        """
+        Computes 2D topological baseline partial charges q_i^base from covalent connectivity
+        using Pauling bond-dipole charge transfer with hypervalency clamping and formal charge seeding:
+        q_i^base = F_i + clip(kappa * sum_{j in N(i)} order_ij * (chi_j - chi_i), -max_val, +max_val)
+        """
+        n = len(self.sites)
+        if n == 0:
+            self.base_charges = []
+            return []
+
+        delta_q = [0.0] * n
+        for a1, a2, b_type in self.bonds:
+            if 0 <= a1 < n and 0 <= a2 < n:
+                z1 = getattr(self.sites[a1], "atomic_number", 6)
+                z2 = getattr(self.sites[a2], "atomic_number", 6)
+                chi1 = PAULING_ELECTRONEGATIVITIES.get(z1, 2.50)
+                chi2 = PAULING_ELECTRONEGATIVITIES.get(z2, 2.50)
+                order = parse_bond_order(b_type)
+
+                # If chi2 > chi1, atom 2 pulls electron density from atom 1
+                # dq is transferred from atom 1 to atom 2 (atom 1 becomes positive, atom 2 becomes negative)
+                dq = kappa * order * (chi2 - chi1)
+                delta_q[a1] += dq
+                delta_q[a2] -= dq
+
+        # Clamp raw bond-dipole accumulation to prevent hypervalency runaway
+        base_q = []
+        for i, s in enumerate(self.sites):
+            clamped_dq = max(-max_val, min(max_val, delta_q[i]))
+            # Seed formal charge (integer or initial charge if specified)
+            f_i = round(s.charge) if abs(s.charge - round(s.charge)) < 0.1 and abs(s.charge) >= 0.9 else 0.0
+            base_q.append(clamped_dq + f_i)
+
+        # Net formal charge mean-shift projection: sum(q_base) == Q_total
+        total_target = (
+            round(self.total_charge) if abs(self.total_charge - round(self.total_charge)) < 0.1 else self.total_charge
+        )
+        q_sum = sum(base_q)
+        correction = (q_sum - total_target) / float(n)
+        final_base = [q - correction for q in base_q]
+        self.base_charges = final_base
+        return final_base
 
     @property
     def molarity_mol_l(self) -> float:
@@ -562,6 +647,7 @@ class MaterialLoader:
         )
         mat.compute_bulk_mu()
         mat.compute_bulk_pressure()
+        mat.compute_topological_base_charges()
         return mat
 
     @classmethod
@@ -657,6 +743,7 @@ class MaterialLoader:
         )
         mat.compute_bulk_mu()
         mat.compute_bulk_pressure()
+        mat.compute_topological_base_charges()
         return mat
 
     @classmethod
@@ -717,6 +804,7 @@ class MolecularBatch:
     sigmas: Any  # Tensor of shape (B, N)
     epsilons: Any  # Tensor of shape (B, N)
     charges: Any  # Tensor of shape (B, N)
+    base_charges: Any = None  # Tensor of shape (B, N) - 2D topological Pauling baseline charges
     atomic_numbers: Any = None  # Tensor of shape (B, N)
     atom_mask: Any = None  # Tensor of shape (B, N) - 1.0 for real atoms, 0.0 for dummy atoms
     molecule_mask: Any = None  # Tensor of shape (B,) - 1.0 for active molecules, 0.0 for dummy slots
@@ -746,6 +834,7 @@ class MolecularBatch:
         bulk_mu: np.ndarray,
         slit_width_a: np.ndarray,
         conditioning: np.ndarray,
+        base_charges: Optional[np.ndarray] = None,
         exclusions: Optional[np.ndarray] = None,
         materials: Optional[List[Optional[Material]]] = None,
     ) -> MolecularBatch:
@@ -766,6 +855,11 @@ class MolecularBatch:
             if exclusions is not None
             else np.zeros((b_size, n_particles, n_particles), dtype=np.float32)
         )
+        base_q_np = (
+            base_charges.astype(np.float32)
+            if base_charges is not None
+            else np.zeros((b_size, n_particles), dtype=np.float32)
+        )
 
         return MolecularBatch(
             materials=mats,
@@ -774,6 +868,7 @@ class MolecularBatch:
             sigmas=Tensor(sigmas.astype(np.float32), dtype=dtypes.float32).realize(),
             epsilons=Tensor(epsilons.astype(np.float32), dtype=dtypes.float32).realize(),
             charges=Tensor(charges.astype(np.float32), dtype=dtypes.float32).realize(),
+            base_charges=Tensor(base_q_np, dtype=dtypes.float32).realize(),
             atomic_numbers=Tensor(atomic_numbers.astype(np.float32), dtype=dtypes.float32).realize(),
             atom_mask=Tensor(atom_mask.astype(np.float32), dtype=dtypes.float32).realize(),
             molecule_mask=Tensor(molecule_mask.astype(np.float32), dtype=dtypes.float32).realize(),
@@ -805,6 +900,7 @@ class MolecularBatch:
         sigmas_np = np.zeros((batch_size, target_n_particles), dtype=np.float32)
         epsilons_np = np.zeros((batch_size, target_n_particles), dtype=np.float32)
         charges_np = np.zeros((batch_size, target_n_particles), dtype=np.float32)
+        base_charges_np = np.zeros((batch_size, target_n_particles), dtype=np.float32)
         atomic_numbers_np = np.zeros((batch_size, target_n_particles), dtype=np.float32)
         atom_mask_np = np.zeros((batch_size, target_n_particles), dtype=np.float32)
         molecule_mask_np = np.zeros(batch_size, dtype=np.float32)
@@ -824,12 +920,14 @@ class MolecularBatch:
             s_b = [s.sigma for s in mat.sites] if mat.sites else [mat.effective_sigma]
             e_b = [s.epsilon_k for s in mat.sites] if mat.sites else [mat.effective_epsilon_k]
             q_b = [s.charge for s in mat.sites] if mat.sites else [mat.total_charge]
+            bq_b = mat.base_charges or mat.compute_topological_base_charges()
             z_b = [getattr(s, "atomic_number", 6) for s in mat.sites] if mat.sites else [6]
             n_sites = min(len(s_b), target_n_particles)
 
             sigmas_np[b, :n_sites] = s_b[:n_sites]
             epsilons_np[b, :n_sites] = e_b[:n_sites]
             charges_np[b, :n_sites] = q_b[:n_sites]
+            base_charges_np[b, :n_sites] = bq_b[:n_sites]
             atomic_numbers_np[b, :n_sites] = z_b[:n_sites]
             atom_mask_np[b, :n_sites] = 1.0
 
@@ -847,6 +945,7 @@ class MolecularBatch:
             sigmas=sigmas_np,
             epsilons=epsilons_np,
             charges=charges_np,
+            base_charges=base_charges_np,
             atomic_numbers=atomic_numbers_np,
             atom_mask=atom_mask_np,
             molecule_mask=molecule_mask_np,

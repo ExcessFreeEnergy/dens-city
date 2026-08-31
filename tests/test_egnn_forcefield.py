@@ -246,3 +246,148 @@ def test_egnn_boltzmann_generator_training():
     losses = bg.train(steps=3, batch_size=4, verbose=False)
     assert len(losses) == 3
     assert not np.isnan(losses[-1])
+
+
+def test_egnn_dynamic_quantum_charges_and_formal_charge_conservation():
+    """
+    Verifies that EGNNForceField.compute_charges predicts dynamic quantum partial charges
+    and enforces exact formal charge conservation across neutral, anionic, and cationic states.
+    """
+    ff = EGNNForceField(num_layers=7, hidden_dim=128, n_particles=128)
+
+    # Ethanol (9 real atoms + 119 padding)
+    coords = Tensor.randn(2, 128, 3) * 2.0
+    z = Tensor.zeros(2, 128, dtype=dtypes.float32)
+    z_np = np.zeros((2, 128), dtype=np.float32)
+    z_np[:, :9] = [6, 6, 8, 1, 1, 1, 1, 1, 1]
+    z = Tensor(z_np)
+    atom_mask = (z > 0).cast(dtypes.float32).reshape(2, 128, 1)
+
+    # 1. Neutral molecule test (Q_total = 0.0)
+    q_neutral = ff.compute_charges(coords, z, atom_mask, total_charge=0.0)
+    assert q_neutral.shape == (2, 128)
+    q_sum_neutral = q_neutral.sum(axis=1).numpy()
+    np.testing.assert_allclose(q_sum_neutral, [0.0, 0.0], atol=1e-5)
+    # Padded atoms must have strictly zero charge
+    np.testing.assert_allclose(q_neutral.numpy()[:, 9:], 0.0, atol=1e-7)
+
+    # 2. Anion test (Q_total = -1.0)
+    q_anion = ff.compute_charges(coords, z, atom_mask, total_charge=-1.0)
+    q_sum_anion = q_anion.sum(axis=1).numpy()
+    np.testing.assert_allclose(q_sum_anion, [-1.0, -1.0], atol=1e-5)
+    np.testing.assert_allclose(q_anion.numpy()[:, 9:], 0.0, atol=1e-7)
+
+    # 3. Cation test (Q_total = +1.0)
+    q_cation = ff.compute_charges(coords, z, atom_mask, total_charge=1.0)
+    q_sum_cation = q_cation.sum(axis=1).numpy()
+    np.testing.assert_allclose(q_sum_cation, [1.0, 1.0], atol=1e-5)
+
+    # 4. Batch-varying formal charges: Molecule 0 is neutral (0.0), Molecule 1 is anion (-2.0)
+    q_batch_target = Tensor([[0.0], [-2.0]], dtype=dtypes.float32)
+    q_mixed = ff.compute_charges(coords, z, atom_mask, total_charge=q_batch_target)
+    q_sum_mixed = q_mixed.sum(axis=1).numpy()
+    np.testing.assert_allclose(q_sum_mixed, [0.0, -2.0], atol=1e-5)
+
+    # 5. Test unified compute_energy_forces_and_charges
+    u, f, q_unified = ff.compute_energy_forces_and_charges(coords, z, atom_mask, total_charge=q_batch_target)
+    assert u.shape == (2,)
+    assert f.shape == (2, 128, 3)
+    assert q_unified.shape == (2, 128)
+    np.testing.assert_allclose(q_unified.sum(axis=1).numpy(), [0.0, -2.0], atol=1e-5)
+
+
+def test_residual_electronegativity_prior():
+    """
+    Verifies that topological base charges from Pauling electronegativity differentials
+    break charge symmetry at Step 0, produce physical polarization (e.g. q_O ~ -0.55e, q_H ~ +0.27e in water),
+    and correctly superpose with neural delta_q predictions.
+    """
+    # 1. Water molecule (H-O-H)
+    site_o = AtomSite(
+        site_name="O",
+        atom_type="oh",
+        x=0.0,
+        y=0.0,
+        z=0.0,
+        charge=0.0,
+        sigma=3.1,
+        epsilon_kcal=0.15,
+        epsilon_k=150.0,
+        mass=16.0,
+        atomic_number=8,
+    )
+    site_h1 = AtomSite(
+        site_name="H1",
+        atom_type="ho",
+        x=0.757,
+        y=0.586,
+        z=0.0,
+        charge=0.0,
+        sigma=1.0,
+        epsilon_kcal=0.0,
+        epsilon_k=0.0,
+        mass=1.0,
+        atomic_number=1,
+    )
+    site_h2 = AtomSite(
+        site_name="H2",
+        atom_type="ho",
+        x=-0.757,
+        y=0.586,
+        z=0.0,
+        charge=0.0,
+        sigma=1.0,
+        epsilon_kcal=0.0,
+        epsilon_k=0.0,
+        mass=1.0,
+        atomic_number=1,
+    )
+    bonds_water = [(0, 1, "1"), (0, 2, "1")]
+
+    mat_water = Material(
+        name="water",
+        identifier="water",
+        dimension_mode="3D_MOLECULAR",
+        sites=[site_o, site_h1, site_h2],
+        bonds=bonds_water,
+    )
+    base_q = mat_water.compute_topological_base_charges(kappa=0.22)
+
+    # In water: chi_O = 3.44, chi_H = 2.20 -> delta_chi = 1.24 -> dq = 0.22 * 1.24 = 0.2728e
+    # q_O = -2 * 0.2728 = -0.5456e, q_H1 = +0.2728e, q_H2 = +0.2728e
+    assert len(base_q) == 3
+    assert base_q[0] < -0.45, f"Expected oxygen charge < -0.45, got {base_q[0]}"
+    assert base_q[1] > 0.20, f"Expected hydrogen charge > 0.20, got {base_q[1]}"
+    assert base_q[2] > 0.20, f"Expected hydrogen charge > 0.20, got {base_q[2]}"
+    np.testing.assert_allclose(sum(base_q), 0.0, atol=1e-6)
+
+    # 2. Feed base_charges into EGNNForceField
+    ff = EGNNForceField(num_layers=7, hidden_dim=128, n_particles=128)
+    coords = Tensor.zeros(1, 128, 3)
+    coords_np = np.zeros((1, 128, 3), dtype=np.float32)
+    coords_np[0, 0] = [0.0, 0.0, 0.0]
+    coords_np[0, 1] = [0.757, 0.586, 0.0]
+    coords_np[0, 2] = [-0.757, 0.586, 0.0]
+    coords = Tensor(coords_np)
+
+    z = Tensor.zeros(1, 128, dtype=dtypes.float32)
+    z_np = np.zeros((1, 128), dtype=np.float32)
+    z_np[0, :3] = [8, 1, 1]
+    z = Tensor(z_np)
+
+    atom_mask = (z > 0).cast(dtypes.float32).reshape(1, 128, 1)
+
+    bq_tensor = Tensor.zeros(1, 128, dtype=dtypes.float32)
+    bq_np = np.zeros((1, 128), dtype=np.float32)
+    bq_np[0, :3] = base_q
+    bq_tensor = Tensor(bq_np)
+
+    # Compute superposed dynamic charges
+    q_dyn = ff.compute_charges(coords, z, atom_mask, total_charge=0.0, base_charges=bq_tensor)
+    q_dyn_np = q_dyn.numpy()[0, :3]
+
+    # Oxygen must remain significantly negative and hydrogens significantly positive
+    assert q_dyn_np[0] < -0.30, f"Dynamic oxygen charge collapsed: {q_dyn_np[0]}"
+    assert q_dyn_np[1] > 0.10, f"Dynamic hydrogen charge collapsed: {q_dyn_np[1]}"
+    assert q_dyn_np[2] > 0.10, f"Dynamic hydrogen charge collapsed: {q_dyn_np[2]}"
+    np.testing.assert_allclose(sum(q_dyn_np), 0.0, atol=1e-5)

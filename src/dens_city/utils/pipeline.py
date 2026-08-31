@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from tinygrad import nn
+from tinygrad import Tensor, dtypes, nn
 
 from dens_city.boltzmann.bijectors import Base2CartesianFlow
 from dens_city.boltzmann.energy import EGNNMicroscopicEnergy, MicroscopicEnergy
@@ -67,6 +67,8 @@ class MaterialPipelineTask:
     r_cut: Optional[float] = None
     energy_engine: str = "classical"
     material_obj: Optional[Material] = None
+    dielectric_constant: float = 78.4
+    formal_charge: Optional[float] = None
 
 
 @dataclass
@@ -95,6 +97,8 @@ class MaterialPipelineResult:
     bg_energy_mean: Optional[float] = None
     bg_energy_var: Optional[float] = None
     solvation_free_energy_kcal_mol: Optional[float] = None
+    born_solvation_kcal_mol: Optional[float] = None
+    quantum_charges: Optional[List[float]] = None
     egnn_energy: Optional[float] = None
     egnn_force_rms: Optional[float] = None
     artifact_dir: Optional[str] = None
@@ -869,6 +873,66 @@ def execute_prepared_batch(
                 np_dict=np_weights,
             )
 
+        solv_free_energy = float(getattr(mat, "solvation_free_energy_kcal_mol", 0.0))
+        delta_g_born_val = None
+        quantum_q_list = None
+
+        if engine_type == "egnn" and mat.num_sites > 0:
+            try:
+                from dens_city.cdft.generalized_born import GeneralizedBornSolvation
+
+                eps_solvent = float(getattr(task, "dielectric_constant", 78.4))
+                gb_solver = GeneralizedBornSolvation(dielectric_constant=eps_solvent)
+
+                n_conf = min(8, len(mat_coords))
+                n_sites_real = mat.num_sites
+                n_pad = max(128, ((n_sites_real + 127) // 128) * 128)
+                conf_padded = np.zeros((n_conf, n_pad, 3), dtype=np.float32)
+                conf_padded[:, :n_sites_real, :] = mat_coords[:n_conf]
+
+                z_list = [getattr(s, "atomic_number", 6) for s in mat.sites] if mat.sites else [6] * n_sites_real
+                z_padded = np.zeros((n_conf, n_pad), dtype=np.float32)
+                z_padded[:, :n_sites_real] = z_list
+
+                bq_list = mat.base_charges or mat.compute_topological_base_charges()
+                bq_padded = np.zeros((n_conf, n_pad), dtype=np.float32)
+                bq_padded[:, :n_sites_real] = bq_list[:n_sites_real]
+
+                a_mask_padded = np.zeros((n_conf, n_pad, 1), dtype=np.float32)
+                a_mask_padded[:, :n_sites_real, :] = 1.0
+
+                x_t = Tensor(conf_padded, dtype=dtypes.float32)
+                z_t = Tensor(z_padded, dtype=dtypes.float32)
+                bq_t = Tensor(bq_padded, dtype=dtypes.float32)
+                m_t = Tensor(a_mask_padded, dtype=dtypes.float32)
+
+                q_tot_val = float(getattr(mat, "total_charge", getattr(task, "formal_charge", 0.0) or 0.0))
+                q_tot_tensor = Tensor.full((n_conf, 1, 1), q_tot_val, dtype=dtypes.float32)
+
+                if hasattr(energy_fn, "egnn_ff") and energy_fn.egnn_ff is not None:
+                    q_pred_tensor = energy_fn.egnn_ff.compute_charges(
+                        x=x_t,
+                        atomic_numbers=z_t,
+                        atom_mask=m_t,
+                        total_charge=q_tot_tensor,
+                        base_charges=bq_t,
+                    )
+                    gb_tensor = gb_solver.compute_solvation_free_energy(
+                        x=x_t,
+                        charges=q_pred_tensor,
+                        atomic_numbers=z_t,
+                        atom_mask=m_t,
+                        dielectric_constant=eps_solvent,
+                    )
+                    delta_g_born_val = float(gb_tensor.mean().item())
+                    q_mean = q_pred_tensor.mean(axis=0).numpy()[:n_sites_real].tolist()
+                    quantum_q_list = [float(q) for q in q_mean]
+
+                    # Total Solvation Free Energy = Non-polar FMT cavity/dispersion + Dynamic Quantum GB
+                    solv_free_energy = solv_free_energy + delta_g_born_val
+            except Exception:
+                pass
+
         results_map[orig_idx] = MaterialPipelineResult(
             material_name=mat.name,
             status=PipelineStatus.SUCCESS.value,
@@ -888,9 +952,22 @@ def execute_prepared_batch(
             bg_log_likelihood=float(mean_log_pxs[local_idx]) if local_idx < len(mean_log_pxs) else None,
             bg_energy_mean=float(mean_energies[local_idx]) if local_idx < len(mean_energies) else None,
             bg_energy_var=float(var_energies[local_idx]) if local_idx < len(var_energies) else None,
-            solvation_free_energy_kcal_mol=getattr(mat, "solvation_free_energy_kcal_mol", 0.0),
+            solvation_free_energy_kcal_mol=solv_free_energy,
+            born_solvation_kcal_mol=delta_g_born_val,
+            quantum_charges=quantum_q_list,
             artifact_dir=mat_out_dir,
         )
+
+    # Clean up device state, synchronize timeline queues, and release kernel argument buffers
+    try:
+        from tinygrad.device import Device
+
+        Device[Device.DEFAULT].synchronize()
+    except Exception:
+        pass
+    import gc
+
+    gc.collect()
 
     return [results_map[i] for i in range(len(batch_tasks))]
 

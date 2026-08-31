@@ -123,6 +123,13 @@ class EGNNForceField:
             nn.Linear(hidden_dim, 1),
         ]
 
+        # Secondary Readout MLP: node-wise dynamic quantum partial charge q_i
+        self.charge_mlp: List[Callable[[Tensor], Tensor]] = [
+            nn.Linear(hidden_dim, hidden_dim),
+            Tensor.silu,
+            nn.Linear(hidden_dim, 1),
+        ]
+
     def _prepare_inputs(
         self,
         x: Tensor,
@@ -130,7 +137,7 @@ class EGNNForceField:
         atom_mask: Optional[Tensor] = None,
         molecule_mask: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-        """Validates and broadcasts input dimensions to static (B, 128, ...) shapes."""
+        """Validates and broadcasts input dimensions to static (B, N, ...) shapes."""
         # Ensure x is (B, N, 3)
         if len(x.shape) == 2:
             x = x.reshape(1, -1, 3)
@@ -200,6 +207,72 @@ class EGNNForceField:
         u_total = eps_i.sum(axis=(1, 2)) * molecule_mask
         return u_total
 
+    def compute_charges(
+        self,
+        x: Tensor,
+        atomic_numbers: Tensor,
+        atom_mask: Optional[Tensor] = None,
+        molecule_mask: Optional[Tensor] = None,
+        total_charge: Optional[Tensor | float] = None,
+        base_charges: Optional[Tensor] = None,
+    ) -> Tensor:
+        """
+        Predicts conformation-dependent quantum partial charges q_i(x) for each atom
+        via physics-informed residual superposition: q_i = q_i^base + delta_q_i(x).
+        Applies real-atom masking and dynamic molecule-specific formal charge mean-shift projection:
+        q_i = q_i^raw - (sum_j q_j^raw - Q_total) / N_real
+        Returns: Tensor of shape (B, N).
+        """
+        x, atomic_numbers, atom_mask, molecule_mask, edge_mask = self._prepare_inputs(
+            x, atomic_numbers, atom_mask, molecule_mask
+        )
+        B, N, _ = x.shape
+
+        # 1. One-hot encode atomic numbers Z -> (B, N, max_atomic_number) -> h^0 (B, N, 128)
+        z_clamped = atomic_numbers.cast(dtypes.int32)
+        z_one_hot = Tensor.one_hot(z_clamped, num_classes=self.max_atomic_number)
+        h = self.embedding(z_one_hot) * atom_mask
+
+        # 2. Evaluate Pairwise Relative Squared Distances d_ij^2 = ||x_i - x_j||^2
+        x_i = x.reshape(B, N, 1, 3)
+        x_j = x.reshape(B, 1, N, 3)
+        diff = x_i - x_j
+        d_sq = (diff * diff).sum(axis=-1, keepdim=True)  # (B, N, N, 1)
+
+        # 3. Pass through L=7 message-passing layers
+        for layer in self.layers:
+            h = layer(h, d_sq, edge_mask, atom_mask)
+
+        # 4. Neural Perturbation Readout: delta_q_i(x)
+        delta_q = self.charge_mlp[0](h)
+        delta_q = self.charge_mlp[1](delta_q)
+        delta_q = self.charge_mlp[2](delta_q) * atom_mask  # (B, N, 1)
+
+        # 5. Residual Superposition: q_raw = q_base + delta_q
+        if base_charges is not None:
+            if len(base_charges.shape) == 2:
+                bq = base_charges.reshape(B, N, 1)
+            else:
+                bq = base_charges.reshape(B, N, 1)
+            q_raw = (bq + delta_q) * atom_mask
+        else:
+            q_raw = delta_q
+
+        # 6. Exact Formal Charge Mean-Shift Conservation Projection
+        num_real = atom_mask.sum(axis=1, keepdim=True).maximum(1.0)  # (B, 1, 1)
+        q_sum = q_raw.sum(axis=1, keepdim=True)  # (B, 1, 1)
+        if total_charge is not None:
+            if isinstance(total_charge, (int, float)):
+                q_target = Tensor.full((B, 1, 1), float(total_charge), dtype=dtypes.float32)
+            else:
+                q_target = total_charge.reshape(B, 1, 1).cast(dtypes.float32)
+        else:
+            q_target = Tensor.zeros(B, 1, 1, dtype=dtypes.float32)
+
+        q_shift = (q_sum - q_target) / num_real
+        q_final = ((q_raw - q_shift) * atom_mask).reshape(B, N)
+        return (q_final * molecule_mask.reshape(B, 1)).realize()
+
     def compute_forces(
         self,
         x: Tensor,
@@ -248,6 +321,81 @@ class EGNNForceField:
         grad = x_in.grad if x_in.grad is not None else Tensor.zeros_like(x_in)
         forces = (-grad * a_mask).realize()
         return u_total.realize(), forces
+
+    def compute_energy_forces_and_charges(
+        self,
+        x: Tensor,
+        atomic_numbers: Tensor,
+        atom_mask: Optional[Tensor] = None,
+        molecule_mask: Optional[Tensor] = None,
+        total_charge: Optional[Tensor | float] = None,
+        base_charges: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor, Tensor]:
+        """
+        Evaluates total potential energy U(x), conservative forces F = -∇_x U(x),
+        and dynamic quantum partial charges q(x) in a single unified graph traversal.
+        Returns: Tuple of (energy (B,), forces (B, N, 3), charges (B, N)).
+        """
+        x_in = x.detach()
+        x_in.requires_grad = True
+
+        x_prep, atomic_numbers, atom_mask, molecule_mask, edge_mask = self._prepare_inputs(
+            x_in, atomic_numbers, atom_mask, molecule_mask
+        )
+        B, N, _ = x_prep.shape
+
+        z_clamped = atomic_numbers.cast(dtypes.int32)
+        z_one_hot = Tensor.one_hot(z_clamped, num_classes=self.max_atomic_number)
+        h = self.embedding(z_one_hot) * atom_mask
+
+        x_i = x_prep.reshape(B, N, 1, 3)
+        x_j = x_prep.reshape(B, 1, N, 3)
+        diff = x_i - x_j
+        d_sq = (diff * diff).sum(axis=-1, keepdim=True)
+
+        for layer in self.layers:
+            h = layer(h, d_sq, edge_mask, atom_mask)
+
+        # 1. Energy readout
+        eps_i = self.readout_mlp[0](h)
+        eps_i = self.readout_mlp[1](eps_i)
+        eps_i = self.readout_mlp[2](eps_i) * atom_mask
+        u_total = eps_i.sum(axis=(1, 2)) * molecule_mask
+
+        # 2. Charge readout with residual electronegativity superposition & formal charge conservation
+        delta_q = self.charge_mlp[0](h)
+        delta_q = self.charge_mlp[1](delta_q)
+        delta_q = self.charge_mlp[2](delta_q) * atom_mask
+
+        if base_charges is not None:
+            if len(base_charges.shape) == 2:
+                bq = base_charges.reshape(B, N, 1)
+            else:
+                bq = base_charges.reshape(B, N, 1)
+            q_raw = (bq + delta_q) * atom_mask
+        else:
+            q_raw = delta_q
+
+        num_real = atom_mask.sum(axis=1, keepdim=True).maximum(1.0)
+        q_sum = q_raw.sum(axis=1, keepdim=True)
+        if total_charge is not None:
+            if isinstance(total_charge, (int, float)):
+                q_target = Tensor.full((B, 1, 1), float(total_charge), dtype=dtypes.float32)
+            else:
+                q_target = total_charge.reshape(B, 1, 1).cast(dtypes.float32)
+        else:
+            q_target = Tensor.zeros(B, 1, 1, dtype=dtypes.float32)
+
+        q_shift = (q_sum - q_target) / num_real
+        q_final = (((q_raw - q_shift) * atom_mask).reshape(B, N) * molecule_mask.reshape(B, 1)).realize()
+
+        # 3. Forces via reverse-mode autograd
+        loss = u_total.sum()
+        loss.backward()
+
+        grad = x_in.grad if x_in.grad is not None else Tensor.zeros_like(x_in)
+        forces = (-grad * atom_mask).realize()
+        return u_total.realize(), forces, q_final
 
     def get_jit_evaluator(self) -> Callable[[Tensor, Tensor, Tensor, Tensor], Tuple[Tensor, Tensor]]:
         """

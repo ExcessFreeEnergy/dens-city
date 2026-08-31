@@ -193,11 +193,21 @@ flowchart TD
   - Decouples CPU tensor assembly from GPU execution, completely eliminating GPU data starvation bubbles.
 - **`execute_prepared_batch(prepared_batch, async_writer)`**:
   - Consumes pre-assembled `PreparedMolecularBatch` instances.
-  - Executes purely on-device operations: `BatchedTinyCDFT.solve()` $\to$ `BoltzmannGenerator.train()` $\to$ 3D conformation sampling.
-  - Immediately dispatches density profiles and sampled trajectories to `AsyncArtifactWriter`.
-- **`AsyncArtifactWriter`**: Background disk writer thread for non-blocking export (`density_profile.csv`, `trajectory.xyz`, `flow_weights.npz`, `pipeline_summary.jsonl`).
 
-#### High-Throughput Batch Architecture ($B=512$) Across 674 Molecules
+### 3.5 `generalized_born.py` — Tensor-Native Universal Generalized Born Solvation Engine
+- **`GeneralizedBornSolvation`**:
+  - `__init__(dielectric_constant=78.4, solute_dielectric=1.0, radius_offset_a=0.09)`: Configures solvent and solute dielectric constants and atomic radius offset.
+  - **$O(1)$ GPU Bondi Radii Gather**: Gathers intrinsic Bondi van der Waals radii from a static GPU-resident lookup tensor ($Z \in [0, 118]$) via `get_bondi_radii_tensor()`, eliminating host-to-device synchronization bottlenecks.
+  - **Grycuk/Hawkins Smooth Volume Descreening**:
+    $$\alpha_i(\mathbf{x}) = \rho_i \left( 1.0 + \min\left(1.5, \, \sum_{j \ne i} \frac{0.12 \sigma_j^3}{r_{ij}^3 + \rho_i^3} \right) \right)$$
+    guaranteeing that effective Born radii satisfy $\alpha_i \ge \rho_i$ without artificial $1/r^4$ singularity runaway or negative descreening divergence.
+  - **Still Pairwise Dielectric Solvation Free Energy**:
+    $$\Delta G_{\rm GB} = -\frac{1}{2}\left( \frac{1}{\varepsilon_{\rm in}} - \frac{1}{\varepsilon_{\rm out}} \right) \cdot \frac{e^2}{4\pi\varepsilon_0} \left[ \sum_{i=1}^N \frac{q_i^2}{\alpha_i} + \sum_{i \ne j} \frac{q_i q_j}{\sqrt{r_{ij}^2 + \alpha_i \alpha_j \exp\left(-\frac{r_{ij}^2}{4\alpha_i\alpha_j}\right)}} \right]$$
+  - Coupled directly into the variational free energy framework and high-throughput execution pipeline to provide continuous, differentiable dielectric hydration corrections alongside Rosenfeld FMT hard-sphere cavity and attractive dispersion terms.
+
+---
+
+## 4. High-Throughput Batch Architecture ($B=512$) Across 674 Molecules
 - **Uniform 128-Site Tensor Bucketing**: All 674 molecular structures pad into static $(B=512, 128)$ tensors, guaranteeing permanent JIT graph cache reuse without recompilation.
 - **GPU Base-2 Matrix Alignment**: Tensor operations align with warp boundaries and SIMD register lanes, achieving maximum memory bandwidth coalescing and ALU utilization.
 - **Benchmark Impact**: Evaluates the entire 674-molecule FreeSolv database in **< 30 seconds** (**> 23 molecules/s**, **> 2,300 conformations/s**) with 100% pass rate.

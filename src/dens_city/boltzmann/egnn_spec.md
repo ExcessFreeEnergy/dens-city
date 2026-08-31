@@ -131,7 +131,9 @@ $$
 
 *Note: Coordinate updates are explicitly omitted to maintain strict $E(n)$ invariance of the scalar output.*
 
-### 2.4 Readout & Conservative Force Generation
+### 2.4 Dual Readout Heads: Potential Energy & Dynamic Quantum Charges
+
+#### Energy Readout & Conservative Forces
 The final layer node embeddings $h^7 \in \mathbb{R}^{B \times 128 \times 128}$ are mapped to atomic energy contributions $\epsilon_i$:
 
 $$
@@ -146,17 +148,32 @@ $$
 \mathbf{F}_i = -\frac{\partial U_{\rm total}}{\partial \mathbf{r}_i} \in \mathbb{R}^{B \times 128 \times 3}
 $$
 
+#### Secondary Readout: Residual Electronegativity Prior & Dynamic Quantum Charges
+To evaluate conformation-dependent dielectric response without charge collapse, the network superposes a topological baseline prior $q_i^{\rm base}$ with a neural perturbation $\Delta q_i(\mathbf{x})$:
+
+1. **2D Topological Pauling Prior**:
+   $$q_i^{\rm base} = F_i + \text{clip}\left( \kappa \sum_{j \in \mathcal{N}_{\rm cov}(i)} \text{order}_{ij} (\chi_j - \chi_i), \, -1.0, \, +1.0 \right)$$
+   where $\kappa = 0.22$, $\chi_i$ is the Pauling electronegativity of atom $i$, $\text{order}_{ij}$ is the covalent bond order, and $F_i$ is the formal charge seed.
+
+2. **Neural Perturbation Readout**:
+   $$\Delta q_i(\mathbf{x}) = \left[ W_{q2} \cdot \text{SiLU}(W_{q1} h_i^7 + b_{q1}) + b_{q2} \right] \cdot m_i \in \mathbb{R}^{B \times 128 \times 1}$$
+
+3. **Superposition & Exact Formal Charge Conservation Mean-Shift**:
+   $$q_i^{\rm raw} = (q_i^{\rm base} + \Delta q_i(\mathbf{x})) \cdot m_i$$
+   $$q_i^{\rm final} = \left[ q_i^{\rm raw} - \frac{1}{N_{\rm real}} \left( \sum_{j=1}^{N_{\rm real}} q_j^{\rm raw} - Q_{\rm total} \right) \right] \cdot m_i \cdot M_b$$
+
 ---
 
 ## 3. Hardware Scaling & Compute Tiering
 
 | Feature | Classical Route (`--energy-engine classical`) | EGNN MLFF Route (`--energy-engine egnn`) |
 | :--- | :--- | :--- |
-| **Physical Model** | GAFF Lennard-Jones + Coulomb (PBC) | 7-Layer Invariant EGNN Potential |
-| **Parameter Source** | Semi-empirical lookup (`forcefield_parameters.json`) | DFT / Quantum Trained Weights |
+| **Physical Model** | GAFF Lennard-Jones + Coulomb (PBC) | 7-Layer Invariant EGNN Potential + Dual-Head Charges |
+| **Parameter Source** | Semi-empirical lookup (`forcefield_parameters.json`) | DFT / Quantum Trained Weights + Topological Prior |
 | **Default Batch Size** | $B = 512$ molecules | $B = 32$ molecules (auto-throttled) |
 | **Sampling Throughput** | $2,200+$ conformations/second | $20-100$ conformations/second |
 | **Polarizability** | Fixed point charges | Dynamic many-body contextual polarization |
+| **Electrostatics** | Point charge summation | Universal Generalized Born ($O(1)$ GPU Bondi radii) |
 | **Primary Use Case** | Large combinatorial library screening | High-accuracy polar/charged edge-cases (polyols, ions) |
 
 ---
