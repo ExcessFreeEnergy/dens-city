@@ -193,12 +193,20 @@ def parse_atomic_number(atom_type: str, site_name: str = "", mass: float = 12.0)
     t = atom_type.strip().upper()
     s = site_name.strip().upper()
 
+    # SYBYL / GAFF carbon atom types: ca (aromatic), cp, cq, cc, cd, ce, cz, c1, c2, c3, c
+    if t in ("CA", "CP", "CQ", "CC", "CD", "CE", "CZ", "C1", "C2", "C3", "C"):
+        return 6
+
     # Check 2-letter element symbols
-    for sym in ["CL", "BR", "NA", "CA", "FE", "AR", "SI", "AL", "MG", "LI", "ZN", "HE", "NE", "KR", "XE"]:
+    for sym in ["CL", "BR", "NA", "FE", "AR", "SI", "AL", "MG", "LI", "ZN", "HE", "NE", "KR", "XE"]:
         if s.startswith(sym) and (len(s) == len(sym) or s[len(sym) :].isdigit() or s[len(sym)] in "_-."):
             return ELEMENT_TO_ATOMIC_NUMBER[sym]
-        if t == sym or t.startswith(sym):
+        if t == sym or (len(t) > 2 and t.startswith(sym)):
             return ELEMENT_TO_ATOMIC_NUMBER[sym]
+
+    # Explicit calcium check only if symbol/name is explicitly CA/CALCIUM
+    if (s == "CA" or s.startswith("CA_") or s.startswith("CA+")) and mass > 38.0:
+        return 20
 
     # Check common 1-letter prefixes
     first_char = t[0] if t else (s[0] if s else "C")
@@ -311,11 +319,11 @@ class Material:
     def total_charge(self) -> float:
         return sum(s.charge for s in self.sites)
 
-    def compute_topological_base_charges(self, kappa: float = 0.22, max_val: float = 1.0) -> List[float]:
+    def compute_topological_base_charges(self, kappa: float = 0.10, q_max: float = 0.50) -> List[float]:
         """
         Computes 2D topological baseline partial charges q_i^base from covalent connectivity
-        using Pauling bond-dipole charge transfer with hypervalency clamping and formal charge seeding:
-        q_i^base = F_i + clip(kappa * sum_{j in N(i)} order_ij * (chi_j - chi_i), -max_val, +max_val)
+        using smooth hyperbolic tangent (tanh) squashed Pauling bond-dipole charge transfer:
+        q_i^base = F_i + q_max * tanh((kappa / q_max) * sum_{j in N(i)} order_ij * (chi_j - chi_i))
         """
         n = len(self.sites)
         if n == 0:
@@ -333,21 +341,21 @@ class Material:
 
                 # If chi2 > chi1, atom 2 pulls electron density from atom 1
                 # dq is transferred from atom 1 to atom 2 (atom 1 becomes positive, atom 2 becomes negative)
-                dq = kappa * order * (chi2 - chi1)
+                dq = order * (chi2 - chi1)
                 delta_q[a1] += dq
                 delta_q[a2] -= dq
 
-        # Clamp raw bond-dipole accumulation to prevent hypervalency runaway
+        # Hyperbolic tangent saturation smoothly limits hypervalency and halogen stacking
         base_q = []
         for i, s in enumerate(self.sites):
-            clamped_dq = max(-max_val, min(max_val, delta_q[i]))
-            # Seed formal charge (integer or initial charge if specified)
-            f_i = round(s.charge) if abs(s.charge - round(s.charge)) < 0.1 and abs(s.charge) >= 0.9 else 0.0
-            base_q.append(clamped_dq + f_i)
+            squashed_dq = q_max * math.tanh((kappa / q_max) * delta_q[i])
+            # Only seed true integer formal charges
+            f_i = round(s.charge) if abs(s.charge - round(s.charge)) < 0.01 and abs(s.charge) >= 0.99 else 0.0
+            base_q.append(squashed_dq + f_i)
 
         # Net formal charge mean-shift projection: sum(q_base) == Q_total
         total_target = (
-            round(self.total_charge) if abs(self.total_charge - round(self.total_charge)) < 0.1 else self.total_charge
+            round(self.total_charge) if abs(self.total_charge - round(self.total_charge)) < 0.01 else self.total_charge
         )
         q_sum = sum(base_q)
         correction = (q_sum - total_target) / float(n)

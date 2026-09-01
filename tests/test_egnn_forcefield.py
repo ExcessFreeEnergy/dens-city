@@ -351,14 +351,15 @@ def test_residual_electronegativity_prior():
         sites=[site_o, site_h1, site_h2],
         bonds=bonds_water,
     )
-    base_q = mat_water.compute_topological_base_charges(kappa=0.22)
+    base_q = mat_water.compute_topological_base_charges(kappa=0.10, q_max=0.50)
 
-    # In water: chi_O = 3.44, chi_H = 2.20 -> delta_chi = 1.24 -> dq = 0.22 * 1.24 = 0.2728e
-    # q_O = -2 * 0.2728 = -0.5456e, q_H1 = +0.2728e, q_H2 = +0.2728e
+    # In water with tanh squashing: chi_O = 3.44, chi_H = 2.20 -> delta_chi = 1.24
+    # delta_q_O = -2 * 1.24 = -2.48 -> q_O = 0.5 * tanh((0.10/0.50) * -2.48) = 0.5 * tanh(-0.496) = -0.2294e
+    # After mean-shift: q_O ~ -0.234e, q_H ~ +0.117e
     assert len(base_q) == 3
-    assert base_q[0] < -0.45, f"Expected oxygen charge < -0.45, got {base_q[0]}"
-    assert base_q[1] > 0.20, f"Expected hydrogen charge > 0.20, got {base_q[1]}"
-    assert base_q[2] > 0.20, f"Expected hydrogen charge > 0.20, got {base_q[2]}"
+    assert -0.30 < base_q[0] < -0.20, f"Expected oxygen charge in [-0.30, -0.20], got {base_q[0]}"
+    assert 0.09 < base_q[1] < 0.15, f"Expected hydrogen charge in [0.09, 0.15], got {base_q[1]}"
+    assert 0.09 < base_q[2] < 0.15, f"Expected hydrogen charge in [0.09, 0.15], got {base_q[2]}"
     np.testing.assert_allclose(sum(base_q), 0.0, atol=1e-6)
 
     # 2. Feed base_charges into EGNNForceField
@@ -386,8 +387,8 @@ def test_residual_electronegativity_prior():
     q_dyn = ff.compute_charges(coords, z, atom_mask, total_charge=0.0, base_charges=bq_tensor)
     q_dyn_np = q_dyn.numpy()[0, :3]
 
-    # Oxygen must remain significantly negative and hydrogens significantly positive
-    assert q_dyn_np[0] < -0.30, f"Dynamic oxygen charge collapsed: {q_dyn_np[0]}"
-    assert q_dyn_np[1] > 0.10, f"Dynamic hydrogen charge collapsed: {q_dyn_np[1]}"
-    assert q_dyn_np[2] > 0.10, f"Dynamic hydrogen charge collapsed: {q_dyn_np[2]}"
+    # Oxygen must remain significantly negative and hydrogens significantly positive without hyper-polarization
+    assert -0.30 < q_dyn_np[0] < -0.20, f"Dynamic oxygen charge collapsed/hyper-polarized: {q_dyn_np[0]}"
+    assert 0.09 < q_dyn_np[1] < 0.15, f"Dynamic hydrogen charge collapsed/hyper-polarized: {q_dyn_np[1]}"
+    assert 0.09 < q_dyn_np[2] < 0.15, f"Dynamic hydrogen charge collapsed/hyper-polarized: {q_dyn_np[2]}"
     np.testing.assert_allclose(sum(q_dyn_np), 0.0, atol=1e-5)

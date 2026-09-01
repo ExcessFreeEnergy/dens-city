@@ -1,0 +1,21 @@
+{
+  "trace_id": "trace_20260831_222205_979",
+  "timestamp": "2026-08-31T22:22:05.979516+00:00",
+  "command": "pytest tests/test_wikiskill.py -q",
+  "exit_code": 0,
+  "duration_sec": 0.789,
+  "stdout": ".......                                                                  [100%]\n7 passed in 0.42s\n",
+  "stderr": "",
+  "passed": true,
+  "summary": "Pytest PASSED: 7 passed, 0 failed, 0 errors",
+  "test_results": {
+    "passed": 7,
+    "failed": 0,
+    "errors": 0,
+    "failed_tests": []
+  },
+  "tags": [
+    "cli-recorded"
+  ],
+  "metadata": {}
+}

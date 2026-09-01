@@ -129,6 +129,9 @@ class EGNNForceField:
             Tensor.silu,
             nn.Linear(hidden_dim, 1),
         ]
+        # Zero-initialize output layer so initial neural perturbations start cleanly at 0.0 around physical baseline
+        self.charge_mlp[2].weight = Tensor.zeros(1, hidden_dim, dtype=dtypes.float32)
+        self.charge_mlp[2].bias = Tensor.zeros(1, dtype=dtypes.float32)
 
     def _prepare_inputs(
         self,

@@ -324,6 +324,38 @@ Execution Modes & Examples:
         default=False,
         help="Validate simulation results against FreeSolv experimental hydration thermodynamics and output report",
     )
+    mode_group.add_argument(
+        "--wikiskill-status",
+        action="store_true",
+        default=False,
+        help="Display WikiSkill persistent knowledge index, patterns, and proposal audit trail",
+    )
+    mode_group.add_argument(
+        "--wikiskill-init",
+        action="store_true",
+        default=False,
+        help="Initialize WikiSkill three-layer directories and bootstrap foundational physics patterns",
+    )
+    mode_group.add_argument(
+        "--wikiskill-consolidate",
+        action="store_true",
+        default=False,
+        help="Analyze recent execution traces and consolidate root causes into wiki patterns",
+    )
+    mode_group.add_argument(
+        "--wikiskill-audit",
+        type=str,
+        default=None,
+        metavar="TARGET_SKILL",
+        help="Audit a target skill name or proposed edit against past rejections and anti-patterns",
+    )
+    mode_group.add_argument(
+        "--wikiskill-record",
+        type=str,
+        default=None,
+        metavar="COMMAND",
+        help="Execute a test/command and record an immutable trace into the WikiSkill raw layer",
+    )
 
     # -------------------------------------------------------------------------
     # Material & Input Selection
@@ -793,6 +825,100 @@ def main(argv: Optional[List[str]] = None) -> int:
         os.environ["BEAM"] = str(args.beam)
     if args.debug:
         os.environ["DEBUG"] = "2"
+
+    # =========================================================================
+    # MODE: WikiSkill Persistent Knowledge Base & Audit Modes
+    # =========================================================================
+    if args.wikiskill_init:
+        from dens_city.wikiskill import RawTraceRecorder, WikiManager
+
+        wiki = WikiManager()
+        RawTraceRecorder()
+        wiki.rebuild_index()
+        patterns = wiki.list_patterns()
+        print(colored("==========================================================================", "cyan"))
+        print(colored("  WikiSkill: Persistent Knowledge Base Initialized                        ", "cyan"))
+        print(colored("==========================================================================", "cyan"))
+        print(f"  Active Patterns   : {len(patterns)}")
+        print(f"  Patterns Directory: {wiki.patterns_dir}")
+        print(f"  Audit Tracker     : {wiki.impact_file}")
+        print(f"  Index File        : {wiki.index_file}")
+        print("-" * 74)
+        for p in patterns:
+            print(f"  - {p}")
+        return 0
+
+    if args.wikiskill_status:
+        from dens_city.wikiskill import RawTraceRecorder, WikiManager
+
+        wiki = WikiManager()
+        recorder = RawTraceRecorder()
+        patterns = wiki.list_patterns()
+        traces = recorder.list_traces(limit=10)
+        history = wiki.get_skill_impact_history()
+
+        print(colored("==========================================================================", "cyan"))
+        print(colored("  WikiSkill: Knowledge Evolution & Anti-Pattern Audit Status              ", "cyan"))
+        print(colored("==========================================================================", "cyan"))
+        print(f"  Total Patterns    : {len(patterns)}")
+        print(f"  Recorded Traces   : {len(traces)}")
+        print("-" * 74)
+        print(colored("Active Patterns in Catalog:", "green"))
+        for p in patterns:
+            print(f"  • {p}")
+        print("-" * 74)
+        print(colored("Recent Proposals & Outcomes (skill-impact.md):", "yellow"))
+        # Print table lines from history
+        table_lines = [
+            tbl_line
+            for tbl_line in history.splitlines()
+            if tbl_line.startswith("|") and not tbl_line.startswith("| :---")
+        ]
+        for line in table_lines[-6:]:
+            print(f"  {line}")
+        print("=" * 74)
+        return 0
+
+    if args.wikiskill_record:
+        from dens_city.wikiskill import RawTraceRecorder
+
+        recorder = RawTraceRecorder()
+        print(colored(f"[WIKISKILL] Executing and recording trace: `{args.wikiskill_record}`", "cyan"))
+        trace = recorder.record_command(args.wikiskill_record, tags=["cli-recorded"])
+        status_col = "green" if trace.passed else "red"
+        print(colored(f"[WIKISKILL] Trace `{trace.trace_id}` saved: {trace.summary}", status_col))
+        return 0 if trace.passed else 1
+
+    if args.wikiskill_consolidate:
+        from dens_city.wikiskill import RawTraceRecorder, WikiMaintainer, WikiManager
+
+        wiki = WikiManager()
+        recorder = RawTraceRecorder()
+        maintainer = WikiMaintainer(wiki_manager=wiki, trace_recorder=recorder)
+        report = maintainer.consolidate_traces()
+        print(colored("==========================================================================", "cyan"))
+        print(colored("  WikiSkill: Trace Consolidation Report                                   ", "cyan"))
+        print(colored("==========================================================================", "cyan"))
+        print(f"  Summary           : {report.log_summary}")
+        print(f"  Patterns Created  : {report.patterns_created or 'None'}")
+        print(f"  Patterns Updated  : {report.patterns_updated or 'None'}")
+        print(f"  Diagnosed Failures: {len(report.diagnosed_failures)}")
+        return 0
+
+    if args.wikiskill_audit:
+        from dens_city.wikiskill import WikiManager
+
+        wiki = WikiManager()
+        target = args.wikiskill_audit
+        rejected = wiki.is_proposal_previously_rejected(target, target)
+        print(colored("==========================================================================", "cyan"))
+        print(colored(f"  WikiSkill: Anti-Pattern & Rejection Audit: `{target}`", "cyan"))
+        print(colored("==========================================================================", "cyan"))
+        if rejected:
+            print(colored(f"  ⚠️  WARNING: {rejected}", "red"))
+        else:
+            print(colored(f"  ✓ No previous rejections found for `{target}`.", "green"))
+        return 0
 
     # =========================================================================
     # MODE 1: 3D Interactive Raylib Visualizer Mode

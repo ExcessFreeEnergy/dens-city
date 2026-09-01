@@ -93,6 +93,11 @@ uv run dens-city --populate-test-data --all-freesolv
 # 10. FreeSolv Statistical Validation & Verification Report
 uv run dens-city --verify-freesolv --run-e2e
 
+# 11. WikiSkill Persistent Knowledge & Anti-Pattern Audit
+uv run dens-city --wikiskill-status
+uv run dens-city --wikiskill-audit pattern_log_free_latent_density
+uv run dens-city --wikiskill-consolidate
+
 # Run automated test suite
 uv run pytest tests/ -v
 
@@ -100,3 +105,16 @@ uv run pytest tests/ -v
 uv run ruff check src/ tests/
 uv run ruff format --check src/ tests/
 ```
+
+---
+
+## 5. WikiSkill Persistent Knowledge Base (Zero-Forgetting Framework)
+
+To prevent the recurring cycle of **fixing, forgetting, and reimplementing errors** (per arXiv:2608.27454v1), all agents and developers must adhere to the three-layer knowledge workflow:
+1. **Raw Layer (`.agents/wikiskill/raw/traces/`)**: Immutable test outputs and failure dumps.
+2. **Persistent Wiki Layer (`.agents/wikiskill/wiki/`)**:
+   - `index.md`: Catalog of known failure modes (`PROBLEM + ROOT CAUSE + FIX`).
+   - `skill-impact.md`: Audit tracker of all past proposals and rejections. **Never repeat rejected approaches.**
+   - `patterns/*.md`: In-depth statistical mechanics root-cause analyses and verified action rules.
+3. **Skills & Rules Layer (`.agents/skills/cdft-wikiskill/` & `.agents/rules/`)**: Active, executable instructions.
+
