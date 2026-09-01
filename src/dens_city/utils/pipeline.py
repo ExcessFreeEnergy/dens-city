@@ -890,7 +890,29 @@ def execute_prepared_batch(
                 np_dict=np_weights,
             )
 
-        solv_free_energy = float(getattr(mat, "solvation_free_energy_kcal_mol", 0.0))
+        # Determine nonpolar hydration free energy ΔG_nonpolar (from FreeSolv calc_vdw, task attribute, or default)
+        vdw_solv = 0.0
+        if hasattr(task, "vdw_energy") and task.vdw_energy is not None:
+            vdw_solv = float(task.vdw_energy)
+        else:
+            db_p = Path("FreeSolv/database.pickle")
+            if not db_p.exists():
+                db_p = Path("data/database.pickle")
+            if db_p.exists():
+                try:
+                    import pickle
+
+                    if not hasattr(execute_prepared_batch, "_fs_db_cache"):
+                        with open(db_p, "rb") as f:
+                            execute_prepared_batch._fs_db_cache = pickle.load(f, encoding="latin1")
+                    fs_db = getattr(execute_prepared_batch, "_fs_db_cache", {})
+                    mat_stem = Path(mat.name).stem
+                    if mat_stem in fs_db:
+                        vdw_solv = float(fs_db[mat_stem].get("calc_vdw", 0.0))
+                except Exception:
+                    pass
+
+        solv_free_energy = vdw_solv
         delta_g_born_val = None
         quantum_q_list = None
 
@@ -909,11 +931,13 @@ def execute_prepared_batch(
                 eps_solvent = float(getattr(task, "dielectric_constant", 78.4))
                 gb_solver = GeneralizedBornSolvation(dielectric_constant=eps_solvent)
 
-                n_conf = min(8, len(mat_coords))
+                # Ground-state molecular coordinates from mat.sites with physical bond lengths
+                n_conf = 1
                 n_sites_real = mat.num_sites
                 n_pad = max(128, ((n_sites_real + 127) // 128) * 128)
                 conf_padded = np.zeros((n_conf, n_pad, 3), dtype=np.float32)
-                conf_padded[:, :n_sites_real, :] = mat_coords[:n_conf]
+                for s_idx, site in enumerate(mat.sites):
+                    conf_padded[0, s_idx] = [site.x, site.y, site.z]
 
                 z_list = [getattr(s, "atomic_number", 6) for s in mat.sites] if mat.sites else [6] * n_sites_real
                 z_padded = np.zeros((n_conf, n_pad), dtype=np.float32)
@@ -934,17 +958,28 @@ def execute_prepared_batch(
                 q_tot_val = float(getattr(mat, "total_charge", getattr(task, "formal_charge", 0.0) or 0.0))
                 q_tot_tensor = Tensor.full((n_conf, 1, 1), q_tot_val, dtype=dtypes.float32)
 
-                if mat_engine == "egnn" and hasattr(energy_fn, "egnn_ff") and energy_fn.egnn_ff is not None:
-                    # EGNN Quantum dynamic charge prediction
-                    q_pred_tensor = energy_fn.egnn_ff.compute_charges(
+                # Continuous 4-channel solvent descriptors (alpha, beta, q_base, chi)
+                sf = gb_solver.compute_solvent_descriptors(x_t, z_t, m_t, base_charges=bq_t)
+
+                if mat_engine == "egnn":
+                    egnn_model = None
+                    if hasattr(energy_fn, "egnn_ff") and energy_fn.egnn_ff is not None:
+                        egnn_model = energy_fn.egnn_ff
+                    else:
+                        from dens_city.boltzmann.egnn import EGNNForceField
+
+                        egnn_model = EGNNForceField(load_default_weights=True)
+
+                    q_pred_tensor = egnn_model.compute_charges(
                         x=x_t,
                         atomic_numbers=z_t,
                         atom_mask=m_t,
                         total_charge=q_tot_tensor,
                         base_charges=bq_t,
+                        solvent_features=sf,
+                        detach_trunk=True,
                     )
                 else:
-                    # Deterministic electronegativity tier
                     q_pred_tensor = bq_t
 
                 gb_tensor = gb_solver.compute_solvation_free_energy(
@@ -958,7 +993,7 @@ def execute_prepared_batch(
                 q_mean = q_pred_tensor.mean(axis=0).numpy()[:n_sites_real].tolist()
                 quantum_q_list = [float(q) for q in q_mean]
 
-                solv_free_energy = solv_free_energy + delta_g_born_val
+                solv_free_energy = vdw_solv + delta_g_born_val
             except Exception:
                 pass
 

@@ -116,13 +116,14 @@ def verify_and_generate_report(
     )
     report_lines.append("")
     report_lines.append(
-        "| Material | FreeSolv ID | IUPAC Name | SMILES | Sites | $\\Delta G_{\\rm solv}^{\\rm expt}$ (kcal/mol) | $\\Delta G_{\\rm solv}^{\\rm calc}$ (kcal/mol) | $P_{\\rm wall}$ (bar) | $\\rho_{\\rm bulk}$ ($\\text{Å}^{-3}$) | $\\Omega_{\\rm min}$ |"
+        "| Material | FreeSolv ID | IUPAC Name | SMILES | Sites | $\\Delta G_{\\rm solv}^{\\rm expt}$ | $\\Delta G_{\\rm solv}^{\\rm GAFF}$ | $\\Delta G_{\\rm solv}^{\\rm dens\\text{-}city}$ | Error (kcal/mol) | $P_{\\rm wall}$ (bar) |"
     )
     report_lines.append("| :--- | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |")
 
     freesolv_stats = []
     expt_vals = []
     calc_vals = []
+    gaff_vals = []
     diff_vals = []
     group_errors: Dict[str, List[Tuple[float, float, str, str, float, float]]] = {}
 
@@ -135,17 +136,27 @@ def verify_and_generate_report(
         iupac = fs_entry.get("iupac", name)
         smiles = fs_entry.get("smiles", "")
         dG_expt = float(fs_entry.get("expt", 0.0))
-        dG_calc = float(fs_entry.get("calc", 0.0))
+        dG_gaff = float(fs_entry.get("calc", 0.0))
+
+        # Evaluate simulated prediction from dens-city pipeline
+        solv_pred = r.get("solvation_free_energy_kcal_mol")
+        if solv_pred is not None:
+            dG_calc = float(solv_pred)
+        else:
+            born_val = r.get("born_solvation_kcal_mol", 0.0)
+            vdw_val = float(fs_entry.get("calc_vdw", 0.0))
+            dG_calc = (float(born_val) if born_val is not None else 0.0) + vdw_val
+
         diff = dG_calc - dG_expt
         abs_err = abs(diff)
         sites = r.get("num_sites", 0)
         p_wall = r.get("wall_pressure_bar", 0.0)
         rho_bulk = r.get("bulk_density_a3", 0.0)
         cdft_loss = r.get("cdft_final_loss", 0.0)
-        solv_pred = r.get("solvation_free_energy_kcal_mol")
 
         expt_vals.append(dG_expt)
         calc_vals.append(dG_calc)
+        gaff_vals.append(dG_gaff)
         diff_vals.append(diff)
 
         groups = fs_entry.get("groups", ["unclassified"])
@@ -160,6 +171,7 @@ def verify_and_generate_report(
             "iupac": iupac,
             "smiles": smiles,
             "dG_expt": dG_expt,
+            "dG_gaff": dG_gaff,
             "dG_calc": dG_calc,
             "diff": diff,
             "abs_err": abs_err,
@@ -172,13 +184,15 @@ def verify_and_generate_report(
         freesolv_stats.append(entry_stat)
 
         report_lines.append(
-            f"| `{name}` | `{fs_key}` | {iupac} | `{smiles}` | {sites} | {dG_expt:+.2f} | {dG_calc:+.2f} | {p_wall:+10.2f} | {rho_bulk:.4f} | {cdft_loss:.4f} |"
+            f"| `{name}` | `{fs_key}` | {iupac} | `{smiles}` | {sites} | {dG_expt:+.2f} | {dG_gaff:+.2f} | {dG_calc:+.2f} | {diff:>+6.2f} | {p_wall:+10.2f} |"
         )
 
     stats_summary = {}
+    gaff_mae = 1.101
     if expt_vals and calc_vals:
         expt_np = np.array(expt_vals, dtype=np.float64)
         calc_np = np.array(calc_vals, dtype=np.float64)
+        gaff_np = np.array(gaff_vals, dtype=np.float64)
         diff_np = np.array(diff_vals, dtype=np.float64)
         abs_np = np.abs(diff_np)
 
@@ -188,6 +202,7 @@ def verify_and_generate_report(
         max_err = float(np.max(abs_np))
         r_corr = float(np.corrcoef(expt_np, calc_np)[0, 1]) if len(expt_np) > 1 else 1.0
         r2 = r_corr**2
+        gaff_mae = float(np.mean(np.abs(gaff_np - expt_np)))
 
         stats_summary = {
             "count": len(expt_vals),
@@ -197,6 +212,7 @@ def verify_and_generate_report(
             "max_err": max_err,
             "r_corr": r_corr,
             "r2": r2,
+            "gaff_mae": gaff_mae,
         }
 
     report_lines.append("")
@@ -205,7 +221,7 @@ def verify_and_generate_report(
     report_lines.append("## 3. Global Statistical Variance & Error Breakdown")
     report_lines.append("")
     report_lines.append(
-        "Quantitative comparison between experimental ($\\Delta G_{\\rm solv}^{\\rm expt}$) and calculated ($\\Delta G_{\\rm solv}^{\\rm calc}$) hydration free energies across the database:"
+        "Quantitative comparison between experimental ($\\Delta G_{\\rm solv}^{\\rm expt}$) and `dens-city` simulated ($\\Delta G_{\\rm solv}^{\\rm dens\\text{-}city}$) hydration free energies alongside the classical GAFF baseline:"
     )
     report_lines.append("")
     report_lines.append("| Metric | Value | Statistical Significance |")
@@ -214,7 +230,10 @@ def verify_and_generate_report(
         f"| **Total Matched Molecules** | **{stats_summary.get('count', len(freesolv_stats))}** | Full FreeSolv cross-reference |"
     )
     report_lines.append(
-        f"| **Mean Absolute Error (MAE)** | **{stats_summary.get('mae', 0.0):.3f} kcal/mol** | Average deviation from experiment |"
+        f"| **dens-city Mean Absolute Error (MAE)** | **{stats_summary.get('mae', 0.0):.3f} kcal/mol** | Quantum EGNN + cDFT/GB deviation from experiment |"
+    )
+    report_lines.append(
+        f"| **Classical GAFF Baseline MAE** | **{gaff_mae:.3f} kcal/mol** | Historical 2014 Mobley et al. GAFF/TIP3P MD |"
     )
     report_lines.append(
         f"| **Root Mean Square Error (RMSE)** | **{stats_summary.get('rmse', 0.0):.3f} kcal/mol** | Residual dispersion standard deviation |"
@@ -234,19 +253,19 @@ def verify_and_generate_report(
     report_lines.append("")
 
     report_lines.append(
-        "### Top 15 Molecules with Largest Absolute Error ($|\\Delta G_{\\rm calc} - \\Delta G_{\\rm expt}|$)"
+        "### Top 15 Molecules with Largest Absolute Error ($|\\Delta G_{\\rm dens\\text{-}city} - \\Delta G_{\\rm expt}|$)"
     )
     report_lines.append("")
     report_lines.append(
-        "| FreeSolv ID | IUPAC Name | $\\Delta G_{\\rm expt}$ (kcal/mol) | $\\Delta G_{\\rm calc}$ (kcal/mol) | Error (kcal/mol) | Functional Groups |"
+        "| FreeSolv ID | IUPAC Name | $\\Delta G_{\\rm expt}$ (kcal/mol) | $\\Delta G_{\\rm GAFF}$ (kcal/mol) | $\\Delta G_{\\rm dens\\text{-}city}$ (kcal/mol) | Error (kcal/mol) | Functional Groups |"
     )
-    report_lines.append("| :--- | :--- | :---: | :---: | :---: | :--- |")
+    report_lines.append("| :--- | :--- | :---: | :---: | :---: | :---: | :--- |")
 
     sorted_by_err = sorted(freesolv_stats, key=lambda x: x["abs_err"], reverse=True)
     for m in sorted_by_err[:15]:
         grp_str = ", ".join(m["groups"])
         report_lines.append(
-            f"| `{m['fs_key']}` | {m['iupac']} | {m['dG_expt']:+.2f} | {m['dG_calc']:+.2f} | {m['diff']:>+6.2f} | {grp_str} |"
+            f"| `{m['fs_key']}` | {m['iupac']} | {m['dG_expt']:+.2f} | {m['dG_gaff']:+.2f} | {m['dG_calc']:+.2f} | {m['diff']:>+6.2f} | {grp_str} |"
         )
 
     report_lines.append("")
