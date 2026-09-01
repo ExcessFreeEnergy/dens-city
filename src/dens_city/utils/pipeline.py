@@ -970,7 +970,7 @@ def execute_prepared_batch(
 
                         egnn_model = EGNNForceField(load_default_weights=True)
 
-                    q_pred_tensor = egnn_model.compute_charges(
+                    q_pred_tensor, delta_vdw_mol, _ = egnn_model.compute_solvation_readouts(
                         x=x_t,
                         atomic_numbers=z_t,
                         atom_mask=m_t,
@@ -979,8 +979,10 @@ def execute_prepared_batch(
                         solvent_features=sf,
                         detach_trunk=True,
                     )
+                    delta_vdw_val = float(delta_vdw_mol.mean().item())
                 else:
                     q_pred_tensor = bq_t
+                    delta_vdw_val = 0.0
 
                 gb_tensor = gb_solver.compute_solvation_free_energy(
                     x=x_t,
@@ -993,7 +995,7 @@ def execute_prepared_batch(
                 q_mean = q_pred_tensor.mean(axis=0).numpy()[:n_sites_real].tolist()
                 quantum_q_list = [float(q) for q in q_mean]
 
-                solv_free_energy = vdw_solv + delta_g_born_val
+                solv_free_energy = vdw_solv + delta_vdw_val + delta_g_born_val
             except Exception:
                 pass
 

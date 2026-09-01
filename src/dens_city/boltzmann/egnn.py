@@ -143,6 +143,19 @@ class EGNNForceField:
         self.charge_mlp[2].weight = Tensor.zeros(1, hidden_dim, dtype=dtypes.float32)
         self.charge_mlp[2].bias = Tensor.zeros(1, dtype=dtypes.float32)
 
+        # Tertiary Readout MLP: node-wise volumetric cavitation & dispersion free energy correction delta_g_i^vdw
+        # Ingests geometric node embedding h_i (128) + 4-channel continuous solvent descriptors (132 dimensions total)
+        # Predicts continuous atomic nonpolar cavitation & dispersion energy modulation (kcal/mol)
+        self.vdw_mlp: List[Callable[[Tensor], Tensor]] = [
+            nn.Linear(self.charge_in_dim, hidden_dim),
+            Tensor.silu,
+            nn.Linear(hidden_dim, 1),
+        ]
+        self.max_delta_vdw = 1.0  # Max allowed atomic nonpolar perturbation |Δg_i^vdw| <= 1.0 kcal/mol
+        # Zero-initialize output layer so initial nonpolar perturbations start cleanly at 0.0 around physical baseline
+        self.vdw_mlp[2].weight = Tensor.zeros(1, hidden_dim, dtype=dtypes.float32)
+        self.vdw_mlp[2].bias = Tensor.zeros(1, dtype=dtypes.float32)
+
         # Load weights if specified or present at default location
         if weights_path is not None:
             self.load_weights(weights_path)
@@ -157,8 +170,11 @@ class EGNNForceField:
         np_data = np.load(str(p))
         state_dict = {k: Tensor(np_data[k]) for k in np_data.files}
         model_dict = nn.state.get_state_dict(self)
-        if all(k in state_dict and state_dict[k].shape == v.shape for k, v in model_dict.items()):
-            nn.state.load_state_dict(self, state_dict)
+        matched = {
+            k: state_dict[k] for k, v in model_dict.items() if k in state_dict and state_dict[k].shape == v.shape
+        }
+        if matched:
+            nn.state.load_state_dict(self, matched, strict=False, verbose=False)
 
     def save_weights(self, filepath: str | Path) -> None:
         """Saves model state to a .npz checkpoint."""
@@ -245,7 +261,7 @@ class EGNNForceField:
         u_total = eps_i.sum(axis=(1, 2)) * molecule_mask
         return u_total
 
-    def compute_charges(
+    def compute_solvation_readouts(
         self,
         x: Tensor,
         atomic_numbers: Tensor,
@@ -255,13 +271,15 @@ class EGNNForceField:
         base_charges: Optional[Tensor] = None,
         solvent_features: Optional[Tensor] = None,
         detach_trunk: bool = False,
-    ) -> Tensor:
+    ) -> Tuple[Tensor, Tensor, Tensor]:
         """
-        Predicts conformation-dependent quantum partial charges q_i(x) for each atom
-        via physics-informed residual superposition: q_i = q_i^base + delta_q_i(x).
-        Applies real-atom masking and dynamic molecule-specific formal charge mean-shift projection:
-        q_i = q_i^raw - (sum_j q_j^raw - Q_total) / N_real
-        Returns: Tensor of shape (B, N).
+        Predicts both:
+        1. Formally conserved quantum partial charges q_i(x) for electrostatic Born solvation.
+        2. Volumetric cavitation & dispersion corrections delta_g_i^vdw(x) for nonpolar solvation.
+        Returns:
+            q_pred: Tensor of shape (B, N)
+            delta_vdw_mol: Tensor of shape (B,) - extensive molecular nonpolar correction (kcal/mol)
+            delta_vdw_atomic: Tensor of shape (B, N, 1) - atomic nonpolar contributions
         """
         x, atomic_numbers, atom_mask, molecule_mask, edge_mask = self._prepare_inputs(
             x, atomic_numbers, atom_mask, molecule_mask
@@ -298,23 +316,20 @@ class EGNNForceField:
 
         node_inputs = Tensor.cat(h, sf, dim=-1)
 
-        # 4. Neural Perturbation Readout: delta_q_i(x) with physical tanh squashing
+        # Head 1: Neural Charge Readout: delta_q_i(x) with physical tanh squashing
         delta_q_raw = self.charge_mlp[0](node_inputs)
         delta_q_raw = self.charge_mlp[1](delta_q_raw)
         delta_q_raw = self.charge_mlp[2](delta_q_raw)
         delta_q = self.max_delta_q * (delta_q_raw / self.max_delta_q).tanh() * atom_mask  # (B, N, 1)
 
-        # 5. Residual Superposition: q_raw = q_base + delta_q
+        # Residual Superposition: q_raw = q_base + delta_q
         if base_charges is not None:
-            if len(base_charges.shape) == 2:
-                bq = base_charges.reshape(B, N, 1)
-            else:
-                bq = base_charges.reshape(B, N, 1)
+            bq = base_charges.reshape(B, N, 1)
             q_raw = (bq + delta_q) * atom_mask
         else:
             q_raw = delta_q
 
-        # 6. Exact Formal Charge Mean-Shift Conservation Projection
+        # Exact Formal Charge Mean-Shift Conservation Projection
         num_real = atom_mask.sum(axis=1, keepdim=True).maximum(1.0)  # (B, 1, 1)
         q_sum = q_raw.sum(axis=1, keepdim=True)  # (B, 1, 1)
         if total_charge is not None:
@@ -328,7 +343,47 @@ class EGNNForceField:
         q_shift = (q_sum - q_target) / num_real
         q_final = ((q_raw - q_shift) * atom_mask).reshape(B, N)
         q_masked = q_final * molecule_mask.reshape(B, 1)
-        return q_masked if Tensor.training else q_masked.realize()
+
+        # Head 2: Volumetric Cavitation & Dispersion Readout: delta_g_i^vdw with physical tanh squashing
+        delta_vdw_raw = self.vdw_mlp[0](node_inputs)
+        delta_vdw_raw = self.vdw_mlp[1](delta_vdw_raw)
+        delta_vdw_raw = self.vdw_mlp[2](delta_vdw_raw)
+        delta_vdw_atomic = self.max_delta_vdw * (delta_vdw_raw / self.max_delta_vdw).tanh() * atom_mask  # (B, N, 1)
+        delta_vdw_mol = (delta_vdw_atomic * molecule_mask.reshape(B, 1, 1)).sum(axis=(1, 2))  # (B,)
+
+        if not Tensor.training:
+            q_masked = q_masked.realize()
+            delta_vdw_mol = delta_vdw_mol.realize()
+            delta_vdw_atomic = delta_vdw_atomic.realize()
+
+        return q_masked, delta_vdw_mol, delta_vdw_atomic
+
+    def compute_charges(
+        self,
+        x: Tensor,
+        atomic_numbers: Tensor,
+        atom_mask: Optional[Tensor] = None,
+        molecule_mask: Optional[Tensor] = None,
+        total_charge: Optional[Tensor | float] = None,
+        base_charges: Optional[Tensor] = None,
+        solvent_features: Optional[Tensor] = None,
+        detach_trunk: bool = False,
+    ) -> Tensor:
+        """
+        Backwards-compatible interface predicting conformation-dependent quantum partial charges.
+        Delegates to compute_solvation_readouts.
+        """
+        q_masked, _, _ = self.compute_solvation_readouts(
+            x=x,
+            atomic_numbers=atomic_numbers,
+            atom_mask=atom_mask,
+            molecule_mask=molecule_mask,
+            total_charge=total_charge,
+            base_charges=base_charges,
+            solvent_features=solvent_features,
+            detach_trunk=detach_trunk,
+        )
+        return q_masked
 
     def compute_forces(
         self,

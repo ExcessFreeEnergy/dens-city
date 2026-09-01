@@ -15,11 +15,10 @@ def test_quantum_charge_trainer_trunk_freezing():
     the 7-layer EGNN trunk and embedding layers remain frozen.
     """
     trainer = QuantumChargeTrainer()
-    trainable_params = trainer.charge_params
+    trainable_params = trainer.head_params
 
-    # Charge MLP has 2 Linear layers: Linear(128, 128) and Linear(128, 1)
-    # Each has weight and bias -> 4 parameters total
-    assert len(trainable_params) == 4, f"Expected 4 parameters in charge_mlp, got {len(trainable_params)}"
+    # Charge MLP (4 params) + VDW MLP (4 params) -> 8 parameters total
+    assert len(trainable_params) == 8, f"Expected 8 parameters in head_params, got {len(trainable_params)}"
 
     all_params = nn.state.get_parameters(trainer.ff)
     # 7 layers * 10 params/layer + 2 embedding params + 4 readout params + 4 charge params = 80 params

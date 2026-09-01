@@ -44,7 +44,9 @@ class ChargeTrainingConfig:
     batch_size: int = 32
     huber_delta: float = 2.5  # kcal/mol (expanded quadratic MSE basin)
     lambda_l2: float = 0.02  # Penalty on (Δq)^2
+    lambda_vdw: float = 0.01  # Penalty on (Δg_vdw)^2
     max_delta_q: float = 0.25  # Max allowed perturbation |Δq| <= 0.25e
+    max_delta_vdw: float = 1.0  # Max allowed atomic nonpolar perturbation |Δg_vdw| <= 1.0 kcal/mol
     n_particles: int = 128
     hidden_dim: int = 128
     num_layers: int = 7
@@ -107,8 +109,9 @@ class QuantumChargeTrainer:
         # Generalized Born continuous dielectric solver
         self.gb = GeneralizedBornSolvation(dielectric_constant=self.config.dielectric_constant)
 
-        # Parameters
-        self.charge_params = nn.state.get_parameters(self.ff.charge_mlp)
+        # Parameters: dual readout heads (charge_mlp + vdw_mlp)
+        self.head_params = nn.state.get_parameters(self.ff.charge_mlp) + nn.state.get_parameters(self.ff.vdw_mlp)
+        self.charge_params = self.head_params  # Maintain alias for backwards compatibility
 
         trunk_layers = [self.ff.embedding] + list(self.ff.layers)
         self.trunk_params = []
@@ -116,7 +119,7 @@ class QuantumChargeTrainer:
             self.trunk_params.extend(nn.state.get_parameters(lyr))
 
         # Optimizers: dual learning rates combined in OptimizerGroup
-        self.opt_head = nn.optim.Adam(self.charge_params, lr=self.config.lr_head)
+        self.opt_head = nn.optim.Adam(self.head_params, lr=self.config.lr_head)
         self.opt_trunk = nn.optim.Adam(self.trunk_params, lr=self.config.lr_trunk)
         self.opt_group = nn.optim.OptimizerGroup(self.opt_head, self.opt_trunk)
 
@@ -315,6 +318,8 @@ class QuantumChargeTrainer:
         h = cached_h[idx]
 
         node_inputs = Tensor.cat(h, sf, dim=-1)
+
+        # Head 1: Neural Charge Readout
         delta_q_raw = self.ff.charge_mlp[0](node_inputs)
         delta_q_raw = self.ff.charge_mlp[1](delta_q_raw)
         delta_q_raw = self.ff.charge_mlp[2](delta_q_raw)
@@ -326,10 +331,17 @@ class QuantumChargeTrainer:
         q_shift = (q_sum - tq) / num_real
         q_pred = ((q_raw - q_shift) * m).reshape(B, N)
 
+        # Head 2: Volumetric Nonpolar Cavitation Readout
+        delta_vdw_raw = self.ff.vdw_mlp[0](node_inputs)
+        delta_vdw_raw = self.ff.vdw_mlp[1](delta_vdw_raw)
+        delta_vdw_raw = self.ff.vdw_mlp[2](delta_vdw_raw)
+        delta_vdw_atomic = self.config.max_delta_vdw * (delta_vdw_raw / self.config.max_delta_vdw).tanh() * m
+        delta_vdw_mol = delta_vdw_atomic.sum(axis=(1, 2))  # (B,)
+
         dg_gb = self.gb.compute_solvation_free_energy(
             c, q_pred, z, m, dielectric_constant=self.config.dielectric_constant
         )
-        dg_calc = v + dg_gb
+        dg_calc = v + delta_vdw_mol + dg_gb
         valid_mol = (m.sum(axis=(1, 2)) > 0).cast(dtypes.float32)
         num_valid = valid_mol.sum().maximum(1.0)
         err = (dg_calc - e) * valid_mol
@@ -340,9 +352,10 @@ class QuantumChargeTrainer:
         huber_loss = huber_terms.sum() / num_valid
 
         num_real_total = m.sum().maximum(1.0)
-        l2_reg = self.config.lambda_l2 * (delta_q * delta_q).sum() / num_real_total
+        l2_q = self.config.lambda_l2 * (delta_q * delta_q).sum() / num_real_total
+        l2_vdw = self.config.lambda_vdw * (delta_vdw_atomic * delta_vdw_atomic).sum() / num_real_total
 
-        loss = (huber_loss + l2_reg).reshape(())
+        loss = (huber_loss + l2_q + l2_vdw).reshape(())
         loss.backward()
 
         mae_metric = abs_err.sum() / num_valid
@@ -363,7 +376,7 @@ class QuantumChargeTrainer:
         expt_energies: Tensor,
         solvent_features: Tensor,
     ) -> Tuple[Tensor, Tensor, Tensor]:
-        """Phase 2: End-to-end JIT step optimizing both trunk and charge_mlp via OptimizerGroup."""
+        """Phase 2: End-to-end JIT step optimizing both trunk and dual heads via OptimizerGroup."""
         self.opt_group.zero_grad()
         B = self.config.batch_size
         N = self.config.n_particles
@@ -379,7 +392,7 @@ class QuantumChargeTrainer:
         e = expt_energies[idx]
         sf = solvent_features[idx]
 
-        q_pred = self.ff.compute_charges(
+        q_pred, delta_vdw_mol, delta_vdw_atomic = self.ff.compute_solvation_readouts(
             x=c,
             atomic_numbers=z,
             atom_mask=m,
@@ -393,7 +406,7 @@ class QuantumChargeTrainer:
         dg_gb = self.gb.compute_solvation_free_energy(
             c, q_pred, z, m, dielectric_constant=self.config.dielectric_constant
         )
-        dg_calc = v + dg_gb
+        dg_calc = v + delta_vdw_mol + dg_gb
         valid_mol = (m.sum(axis=(1, 2)) > 0).cast(dtypes.float32)
         num_valid = valid_mol.sum().maximum(1.0)
         err = (dg_calc - e) * valid_mol
@@ -404,9 +417,10 @@ class QuantumChargeTrainer:
         huber_loss = huber_terms.sum() / num_valid
 
         num_real_total = m.sum().maximum(1.0)
-        l2_reg = self.config.lambda_l2 * (delta_q * delta_q).sum() / num_real_total
+        l2_q = self.config.lambda_l2 * (delta_q * delta_q).sum() / num_real_total
+        l2_vdw = self.config.lambda_vdw * (delta_vdw_atomic * delta_vdw_atomic).sum() / num_real_total
 
-        loss = (huber_loss + l2_reg).reshape(())
+        loss = (huber_loss + l2_q + l2_vdw).reshape(())
         loss.backward()
 
         mae_metric = abs_err.sum() / num_valid
@@ -443,7 +457,7 @@ class QuantumChargeTrainer:
                 sf = self.dataset.solvent_features[start : start + B]
 
                 if self.dataset.cached_h is not None:
-                    # Phase 1 fast evaluation: use cached_h through charge_mlp
+                    # Phase 1 fast evaluation: use cached_h through charge_mlp and vdw_mlp
                     h = self.dataset.cached_h[start : start + B]
                     node_inputs = Tensor.cat(h, sf, dim=-1)
                     delta_q_raw = self.ff.charge_mlp[0](node_inputs)
@@ -455,9 +469,17 @@ class QuantumChargeTrainer:
                     q_sum = q_raw.sum(axis=1, keepdim=True)
                     q_shift = (q_sum - tq) / num_real
                     q_pred = ((q_raw - q_shift) * m).reshape(B, N)
+
+                    delta_vdw_raw = self.ff.vdw_mlp[0](node_inputs)
+                    delta_vdw_raw = self.ff.vdw_mlp[1](delta_vdw_raw)
+                    delta_vdw_raw = self.ff.vdw_mlp[2](delta_vdw_raw)
+                    delta_vdw_atomic = (
+                        self.config.max_delta_vdw * (delta_vdw_raw / self.config.max_delta_vdw).tanh() * m
+                    )
+                    delta_vdw_mol = delta_vdw_atomic.sum(axis=(1, 2))
                 else:
-                    # Phase 2 evaluation: full forward pass through EGNN trunk
-                    q_pred = self.ff.compute_charges(
+                    # Phase 2 evaluation: full forward pass through EGNN trunk and dual heads
+                    q_pred, delta_vdw_mol, _ = self.ff.compute_solvation_readouts(
                         x=c,
                         atomic_numbers=z,
                         atom_mask=m,
@@ -470,7 +492,7 @@ class QuantumChargeTrainer:
                 dg_gb = self.gb.compute_solvation_free_energy(
                     c, q_pred, z, m, dielectric_constant=self.config.dielectric_constant
                 )
-                dg_calc = v + dg_gb
+                dg_calc = v + delta_vdw_mol + dg_gb
                 valid_mol = (m.sum(axis=(1, 2)) > 0).cast(dtypes.float32)
                 err = ((dg_calc - e) * valid_mol).realize()
                 calc_realized = dg_calc.realize()
@@ -541,7 +563,9 @@ class QuantumChargeTrainer:
 
         delta = self.config.huber_delta
         lambda_l2 = self.config.lambda_l2
+        lambda_vdw = self.config.lambda_vdw
         max_dq = self.config.max_delta_q
+        max_vdw = self.config.max_delta_vdw
 
         Tensor.training = True
         for b in batches:
@@ -565,8 +589,14 @@ class QuantumChargeTrainer:
                 q_sum = q_raw.sum(axis=1, keepdim=True)
                 q_shift = (q_sum - b.total_charges) / num_real
                 q_pred = ((q_raw - q_shift) * b.atom_mask).reshape(b_size, n_atoms)
+
+                delta_vdw_raw = self.ff.vdw_mlp[0](node_inputs)
+                delta_vdw_raw = self.ff.vdw_mlp[1](delta_vdw_raw)
+                delta_vdw_raw = self.ff.vdw_mlp[2](delta_vdw_raw)
+                delta_vdw_atomic = max_vdw * (delta_vdw_raw / max_vdw).tanh() * b.atom_mask
+                delta_vdw_mol = delta_vdw_atomic.sum(axis=(1, 2))
             else:
-                q_pred = self.ff.compute_charges(
+                q_pred, delta_vdw_mol, delta_vdw_atomic = self.ff.compute_solvation_readouts(
                     x=b.coords,
                     atomic_numbers=b.atomic_numbers,
                     atom_mask=b.atom_mask,
@@ -584,7 +614,7 @@ class QuantumChargeTrainer:
                 atom_mask=b.atom_mask,
                 dielectric_constant=self.config.dielectric_constant,
             )
-            dg_calc = b.vdw_energies + dg_gb
+            dg_calc = b.vdw_energies + delta_vdw_mol + dg_gb
             err = (dg_calc - b.expt_energies) * valid_mol
 
             abs_err = err.abs() * valid_mol
@@ -592,9 +622,10 @@ class QuantumChargeTrainer:
             huber_loss = huber_terms.sum() / num_valid_mols
 
             num_real_total = b.atom_mask.sum().maximum(1.0)
-            l2_reg = lambda_l2 * (delta_q * delta_q).sum() / num_real_total
+            l2_q = lambda_l2 * (delta_q * delta_q).sum() / num_real_total
+            l2_vdw = lambda_vdw * (delta_vdw_atomic * delta_vdw_atomic).sum() / num_real_total
 
-            loss = (huber_loss + l2_reg).reshape(())
+            loss = (huber_loss + l2_q + l2_vdw).reshape(())
             mae_metric = abs_err.sum() / num_valid_mols
             max_dq_metric = delta_q.abs().max()
 
@@ -627,14 +658,15 @@ class QuantumChargeTrainer:
         Fuses forward, backward, Generalized Born solver, and optimizer updates on hardware.
         """
         print(colored("==========================================================================", "cyan"))
-        print(colored("  QuantumChargeTrainer: Canonical beautiful_mnist Static Training        ", "cyan"))
+        print(colored("  QuantumChargeTrainer: Dual-Headed Volumetric Static Training           ", "cyan"))
         print(colored("==========================================================================", "cyan"))
         print(f"  Warmup Epochs     : {self.config.warmup_epochs} (Phase 1: Cached Head Alignment)")
         print(f"  Total Epochs      : {self.config.epochs} (Phase 2: Full End-to-End Unfreeze)")
         print(f"  Head LR           : {self.config.lr_head:.1e}")
         print(f"  Trunk LR          : {self.config.lr_trunk:.1e}")
         print(f"  Max |Δq| Limit    : ±{self.config.max_delta_q:.2f}e (Physical Tanh Squashing)")
-        print(f"  L2 Lambda         : {self.config.lambda_l2}")
+        print(f"  Max |Δg_vdw| Limit: ±{self.config.max_delta_vdw:.2f} kcal/mol (Volumetric Cavitation)")
+        print(f"  L2 Lambda (q/vdw) : {self.config.lambda_l2} / {self.config.lambda_vdw}")
         print("  Static Arch       : Pure @TinyJit Single-Graph GPU Fusion (Zero Leak)")
         print("-" * 74)
 
@@ -784,6 +816,8 @@ def run_train_charges(
     batch_size: int = 32,
     huber_delta: float = 2.5,
     lambda_l2: float = 0.02,
+    lambda_vdw: float = 0.01,
+    max_delta_vdw: float = 1.0,
     weights_out: str = "data/checkpoints/egnn_charges_trained.npz",
 ) -> Dict[str, float]:
     """Convenience entry point for training dynamic quantum charges."""
@@ -793,6 +827,8 @@ def run_train_charges(
         batch_size=batch_size,
         huber_delta=huber_delta,
         lambda_l2=lambda_l2,
+        lambda_vdw=lambda_vdw,
+        max_delta_vdw=max_delta_vdw,
         weights_out=weights_out,
     )
     trainer = QuantumChargeTrainer(config=cfg)

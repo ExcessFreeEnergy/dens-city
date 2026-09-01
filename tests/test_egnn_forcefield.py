@@ -392,3 +392,26 @@ def test_residual_electronegativity_prior():
     assert 0.09 < q_dyn_np[1] < 0.35, f"Dynamic hydrogen charge collapsed/hyper-polarized: {q_dyn_np[1]}"
     assert 0.09 < q_dyn_np[2] < 0.35, f"Dynamic hydrogen charge collapsed/hyper-polarized: {q_dyn_np[2]}"
     np.testing.assert_allclose(sum(q_dyn_np), 0.0, atol=1e-5)
+
+
+def test_egnn_solvation_readouts_dual_head():
+    """
+    Verifies that EGNNForceField.compute_solvation_readouts predicts both:
+    1. Conserved charges q_i(x)
+    2. Volumetric cavitation/dispersion delta_vdw_mol(x)
+    And verifies zero-initialization of the volumetric head.
+    """
+    ff = EGNNForceField(num_layers=7, hidden_dim=128, n_particles=128, load_default_weights=False)
+    coords = Tensor.randn(2, 128, 3)
+    z = Tensor.full((2, 128), 6.0, dtype=dtypes.float32)
+    atom_mask = Tensor.ones(2, 128, 1)
+
+    q_pred, delta_vdw_mol, delta_vdw_atomic = ff.compute_solvation_readouts(coords, z, atom_mask, total_charge=0.0)
+
+    assert q_pred.shape == (2, 128)
+    assert delta_vdw_mol.shape == (2,)
+    assert delta_vdw_atomic.shape == (2, 128, 1)
+
+    # Initial zero-weights on vdw_mlp[2] must yield exactly 0.0 nonpolar correction
+    np.testing.assert_allclose(delta_vdw_mol.numpy(), [0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(delta_vdw_atomic.numpy(), np.zeros((2, 128, 1)), atol=1e-6)

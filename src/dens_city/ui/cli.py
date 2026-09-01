@@ -582,6 +582,18 @@ Execution Modes & Examples:
         help="L2 regularization penalty weight on (Δq)^2 neural charge perturbations (default: 0.02)",
     )
     egnn_group.add_argument(
+        "--charge-lambda-vdw",
+        type=float,
+        default=0.01,
+        help="L2 regularization penalty weight on (Δg_vdw)^2 neural cavitation perturbations (default: 0.01)",
+    )
+    egnn_group.add_argument(
+        "--charge-max-vdw",
+        type=float,
+        default=1.0,
+        help="Maximum per-atom nonpolar cavitation adjustment ceiling in kcal/mol (default: 1.0)",
+    )
+    egnn_group.add_argument(
         "--charge-weights-out",
         type=str,
         default="data/checkpoints/egnn_charges_trained.npz",
@@ -974,6 +986,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             batch_size=args.batch_size if ("-b" in argv or "--batch-size" in argv) else 32,
             huber_delta=args.charge_huber_delta,
             lambda_l2=args.charge_lambda,
+            lambda_vdw=args.charge_lambda_vdw,
+            max_delta_vdw=args.charge_max_vdw,
             weights_out=args.charge_weights_out,
         )
         return 0
