@@ -9,8 +9,10 @@ Adheres strictly to tinygrad best practices and power-of-2 vector alignments (N=
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
+import numpy as np
 from tinygrad import Tensor, TinyJit, dtypes, nn
 
 
@@ -96,6 +98,8 @@ class EGNNForceField:
     Derives analytical conservative forces via reverse-mode autograd: F = -∇_x U(x).
     """
 
+    DEFAULT_CHECKPOINT = Path("data/checkpoints/egnn_charges_trained.npz")
+
     def __init__(
         self,
         num_layers: int = 7,
@@ -103,6 +107,8 @@ class EGNNForceField:
         max_atomic_number: int = 128,
         n_particles: int = 128,
         r_cut: float = 5.0,
+        weights_path: Optional[str | Path] = None,
+        load_default_weights: bool = True,
     ):
         self.num_layers = num_layers
         self.hidden_dim = hidden_dim
@@ -124,14 +130,43 @@ class EGNNForceField:
         ]
 
         # Secondary Readout MLP: node-wise dynamic quantum partial charge q_i
+        # Ingests geometric node embedding h_i (128) + 4-channel continuous solvent descriptors
+        # (alpha_i, beta_i = alpha/rho, base_q, chi) -> 132 dimensions
+        self.charge_in_dim = hidden_dim + 4
         self.charge_mlp: List[Callable[[Tensor], Tensor]] = [
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(self.charge_in_dim, hidden_dim),
             Tensor.silu,
             nn.Linear(hidden_dim, 1),
         ]
+        self.max_delta_q = 0.25
         # Zero-initialize output layer so initial neural perturbations start cleanly at 0.0 around physical baseline
         self.charge_mlp[2].weight = Tensor.zeros(1, hidden_dim, dtype=dtypes.float32)
         self.charge_mlp[2].bias = Tensor.zeros(1, dtype=dtypes.float32)
+
+        # Load weights if specified or present at default location
+        if weights_path is not None:
+            self.load_weights(weights_path)
+        elif load_default_weights and self.DEFAULT_CHECKPOINT.exists():
+            self.load_weights(self.DEFAULT_CHECKPOINT)
+
+    def load_weights(self, filepath: str | Path) -> None:
+        """Loads model state from a .npz checkpoint if layer shapes match the instance architecture."""
+        p = Path(filepath)
+        if not p.exists():
+            return
+        np_data = np.load(str(p))
+        state_dict = {k: Tensor(np_data[k]) for k in np_data.files}
+        model_dict = nn.state.get_state_dict(self)
+        if all(k in state_dict and state_dict[k].shape == v.shape for k, v in model_dict.items()):
+            nn.state.load_state_dict(self, state_dict)
+
+    def save_weights(self, filepath: str | Path) -> None:
+        """Saves model state to a .npz checkpoint."""
+        p = Path(filepath)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        state_dict = nn.state.get_state_dict(self)
+        np_dict = {k: v.numpy() for k, v in state_dict.items()}
+        np.savez(str(p), **np_dict)
 
     def _prepare_inputs(
         self,
@@ -218,6 +253,8 @@ class EGNNForceField:
         molecule_mask: Optional[Tensor] = None,
         total_charge: Optional[Tensor | float] = None,
         base_charges: Optional[Tensor] = None,
+        solvent_features: Optional[Tensor] = None,
+        detach_trunk: bool = False,
     ) -> Tensor:
         """
         Predicts conformation-dependent quantum partial charges q_i(x) for each atom
@@ -246,10 +283,26 @@ class EGNNForceField:
         for layer in self.layers:
             h = layer(h, d_sq, edge_mask, atom_mask)
 
-        # 4. Neural Perturbation Readout: delta_q_i(x)
-        delta_q = self.charge_mlp[0](h)
-        delta_q = self.charge_mlp[1](delta_q)
-        delta_q = self.charge_mlp[2](delta_q) * atom_mask  # (B, N, 1)
+        # Halt gradient traversal into the 7-layer message-passing trunk per tinyspec.tex \op{Detach}
+        if detach_trunk:
+            h = h.detach()
+
+        # Augment with 4-channel continuous 3D solvent descriptors (alpha, beta=alpha/rho, bq, chi)
+        if solvent_features is not None:
+            sf = solvent_features
+        else:
+            from dens_city.cdft.generalized_born import GeneralizedBornSolvation
+
+            gb = GeneralizedBornSolvation()
+            sf = gb.compute_solvent_descriptors(x, atomic_numbers, atom_mask, base_charges=base_charges)
+
+        node_inputs = Tensor.cat(h, sf, dim=-1)
+
+        # 4. Neural Perturbation Readout: delta_q_i(x) with physical tanh squashing
+        delta_q_raw = self.charge_mlp[0](node_inputs)
+        delta_q_raw = self.charge_mlp[1](delta_q_raw)
+        delta_q_raw = self.charge_mlp[2](delta_q_raw)
+        delta_q = self.max_delta_q * (delta_q_raw / self.max_delta_q).tanh() * atom_mask  # (B, N, 1)
 
         # 5. Residual Superposition: q_raw = q_base + delta_q
         if base_charges is not None:
@@ -274,7 +327,8 @@ class EGNNForceField:
 
         q_shift = (q_sum - q_target) / num_real
         q_final = ((q_raw - q_shift) * atom_mask).reshape(B, N)
-        return (q_final * molecule_mask.reshape(B, 1)).realize()
+        q_masked = q_final * molecule_mask.reshape(B, 1)
+        return q_masked if Tensor.training else q_masked.realize()
 
     def compute_forces(
         self,
@@ -366,9 +420,16 @@ class EGNNForceField:
         u_total = eps_i.sum(axis=(1, 2)) * molecule_mask
 
         # 2. Charge readout with residual electronegativity superposition & formal charge conservation
-        delta_q = self.charge_mlp[0](h)
-        delta_q = self.charge_mlp[1](delta_q)
-        delta_q = self.charge_mlp[2](delta_q) * atom_mask
+        from dens_city.cdft.generalized_born import GeneralizedBornSolvation
+
+        gb = GeneralizedBornSolvation()
+        sf = gb.compute_solvent_descriptors(x_prep, atomic_numbers, atom_mask, base_charges=base_charges)
+        node_inputs = Tensor.cat(h, sf, dim=-1)
+
+        delta_q_raw = self.charge_mlp[0](node_inputs)
+        delta_q_raw = self.charge_mlp[1](delta_q_raw)
+        delta_q_raw = self.charge_mlp[2](delta_q_raw)
+        delta_q = self.max_delta_q * (delta_q_raw / self.max_delta_q).tanh() * atom_mask
 
         if base_charges is not None:
             if len(base_charges.shape) == 2:
@@ -390,7 +451,8 @@ class EGNNForceField:
             q_target = Tensor.zeros(B, 1, 1, dtype=dtypes.float32)
 
         q_shift = (q_sum - q_target) / num_real
-        q_final = (((q_raw - q_shift) * atom_mask).reshape(B, N) * molecule_mask.reshape(B, 1)).realize()
+        q_masked = ((q_raw - q_shift) * atom_mask).reshape(B, N) * molecule_mask.reshape(B, 1)
+        q_final = q_masked if Tensor.training else q_masked.realize()
 
         # 3. Forces via reverse-mode autograd
         loss = u_total.sum()

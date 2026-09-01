@@ -344,6 +344,7 @@ def verify_pipeline_against_freesolv(
     run_e2e: bool = False,
     populate_all_freesolv: bool = False,
     energy_engine: str = "classical",
+    force_egnn: bool = False,
     batch_size: Optional[int] = None,
 ) -> int:
     """Entrypoint function for FreeSolv verification and report generation."""
@@ -357,11 +358,13 @@ def verify_pipeline_against_freesolv(
             print("Populating test data before running end-to-end simulation...")
             generate_test_data(populate_entire_freesolv=populate_all_freesolv)
 
-        print(f"Executing dens-city end-to-end benchmark (engine: {energy_engine})...")
+        print(f"Executing dens-city end-to-end benchmark (engine: {energy_engine}, force_egnn={force_egnn})...")
         e2e_args = ["--materials", "all", "--benchmark", "--energy-engine", energy_engine]
+        if force_egnn:
+            e2e_args.append("--force-egnn")
         if batch_size is not None:
             e2e_args.extend(["--batch-size", str(batch_size)])
-        elif energy_engine == "egnn":
+        elif energy_engine == "egnn" or force_egnn:
             e2e_args.extend(["--batch-size", "32"])
         else:
             e2e_args.extend(["--batch-size", "512"])

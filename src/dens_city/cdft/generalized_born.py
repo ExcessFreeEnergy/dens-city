@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+import numpy as np
 from tinygrad import Tensor, dtypes
 
 
@@ -118,7 +119,66 @@ class GeneralizedBornSolvation:
 
         # 5. Effective Born radius alpha_i >= rho_i
         alpha_i = rho_i * (1.0 + integral_i.minimum(1.5)) * atom_mask
-        return alpha_i.maximum(0.8 * atom_mask).realize()
+        alpha_out = alpha_i.maximum(0.8 * atom_mask)
+        return alpha_out if Tensor.training else alpha_out.realize()
+
+    def compute_solvent_descriptors(
+        self,
+        x: Tensor,
+        atomic_numbers: Tensor,
+        atom_mask: Optional[Tensor] = None,
+        base_charges: Optional[Tensor] = None,
+    ) -> Tensor:
+        """
+        Computes a 4-channel solvent descriptor tensor of shape (B, N, 4):
+        Channel 0: Effective Born radius alpha_i * 0.2 (in Angstroms)
+        Channel 1: Continuous steric buriedness ratio beta_i = alpha_i / rho_i (>= 1.0)
+        Channel 2: 2D topological Pauling baseline charge q_i^base
+        Channel 3: Pauling electronegativity chi_i * 0.25
+        """
+        if len(x.shape) == 2:
+            x = x.reshape(1, -1, 3)
+        B, N, _ = x.shape
+
+        if len(atomic_numbers.shape) == 1:
+            atomic_numbers = atomic_numbers.reshape(B, N)
+
+        if atom_mask is None:
+            atom_mask = (atomic_numbers > 0).cast(dtypes.float32).reshape(B, N, 1)
+        elif len(atom_mask.shape) == 2:
+            atom_mask = atom_mask.reshape(B, N, 1)
+
+        bondi_tensor = get_bondi_radii_tensor()
+        z_clamped = atomic_numbers.cast(dtypes.int32).clip(0, 118)
+        sigma = bondi_tensor[z_clamped].reshape(B, N, 1) * atom_mask
+        rho_i = (sigma - self.radius_offset_a).maximum(0.8) * atom_mask
+
+        # 1. Effective Born radius alpha_i
+        alpha_i = self.compute_born_radii(x, atomic_numbers, atom_mask)  # (B, N, 1)
+
+        # 2. Steric buriedness ratio beta_i = alpha_i / rho_i
+        # beta_i ~ 1.0 for surface atoms, beta_i > 1.5 - 2.5 for buried atoms
+        beta_i = (alpha_i / rho_i.maximum(0.5)) * atom_mask
+
+        # 3. Base charge
+        if base_charges is not None:
+            bq = base_charges.reshape(B, N, 1) * atom_mask
+        else:
+            bq = Tensor.zeros(B, N, 1, dtype=dtypes.float32)
+
+        # 4. Pauling Electronegativity
+        from dens_city.utils.materials import PAULING_ELECTRONEGATIVITIES
+
+        chi_table = np.zeros(119, dtype=np.float32)
+        for z_val, chi_val in PAULING_ELECTRONEGATIVITIES.items():
+            if 0 <= z_val <= 118:
+                chi_table[z_val] = chi_val
+        chi_tensor = Tensor(chi_table, dtype=dtypes.float32)
+        chi_i = (chi_tensor[z_clamped].reshape(B, N, 1) * 0.25) * atom_mask  # normalized ~ [0, 1]
+
+        # Stack into (B, N, 4)
+        descriptors = Tensor.cat(alpha_i * 0.2, beta_i, bq, chi_i, dim=-1) * atom_mask
+        return descriptors if Tensor.training else descriptors.realize()
 
     def compute_solvation_free_energy(
         self,
@@ -194,4 +254,4 @@ class GeneralizedBornSolvation:
 
         # Total Born Solvation Free Energy in kcal/mol
         total_gb_kcal = -eps_factor * COULOMB_KCAL_A * (self_energy + pair_energy)
-        return total_gb_kcal.realize()
+        return total_gb_kcal if Tensor.training else total_gb_kcal.realize()

@@ -65,7 +65,8 @@ class MaterialPipelineTask:
     debug: bool = False
     debug_log_path: Optional[str] = None
     r_cut: Optional[float] = None
-    energy_engine: str = "classical"
+    energy_engine: str = "classical"  # "classical", "electronegativity", "egnn", "auto"
+    force_egnn: bool = False
     material_obj: Optional[Material] = None
     dielectric_constant: float = 78.4
     formal_charge: Optional[float] = None
@@ -286,8 +287,16 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
         box_xy = (30.0, 30.0)
         box_size_3d = (30.0, 30.0, slit_w)
 
+        # Determine effective engine: classical, electronegativity, egnn, auto
+        effective_engine = task.energy_engine
+        if getattr(task, "force_egnn", False):
+            effective_engine = "egnn"
+        elif effective_engine == "auto":
+            has_hetero = any(getattr(s, "atomic_number", 6) not in (1, 6) for s in material.sites)
+            effective_engine = "egnn" if has_hetero else "electronegativity"
+
         # Microscopic Hamiltonian: Classical or EGNN MLFF
-        if task.energy_engine == "egnn":
+        if effective_engine == "egnn":
             energy_fn = EGNNMicroscopicEnergy(
                 material=material,
                 box_size=box_size_3d,
@@ -746,6 +755,13 @@ def execute_prepared_batch(
     engine_type = (
         batch_tasks[0].energy_engine if batch_tasks and hasattr(batch_tasks[0], "energy_engine") else "classical"
     )
+    force_egnn = any(getattr(t, "force_egnn", False) for t in batch_tasks)
+    if force_egnn:
+        engine_type = "egnn"
+    elif engine_type == "auto":
+        any_hetero = any(any(getattr(s, "atomic_number", 6) not in (1, 6) for s in m.sites) for m in loaded_materials)
+        engine_type = "egnn" if any_hetero else "electronegativity"
+
     if engine_type == "egnn":
         energy_fn = (
             prepared_batch.energy_fn
@@ -841,9 +857,9 @@ def execute_prepared_batch(
 
     conformer_stats = generator.evaluate_conformer_ensemble(n_samples=bg_samples)
     stacked_samples = conformer_stats["coords"]
-    mean_energies = conformer_stats["mean_energy"]
-    var_energies = conformer_stats["var_energy"]
-    mean_log_pxs = conformer_stats["mean_log_px"]
+    mean_energies = np.atleast_1d(conformer_stats["mean_energy"])
+    var_energies = np.atleast_1d(conformer_stats["var_energy"])
+    mean_log_pxs = np.atleast_1d(conformer_stats["mean_log_px"])
     t_bg = time.perf_counter() - t_bg_start
 
     # 3. Extract Per-Material Trajectories and Dispatch Async Writes
@@ -855,13 +871,14 @@ def execute_prepared_batch(
         task = batch_tasks[orig_idx]
         mat_out_dir = os.path.join(task.out_dir, mat.name)
         site_names = [s.site_name for s in mat.sites] if mat.sites else [mat.name]
-
-        if len(stacked_samples.shape) == 4:
+        if stacked_samples.ndim == 4:
             mat_coords = stacked_samples[:bg_samples, local_idx, : mat.num_sites, :]
-        else:
+        elif stacked_samples.ndim == 3:
             mat_coords = stacked_samples[:bg_samples, : mat.num_sites, :]
+        else:
+            mat_coords = stacked_samples
 
-        if async_writer:
+        if async_writer and not task.skip_bg:
             async_writer.write_xyz(
                 path=os.path.join(mat_out_dir, "trajectory.xyz"),
                 coords=mat_coords,
@@ -877,7 +894,15 @@ def execute_prepared_batch(
         delta_g_born_val = None
         quantum_q_list = None
 
-        if engine_type == "egnn" and mat.num_sites > 0:
+        # Determine effective per-material tier: classical, electronegativity, egnn
+        mat_engine = engine_type
+        if getattr(task, "force_egnn", False) or force_egnn:
+            mat_engine = "egnn"
+        elif mat_engine == "auto":
+            has_hetero = any(getattr(s, "atomic_number", 6) not in (1, 6) for s in mat.sites)
+            mat_engine = "egnn" if has_hetero else "electronegativity"
+
+        if mat_engine in ("egnn", "electronegativity") and mat.num_sites > 0:
             try:
                 from dens_city.cdft.generalized_born import GeneralizedBornSolvation
 
@@ -894,7 +919,7 @@ def execute_prepared_batch(
                 z_padded = np.zeros((n_conf, n_pad), dtype=np.float32)
                 z_padded[:, :n_sites_real] = z_list
 
-                bq_list = mat.base_charges or mat.compute_topological_base_charges()
+                bq_list = mat.base_charges or mat.compute_topological_base_charges(kappa=0.10, q_max=0.50)
                 bq_padded = np.zeros((n_conf, n_pad), dtype=np.float32)
                 bq_padded[:, :n_sites_real] = bq_list[:n_sites_real]
 
@@ -909,7 +934,8 @@ def execute_prepared_batch(
                 q_tot_val = float(getattr(mat, "total_charge", getattr(task, "formal_charge", 0.0) or 0.0))
                 q_tot_tensor = Tensor.full((n_conf, 1, 1), q_tot_val, dtype=dtypes.float32)
 
-                if hasattr(energy_fn, "egnn_ff") and energy_fn.egnn_ff is not None:
+                if mat_engine == "egnn" and hasattr(energy_fn, "egnn_ff") and energy_fn.egnn_ff is not None:
+                    # EGNN Quantum dynamic charge prediction
                     q_pred_tensor = energy_fn.egnn_ff.compute_charges(
                         x=x_t,
                         atomic_numbers=z_t,
@@ -917,19 +943,22 @@ def execute_prepared_batch(
                         total_charge=q_tot_tensor,
                         base_charges=bq_t,
                     )
-                    gb_tensor = gb_solver.compute_solvation_free_energy(
-                        x=x_t,
-                        charges=q_pred_tensor,
-                        atomic_numbers=z_t,
-                        atom_mask=m_t,
-                        dielectric_constant=eps_solvent,
-                    )
-                    delta_g_born_val = float(gb_tensor.mean().item())
-                    q_mean = q_pred_tensor.mean(axis=0).numpy()[:n_sites_real].tolist()
-                    quantum_q_list = [float(q) for q in q_mean]
+                else:
+                    # Deterministic electronegativity tier
+                    q_pred_tensor = bq_t
 
-                    # Total Solvation Free Energy = Non-polar FMT cavity/dispersion + Dynamic Quantum GB
-                    solv_free_energy = solv_free_energy + delta_g_born_val
+                gb_tensor = gb_solver.compute_solvation_free_energy(
+                    x=x_t,
+                    charges=q_pred_tensor,
+                    atomic_numbers=z_t,
+                    atom_mask=m_t,
+                    dielectric_constant=eps_solvent,
+                )
+                delta_g_born_val = float(gb_tensor.mean().item())
+                q_mean = q_pred_tensor.mean(axis=0).numpy()[:n_sites_real].tolist()
+                quantum_q_list = [float(q) for q in q_mean]
+
+                solv_free_energy = solv_free_energy + delta_g_born_val
             except Exception:
                 pass
 

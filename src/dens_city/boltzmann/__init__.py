@@ -17,6 +17,7 @@ from dens_city.boltzmann.energy import EGNNMicroscopicEnergy, MicroscopicEnergy,
 from dens_city.boltzmann.generator import BoltzmannGenerator
 from dens_city.boltzmann.lbfgs import BatchedLBFGS, LBFGSResult
 from dens_city.boltzmann.prior import CDFTBaseDistribution
+from dens_city.boltzmann.train_charges import QuantumChargeTrainer, run_train_charges
 
 __all__ = [
     "MicroscopicEnergy",
@@ -36,4 +37,6 @@ __all__ = [
     "compute_torsion_rotamer_loss",
     "CDFTBaseDistribution",
     "BoltzmannGenerator",
+    "QuantumChargeTrainer",
+    "run_train_charges",
 ]

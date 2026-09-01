@@ -1,0 +1,24 @@
+{
+  "wikiskill-hooks": {
+    "enabled": true,
+    "PostToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/wikiskill_post_tool.py",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "./scripts/wikiskill_pre_invocation.py",
+        "timeout": 10
+      }
+    ]
+  }
+}

@@ -356,6 +356,12 @@ Execution Modes & Examples:
         metavar="COMMAND",
         help="Execute a test/command and record an immutable trace into the WikiSkill raw layer",
     )
+    mode_group.add_argument(
+        "--train-charges",
+        action="store_true",
+        default=False,
+        help="Train the EGNN dynamic quantum charge readout head directly against FreeSolv hydration free energies via end-to-end autograd",
+    )
 
     # -------------------------------------------------------------------------
     # Material & Input Selection
@@ -511,9 +517,15 @@ Execution Modes & Examples:
     egnn_group = parser.add_argument_group("EGNN Quantum Force Field Options")
     egnn_group.add_argument(
         "--energy-engine",
-        choices=["classical", "egnn"],
+        choices=["classical", "electronegativity", "egnn", "auto"],
         default="classical",
-        help="Microscopic Hamiltonian physics engine: 'classical' (GAFF LJ+Coulomb, default) or 'egnn' (7-layer E(n)-equivariant MLFF)",
+        help="Microscopic Hamiltonian physics engine: 'classical' (GAFF LJ+Coulomb), 'electronegativity' (deterministic Pauling prior + GB), 'egnn' (trained 7-layer E(n)-equivariant MLFF + GB), or 'auto' (adaptive heuristic).",
+    )
+    egnn_group.add_argument(
+        "--force-egnn",
+        action="store_true",
+        default=False,
+        help="Force Stage 4 EGNN quantum surrogate evaluation across 100%% of batch slots, overriding speed heuristics.",
     )
     egnn_group.add_argument(
         "--enable-egnn",
@@ -544,6 +556,36 @@ Execution Modes & Examples:
         type=str,
         default=None,
         help="Optional path to pretrained EGNN weights .npz archive",
+    )
+    egnn_group.add_argument(
+        "--charge-epochs",
+        type=int,
+        default=50,
+        help="Number of training epochs for --train-charges (default: 50)",
+    )
+    egnn_group.add_argument(
+        "--charge-lr",
+        type=float,
+        default=1e-3,
+        help="Learning rate for --train-charges (default: 1e-3)",
+    )
+    egnn_group.add_argument(
+        "--charge-huber-delta",
+        type=float,
+        default=1.0,
+        help="Huber loss transition delta threshold in kcal/mol (default: 1.0)",
+    )
+    egnn_group.add_argument(
+        "--charge-lambda",
+        type=float,
+        default=0.01,
+        help="L2 regularization penalty weight on (Δq)^2 neural charge perturbations (default: 0.01)",
+    )
+    egnn_group.add_argument(
+        "--charge-weights-out",
+        type=str,
+        default="data/checkpoints/egnn_charges_trained.npz",
+        help="Destination path for trained quantum charge checkpoint archive",
     )
 
     # -------------------------------------------------------------------------
@@ -921,6 +963,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     # =========================================================================
+    # MODE: Train EGNN Dynamic Quantum Charges Mode
+    # =========================================================================
+    if args.train_charges:
+        from dens_city.boltzmann.train_charges import run_train_charges
+
+        run_train_charges(
+            epochs=args.charge_epochs,
+            lr=args.charge_lr,
+            batch_size=args.batch_size if ("-b" in argv or "--batch-size" in argv) else 32,
+            huber_delta=args.charge_huber_delta,
+            lambda_l2=args.charge_lambda,
+            weights_out=args.charge_weights_out,
+        )
+        return 0
+
+    # =========================================================================
     # MODE 1: 3D Interactive Raylib Visualizer Mode
     # =========================================================================
     if args.interactive:
@@ -1124,6 +1182,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             run_e2e=args.run_e2e,
             populate_all_freesolv=args.all_freesolv,
             energy_engine=args.energy_engine,
+            force_egnn=args.force_egnn,
             batch_size=args.batch_size if ("-b" in argv or "--batch-size" in argv) else None,
         )
 
@@ -1135,16 +1194,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     jsonl_log_path = os.path.join(out_dir, "pipeline_summary.jsonl")
 
     # Auto-throttle batch size for EGNN to prevent GPU VRAM exhaustion from (B, 128, 128, 128) tensors
-    if args.energy_engine == "egnn" and "--batch-size" not in argv and "-b" not in argv:
+    effective_engine = "egnn" if args.force_egnn else args.energy_engine
+    if effective_engine in ("egnn", "auto") and "--batch-size" not in argv and "-b" not in argv:
         args.batch_size = 32
         print(
             colored(
-                "[ENGINE] Routing to EGNN MLFF engine (auto-throttling batch size to 32 to optimize message passing VRAM)",
+                f"[ENGINE] Routing to {effective_engine.upper()} engine (auto-throttling batch size to 32 to optimize message passing VRAM)",
                 "cyan",
             )
         )
-    elif args.energy_engine == "egnn":
-        print(colored(f"[ENGINE] Routing to EGNN MLFF engine (batch size: {args.batch_size})", "cyan"))
+    elif effective_engine in ("egnn", "auto"):
+        print(colored(f"[ENGINE] Routing to {effective_engine.upper()} engine (batch size: {args.batch_size})", "cyan"))
 
     materials = discover_materials(args.data_dir, args.materials)
     if not materials:
@@ -1190,6 +1250,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             debug=args.debug,
             debug_log_path=str(debug_log_dir / f"{Path(m).stem}.log") if debug_log_dir else None,
             energy_engine=args.energy_engine,
+            force_egnn=args.force_egnn,
         )
         for m in materials
     ]

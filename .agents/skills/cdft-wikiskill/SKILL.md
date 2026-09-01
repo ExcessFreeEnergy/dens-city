@@ -59,6 +59,26 @@ This skill equips Antigravity agents with the compiled, persistent knowledge bas
 - **Rule**: Reweight generated samples via \(w(\mathbf{x}) \propto \exp(-u + u_Z + \log R_{zx})\) for unbiased expectation values and compute \(\Delta A_{12} = \langle J_{KL}^{(2)}\rangle - \langle J_{KL}^{(1)}\rangle\).
 - **Reference**: [pattern_boltzmann_reweighting_free_energy.md](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/patterns/pattern_boltzmann_reweighting_free_energy.md).
 
+### 12. E(n) Equivariant Message Passing (EGNN)
+- **Rule**: Compute edge messages from invariant squared distances \(\|\mathbf{x}_i - \mathbf{x}_j\|^2\) and update coordinates along relative difference radial fields \((\mathbf{x}_i - \mathbf{x}_j)\phi_x(\mathbf{m}_{ij})\). Never pass unconstrained raw Cartesian coordinates to edge MLPs.
+- **Reference**: [pattern_egnn_equivariant_molecular_message_passing.md](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/patterns/pattern_egnn_equivariant_molecular_message_passing.md).
+
+### 13. Equivariant Velocity & Soft Adjacency Inference
+- **Rule**: For dynamics forecasting, update momentum via \(\mathbf{v}_i^{l+1} = \phi_v(\mathbf{h}_i^l)\mathbf{v}_i^{\rm init} + \text{accel}\) (velocities are translation-invariant differentials). Infer unknown non-bonded edges with soft sigmoid gating \(\phi_{\rm inf}(\mathbf{m}_{ij})\).
+- **Reference**: [pattern_egnn_velocity_and_edge_inference.md](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/patterns/pattern_egnn_velocity_and_edge_inference.md).
+
+### 14. Tinygrad Universal UOp DAG & Movement Ops
+- **Rule**: Treat all tinygrad tensors as lazy UOp graphs. Leverage zero-arithmetic movement views (`Permute`, `Reshape`, `Expand`, `Pad`, `Shrink`) instead of allocating intermediate buffers or calling Python loops.
+- **Reference**: [pattern_tinygrad_uop_graph_and_lazy_evaluation.md](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/patterns/pattern_tinygrad_uop_graph_and_lazy_evaluation.md).
+
+### 15. Tinygrad Decomposed Tensor Primitives
+- **Rule**: Compose complex tensor operations (`gemm`, `prefix_sum`, `arange`, `gather`, `scatter_add`) using tinygrad's canonical decomposed patterns to maximize kernel fusion and enable tensor-core acceleration.
+- **Reference**: [pattern_tinygrad_decomposed_tensor_idioms.md](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/patterns/pattern_tinygrad_decomposed_tensor_idioms.md).
+
+### 16. Idiomatic Tinygrad Training Loops & Step Fusion
+- **Rule**: Follow the golden `beautiful_mnist.py` standard: wrap forward calls in `@function`, decorate training steps with `@TinyJit` and `@Context(TRAINING=1)`, sample batches on-device with `Tensor.randint` (Threefry PRNG), and fuse backward adjoints with optimizer weight updates via `loss.realize(*opt.schedule_step())`.
+- **Reference**: [pattern_tinygrad_golden_idioms_beautiful_mnist.md](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/patterns/pattern_tinygrad_golden_idioms_beautiful_mnist.md).
+
 ## Verification Workflow
 Always verify changes using the test suite:
 ```bash
@@ -66,4 +86,6 @@ export PATH="/home/gauss/code/cdft_sim/dens-city/.venv/bin:$PATH"
 pytest tests/test_tiny_cdft.py tests/test_batched_cdft.py tests/test_wikiskill.py -v
 ruff check src/ tests/
 ```
+
+
 

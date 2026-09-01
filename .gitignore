@@ -46,3 +46,8 @@ runs/
 ._*
 .mplconfig/
 *.png
+
+# WikiSkill raw execution traces (ignore heavy raw logs; keep persistent wiki, skills, rules)
+.agents/wikiskill/raw/*
+!.agents/wikiskill/raw/.gitkeep
+

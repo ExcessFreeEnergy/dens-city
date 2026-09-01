@@ -61,6 +61,7 @@ uv run dens-city [MODE_SELECTOR] [OPTIONS...]
 | `--sweep`, `--curriculum-sweep` | **Constellation Curriculum Sweeps** | Run multi-trial hyperparameter sweep for Constellation 3D viewer |
 | `--eval-swarm`, `--evaluate-specs`| **Spec Evaluation & Chemical Diagnostics** | Evaluate validity %, SA score, diversity (1-T), and unique SMILES % |
 | `--generate-library`, `--gen-library` | **Combinatorial Library Generator** | High-speed C / multi-core 2D/3D combinatorial molecular generation |
+| `--train-charges` | **Differentiable Charge Head Training** | Two-phase end-to-end fine-tuning on FreeSolv hydration free energies |
 | `--populate-test-data` | **Dataset & Benchmark Population** | Populate `data/test_data/` with benchmark `.mol2` files & force fields |
 | `--verify-freesolv`, `--verify-e2e` | **FreeSolv Statistical Validation** | Compare predictions against FreeSolv hydration database & build report |
 
@@ -95,9 +96,14 @@ uv run dens-city [MODE_SELECTOR] [OPTIONS...]
 - `--lbfgs-steps` : Batched GPU L-BFGS Quasi-Newton geometry relaxation steps (default: `50`).
 - `--lbfgs-tol` : RMS force convergence threshold for L-BFGS (default: `1e-3`).
 
-#### Quantum MLFF & EGNN Options
-- `--energy-engine` : Microscopic Hamiltonian physics engine: `'classical'` (GAFF LJ + Coulomb, default) or `'egnn'` (7-layer $E(n)$-equivariant MLFF).
+#### Quantum MLFF & EGNN Charge Training Options
+- `--energy-engine` : Microscopic Hamiltonian physics engine: `'classical'` (GAFF LJ + Coulomb), `'electronegativity'` (deterministic Pauling prior + GB), `'egnn'` (trained 7-layer $E(n)$-equivariant MLFF + GB), or `'auto'` (adaptive heuristic).
+- `--force-egnn` : Force Stage 4 EGNN quantum surrogate evaluation across 100% of batch slots, overriding speed heuristics.
 - `--enable-egnn` / `--no-enable-egnn` : Enable/disable Stage 4 EGNN quantum surrogate screening (default: `True`).
+- `--charge-epochs` : Training epochs for end-to-end differentiable charge optimization (default: `60`).
+- `--charge-warmup-epochs` : Warmup epochs with frozen trunk and cached features (default: `15`).
+- `--charge-lr-head` : Learning rate for dynamic charge readout MLP head (default: `5e-4`).
+- `--charge-lr-trunk` : Learning rate for end-to-end EGNN message-passing trunk (default: `1e-5`).
 - `--egnn-batch-size` : GPU batch size for EGNN message-passing evaluation (default: `32`).
 - `--egnn-layers` : Number of message-passing layers in the EGNN architecture (default: `7`).
 - `--egnn-weights` : Optional path to pretrained EGNN weights `.npz` archive.

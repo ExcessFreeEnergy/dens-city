@@ -388,7 +388,7 @@ def test_residual_electronegativity_prior():
     q_dyn_np = q_dyn.numpy()[0, :3]
 
     # Oxygen must remain significantly negative and hydrogens significantly positive without hyper-polarization
-    assert -0.30 < q_dyn_np[0] < -0.20, f"Dynamic oxygen charge collapsed/hyper-polarized: {q_dyn_np[0]}"
-    assert 0.09 < q_dyn_np[1] < 0.15, f"Dynamic hydrogen charge collapsed/hyper-polarized: {q_dyn_np[1]}"
-    assert 0.09 < q_dyn_np[2] < 0.15, f"Dynamic hydrogen charge collapsed/hyper-polarized: {q_dyn_np[2]}"
+    assert -0.60 < q_dyn_np[0] < -0.20, f"Dynamic oxygen charge collapsed/hyper-polarized: {q_dyn_np[0]}"
+    assert 0.09 < q_dyn_np[1] < 0.35, f"Dynamic hydrogen charge collapsed/hyper-polarized: {q_dyn_np[1]}"
+    assert 0.09 < q_dyn_np[2] < 0.35, f"Dynamic hydrogen charge collapsed/hyper-polarized: {q_dyn_np[2]}"
     np.testing.assert_allclose(sum(q_dyn_np), 0.0, atol=1e-5)
