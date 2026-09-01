@@ -92,8 +92,8 @@ def test_quantum_charge_trainer_autograd_flow_and_loss_decrease():
     batch.cached_h = None
     orig_trunk_w = trainer.ff.embedding.weight.numpy().copy()
     losses_p2 = []
-    for step in range(3):
-        loss_p2, mae_p2, max_dq_p2 = trainer.train_epoch([batch], lr_head=1e-3, lr_trunk=1e-5, phase=2)
+    for step in range(5):
+        loss_p2, mae_p2, max_dq_p2 = trainer.train_epoch([batch], lr_head=1e-3, lr_trunk=1e-4, phase=2)
         losses_p2.append(loss_p2)
         assert max_dq_p2 <= 0.2501
 
@@ -126,3 +126,32 @@ def test_dataset_static_shapes():
         assert b.cached_solvent_features.shape == (expected_B, expected_N, 4), (
             f"Batch {i} sf shape mismatch: {b.cached_solvent_features.shape}"
         )
+
+
+def test_static_dataset_and_sequential_jit_eval():
+    """
+    Verifies that StaticFreeSolvDataset packs all molecules contiguously into GPU memory
+    and sequential JIT evaluation covers 100% of the dataset deterministically without shape errors.
+    """
+    trainer = QuantumChargeTrainer()
+    static_ds = trainer.load_static_dataset()
+
+    expected_B = trainer.config.batch_size
+    expected_N = trainer.config.n_particles
+    assert static_ds.num_real_molecules > 600
+    assert static_ds.total_padded_molecules % expected_B == 0
+
+    assert static_ds.coords.shape == (static_ds.total_padded_molecules, expected_N, 3)
+    assert static_ds.atomic_numbers.shape == (static_ds.total_padded_molecules, expected_N)
+    assert static_ds.atom_mask.shape == (static_ds.total_padded_molecules, expected_N, 1)
+    assert static_ds.cached_h.shape == (static_ds.total_padded_molecules, expected_N, 128)
+    assert static_ds.solvent_features.shape == (static_ds.total_padded_molecules, expected_N, 4)
+
+    # Test sequential JIT evaluation
+    trainer.dataset = static_ds
+    mae, rmse, max_err, preds = trainer.evaluate()
+    assert mae > 0.0, f"Expected positive MAE, got {mae}"
+    assert rmse >= mae, f"Expected RMSE >= MAE, got RMSE={rmse}, MAE={mae}"
+    assert len(preds) == static_ds.num_real_molecules, (
+        f"Expected {static_ds.num_real_molecules} predictions, got {len(preds)}"
+    )

@@ -560,26 +560,26 @@ Execution Modes & Examples:
     egnn_group.add_argument(
         "--charge-epochs",
         type=int,
-        default=50,
-        help="Number of training epochs for --train-charges (default: 50)",
+        default=150,
+        help="Number of training epochs for --train-charges (default: 150)",
     )
     egnn_group.add_argument(
         "--charge-lr",
         type=float,
-        default=1e-3,
-        help="Learning rate for --train-charges (default: 1e-3)",
+        default=8e-4,
+        help="Learning rate for --train-charges (default: 8e-4)",
     )
     egnn_group.add_argument(
         "--charge-huber-delta",
         type=float,
-        default=1.0,
-        help="Huber loss transition delta threshold in kcal/mol (default: 1.0)",
+        default=2.5,
+        help="Huber loss transition delta threshold in kcal/mol (default: 2.5)",
     )
     egnn_group.add_argument(
         "--charge-lambda",
         type=float,
-        default=0.01,
-        help="L2 regularization penalty weight on (Δq)^2 neural charge perturbations (default: 0.01)",
+        default=0.02,
+        help="L2 regularization penalty weight on (Δq)^2 neural charge perturbations (default: 0.02)",
     )
     egnn_group.add_argument(
         "--charge-weights-out",
