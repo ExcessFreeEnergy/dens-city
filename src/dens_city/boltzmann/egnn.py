@@ -151,7 +151,7 @@ class EGNNForceField:
             Tensor.silu,
             nn.Linear(hidden_dim, 1),
         ]
-        self.max_delta_vdw = 1.0  # Max allowed atomic nonpolar perturbation |Δg_i^vdw| <= 1.0 kcal/mol
+        self.max_delta_vdw = 3.5  # Max allowed atomic nonpolar perturbation |Δg_i^vdw| <= 3.5 kcal/mol
         # Zero-initialize output layer so initial nonpolar perturbations start cleanly at 0.0 around physical baseline
         self.vdw_mlp[2].weight = Tensor.zeros(1, hidden_dim, dtype=dtypes.float32)
         self.vdw_mlp[2].bias = Tensor.zeros(1, dtype=dtypes.float32)

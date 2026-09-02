@@ -36,17 +36,17 @@ from dens_city.utils.materials import MaterialLoader
 
 @dataclass
 class ChargeTrainingConfig:
-    epochs: int = 150
-    warmup_epochs: int = 20
+    epochs: int = 1000
+    warmup_epochs: int = 50
     lr_head: float = 8e-4
     lr_trunk: float = 2e-5
-    lr_min: float = 5e-7
+    lr_min: float = 1e-7
     batch_size: int = 32
     huber_delta: float = 2.5  # kcal/mol (expanded quadratic MSE basin)
     lambda_l2: float = 0.02  # Penalty on (Δq)^2
-    lambda_vdw: float = 0.01  # Penalty on (Δg_vdw)^2
+    lambda_vdw: float = 0.002  # Penalty on (Δg_vdw)^2 (calibrated for max_delta_vdw=3.5)
     max_delta_q: float = 0.25  # Max allowed perturbation |Δq| <= 0.25e
-    max_delta_vdw: float = 1.0  # Max allowed atomic nonpolar perturbation |Δg_vdw| <= 1.0 kcal/mol
+    max_delta_vdw: float = 3.5  # Max allowed atomic nonpolar perturbation |Δg_vdw| <= 3.5 kcal/mol
     n_particles: int = 128
     hidden_dim: int = 128
     num_layers: int = 7
@@ -769,12 +769,13 @@ class QuantumChargeTrainer:
             train_mae = ep_mae / steps_per_epoch
 
             # Evaluate test metrics deterministically across 100% of the dataset
-            if epoch % 5 == 0 or epoch == self.config.epochs or epoch == 1:
+            eval_interval = 25 if self.config.epochs >= 100 else 5
+            if epoch % eval_interval == 0 or epoch == self.config.epochs or epoch == 1:
                 val_mae, val_rmse, val_max, _ = self.evaluate()
                 status_color = "green" if val_mae < best_mae else "yellow"
                 print(
                     colored(
-                        f"  Epoch {epoch:3d}/{self.config.epochs:3d} (P{phase}) [{t_ep:5.2f}s] | "
+                        f"  Epoch {epoch:4d}/{self.config.epochs:4d} (P{phase}) [{t_ep:5.2f}s] | "
                         f"Loss: {train_loss:7.4f} | MAE: {val_mae:6.3f} kcal/mol | "
                         f"RMSE: {val_rmse:6.3f} | Max |Δq|: {ep_max_dq:6.4f}e",
                         status_color,
@@ -785,7 +786,7 @@ class QuantumChargeTrainer:
                     self.ff.save_weights(out_path)
             else:
                 print(
-                    f"  Epoch {epoch:3d}/{self.config.epochs:3d} (P{phase}) [{t_ep:5.2f}s] | "
+                    f"  Epoch {epoch:4d}/{self.config.epochs:4d} (P{phase}) [{t_ep:5.2f}s] | "
                     f"Loss: {train_loss:7.4f} | Train MAE: {train_mae:6.3f} kcal/mol | Max |Δq|: {ep_max_dq:6.4f}e"
                 )
 
@@ -811,13 +812,13 @@ class QuantumChargeTrainer:
 
 
 def run_train_charges(
-    epochs: int = 150,
+    epochs: int = 1000,
     lr: float = 8e-4,
     batch_size: int = 32,
     huber_delta: float = 2.5,
     lambda_l2: float = 0.02,
-    lambda_vdw: float = 0.01,
-    max_delta_vdw: float = 1.0,
+    lambda_vdw: float = 0.002,
+    max_delta_vdw: float = 3.5,
     weights_out: str = "data/checkpoints/egnn_charges_trained.npz",
 ) -> Dict[str, float]:
     """Convenience entry point for training dynamic quantum charges."""

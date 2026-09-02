@@ -28,6 +28,29 @@ from dens_city.cdft.cdft import BatchedTinyCDFT, TinyCDFT
 from dens_city.cdft.kernels import KernelBuilder
 from dens_city.utils.materials import Material, MaterialLoader, MolecularBatch
 
+_GLOBAL_EGNN_MODEL: Optional[Any] = None
+_GLOBAL_GB_SOLVERS: Dict[float, Any] = {}
+
+
+def get_global_egnn_model() -> Any:
+    """Returns a module-level cached singleton EGNNForceField instance."""
+    global _GLOBAL_EGNN_MODEL
+    if _GLOBAL_EGNN_MODEL is None:
+        from dens_city.boltzmann.egnn import EGNNForceField
+
+        _GLOBAL_EGNN_MODEL = EGNNForceField(load_default_weights=True)
+    return _GLOBAL_EGNN_MODEL
+
+
+def get_global_gb_solver(dielectric_constant: float = 78.4) -> Any:
+    """Returns a module-level cached singleton GeneralizedBornSolvation instance."""
+    global _GLOBAL_GB_SOLVERS
+    if dielectric_constant not in _GLOBAL_GB_SOLVERS:
+        from dens_city.cdft.generalized_born import GeneralizedBornSolvation
+
+        _GLOBAL_GB_SOLVERS[dielectric_constant] = GeneralizedBornSolvation(dielectric_constant=dielectric_constant)
+    return _GLOBAL_GB_SOLVERS[dielectric_constant]
+
 
 class PipelineStatus(str, Enum):
     SUCCESS = "SUCCESS"
@@ -766,7 +789,7 @@ def execute_prepared_batch(
         energy_fn = (
             prepared_batch.energy_fn
             if prepared_batch.energy_fn is not None
-            else EGNNMicroscopicEnergy(material=mol_batch)
+            else EGNNMicroscopicEnergy(material=mol_batch, egnn_ff=get_global_egnn_model())
         )
     else:
         energy_fn = (
@@ -926,10 +949,8 @@ def execute_prepared_batch(
 
         if mat_engine in ("egnn", "electronegativity") and mat.num_sites > 0:
             try:
-                from dens_city.cdft.generalized_born import GeneralizedBornSolvation
-
                 eps_solvent = float(getattr(task, "dielectric_constant", 78.4))
-                gb_solver = GeneralizedBornSolvation(dielectric_constant=eps_solvent)
+                gb_solver = get_global_gb_solver(dielectric_constant=eps_solvent)
 
                 # Ground-state molecular coordinates from mat.sites with physical bond lengths
                 n_conf = 1
@@ -962,13 +983,11 @@ def execute_prepared_batch(
                 sf = gb_solver.compute_solvent_descriptors(x_t, z_t, m_t, base_charges=bq_t)
 
                 if mat_engine == "egnn":
-                    egnn_model = None
-                    if hasattr(energy_fn, "egnn_ff") and energy_fn.egnn_ff is not None:
-                        egnn_model = energy_fn.egnn_ff
-                    else:
-                        from dens_city.boltzmann.egnn import EGNNForceField
-
-                        egnn_model = EGNNForceField(load_default_weights=True)
+                    egnn_model = (
+                        energy_fn.egnn_ff
+                        if hasattr(energy_fn, "egnn_ff") and energy_fn.egnn_ff is not None
+                        else get_global_egnn_model()
+                    )
 
                     q_pred_tensor, delta_vdw_mol, _ = egnn_model.compute_solvation_readouts(
                         x=x_t,
@@ -979,10 +998,9 @@ def execute_prepared_batch(
                         solvent_features=sf,
                         detach_trunk=True,
                     )
-                    delta_vdw_val = float(delta_vdw_mol.mean().item())
                 else:
                     q_pred_tensor = bq_t
-                    delta_vdw_val = 0.0
+                    delta_vdw_mol = Tensor.zeros(n_conf, dtype=dtypes.float32)
 
                 gb_tensor = gb_solver.compute_solvation_free_energy(
                     x=x_t,
@@ -991,8 +1009,16 @@ def execute_prepared_batch(
                     atom_mask=m_t,
                     dielectric_constant=eps_solvent,
                 )
-                delta_g_born_val = float(gb_tensor.mean().item())
-                q_mean = q_pred_tensor.mean(axis=0).numpy()[:n_sites_real].tolist()
+
+                # Explicit safe batched realization per pattern_tinygrad_jit_graph_caching
+                vdw_mean = delta_vdw_mol.mean()
+                gb_mean = gb_tensor.mean()
+                q_mean_tensor = q_pred_tensor.mean(axis=0)
+                Tensor.realize(vdw_mean, gb_mean, q_mean_tensor)
+
+                delta_vdw_val = float(vdw_mean.item())
+                delta_g_born_val = float(gb_mean.item())
+                q_mean = q_mean_tensor.numpy()[:n_sites_real].tolist()
                 quantum_q_list = [float(q) for q in q_mean]
 
                 solv_free_energy = vdw_solv + delta_vdw_val + delta_g_born_val

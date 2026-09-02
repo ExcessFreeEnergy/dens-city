@@ -560,8 +560,8 @@ Execution Modes & Examples:
     egnn_group.add_argument(
         "--charge-epochs",
         type=int,
-        default=150,
-        help="Number of training epochs for --train-charges (default: 150)",
+        default=1000,
+        help="Number of training epochs for --train-charges (default: 1000)",
     )
     egnn_group.add_argument(
         "--charge-lr",
@@ -584,14 +584,14 @@ Execution Modes & Examples:
     egnn_group.add_argument(
         "--charge-lambda-vdw",
         type=float,
-        default=0.01,
-        help="L2 regularization penalty weight on (Δg_vdw)^2 neural cavitation perturbations (default: 0.01)",
+        default=0.002,
+        help="L2 regularization penalty weight on (Δg_vdw)^2 neural cavitation perturbations (default: 0.002)",
     )
     egnn_group.add_argument(
         "--charge-max-vdw",
         type=float,
-        default=1.0,
-        help="Maximum per-atom nonpolar cavitation adjustment ceiling in kcal/mol (default: 1.0)",
+        default=3.5,
+        help="Maximum per-atom nonpolar cavitation adjustment ceiling in kcal/mol (default: 3.5)",
     )
     egnn_group.add_argument(
         "--charge-weights-out",
