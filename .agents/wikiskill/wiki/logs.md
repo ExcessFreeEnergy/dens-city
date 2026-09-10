@@ -89,3 +89,37 @@ All analyzed traces passed.
 - **Summary**: Consolidated 1 traces (0 failing, 1 passing). Created 0 patterns, updated 0.
 - **Diagnostic Findings**:
 All analyzed traces passed.
+
+### [2026-09-01 21:25:00 UTC] Legacy Specifications Knowledge Consolidation (Score: 1.0000)
+- **Summary**: Extracted, verified, and consolidated all mathematical formulations and GPU architecture patterns from `cdft_spec.md`, `boltzman_spec.md`, and `egnn_spec.md` into 4 persistent patterns, retiring the extraneous markdown files.
+- **Diagnostic Findings**:
+  - `pattern_percus_yevick_fmt_thermodynamic_consistency`: Percus-Yevick compressibility EOS route matching Rosenfeld FMT ($Z_{\rm PY} = \frac{1+\eta+\eta^2}{(1-\eta)^3}$) to eliminate bulk density drift.
+  - `pattern_generalized_born_implicit_solvation`: $O(1)$ GPU Bondi radii lookup, Hawkins/Grycuk smooth volume descreening ($\alpha_i \ge \rho_i$ without $1/r^4$ runaway), and Still pairwise screened dielectric hydration.
+  - `pattern_egnn_quantum_charges_and_memory_decomposition`: Memory-optimized decomposed edge projection ($\text{SiLU}(W_{hi} h_i + W_{hj} h_j + W_d d^2 + W_a a)$), degree-normalized neighborhood aggregation, and exact charge neutrality mean-shift.
+  - `pattern_batched_lbfgs_trust_region_relaxation`: Batched GPU L-BFGS two-loop recursion ($m=6$), trust-region step clamping ($\Delta r \le 0.20\text{ \AA}$ to avoid crossing LJ repulsive walls), and SIMD active molecule convergence masking.
+
+
+### [2026-09-01 21:25:05 UTC] Iteration 1 (Score: N/A)
+- **Summary**: Consolidated 1 traces (0 failing, 1 passing). Created 0 patterns, updated 0.
+- **Diagnostic Findings**:
+All analyzed traces passed.
+
+### [2026-09-01 21:25:31 UTC] Iteration 1 (Score: N/A)
+- **Summary**: Consolidated 1 traces (0 failing, 1 passing). Created 0 patterns, updated 0.
+- **Diagnostic Findings**:
+All analyzed traces passed.
+
+### [2026-09-02 05:44:52 UTC] Iteration 1 (Score: N/A)
+- **Summary**: Consolidated 1 traces (0 failing, 1 passing). Created 0 patterns, updated 0.
+- **Diagnostic Findings**:
+All analyzed traces passed.
+
+### [2026-09-10 14:09:07 UTC] Iteration 1 (Score: N/A)
+- **Summary**: Consolidated 1 traces (0 failing, 1 passing). Created 0 patterns, updated 0.
+- **Diagnostic Findings**:
+All analyzed traces passed.
+
+### [2026-09-10 14:11:11 UTC] Iteration 1 (Score: N/A)
+- **Summary**: Consolidated 1 traces (0 failing, 1 passing). Created 0 patterns, updated 0.
+- **Diagnostic Findings**:
+All analyzed traces passed.

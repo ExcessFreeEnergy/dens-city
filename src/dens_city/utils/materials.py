@@ -319,6 +319,57 @@ class Material:
     def total_charge(self) -> float:
         return sum(s.charge for s in self.sites)
 
+    @property
+    def num_rotatable_bonds(self) -> int:
+        """
+        Dynamically calculates the number of rotatable single bonds from molecular graph connectivity.
+        Identifies acyclic single bonds between two non-terminal heavy atoms (degree >= 2, Z > 1).
+        Uses exact cycle-path traversal to exclude bonds within rings.
+        """
+        n = len(self.sites)
+        if n == 0 or not self.bonds:
+            return 0
+
+        is_heavy = [getattr(s, "atomic_number", 6) > 1 for s in self.sites]
+        adj: Dict[int, List[int]] = {i: [] for i in range(n)}
+        for a1, a2, _ in self.bonds:
+            if 0 <= a1 < n and 0 <= a2 < n:
+                adj[a1].append(a2)
+                adj[a2].append(a1)
+
+        heavy_neighbors = {i: [nbr for nbr in adj[i] if is_heavy[nbr]] for i in range(n)}
+
+        def is_in_ring(u: int, v: int) -> bool:
+            visited = {u}
+            queue = [nbr for nbr in adj[u] if nbr != v]
+            while queue:
+                curr = queue.pop(0)
+                if curr == v:
+                    return True
+                visited.add(curr)
+                for nbr in adj[curr]:
+                    if nbr not in visited:
+                        visited.add(nbr)
+                        queue.append(nbr)
+            return False
+
+        n_rot = 0
+        for a1, a2, b_type in self.bonds:
+            if not (0 <= a1 < n and 0 <= a2 < n):
+                continue
+            if not (is_heavy[a1] and is_heavy[a2]):
+                continue
+            if len(heavy_neighbors[a1]) < 2 or len(heavy_neighbors[a2]) < 2:
+                continue
+            bt = str(b_type).lower()
+            if bt in ("2", "3", "ar", "double", "triple"):
+                continue
+            if is_in_ring(a1, a2):
+                continue
+            n_rot += 1
+
+        return n_rot
+
     def compute_topological_base_charges(self, kappa: float = 0.10, q_max: float = 0.50) -> List[float]:
         """
         Computes 2D topological baseline partial charges q_i^base from covalent connectivity

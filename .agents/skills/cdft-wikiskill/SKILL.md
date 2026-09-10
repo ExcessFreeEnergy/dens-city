@@ -79,6 +79,26 @@ This skill equips Antigravity agents with the compiled, persistent knowledge bas
 - **Rule**: Follow the golden `beautiful_mnist.py` standard: wrap forward calls in `@function`, decorate training steps with `@TinyJit` and `@Context(TRAINING=1)`, sample batches on-device with `Tensor.randint` (Threefry PRNG), and fuse backward adjoints with optimizer weight updates via `loss.realize(*opt.schedule_step())`.
 - **Reference**: [pattern_tinygrad_golden_idioms_beautiful_mnist.md](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/patterns/pattern_tinygrad_golden_idioms_beautiful_mnist.md).
 
+### 17. Percus-Yevick Compressibility Route for FMT Consistency
+- **Rule**: Never use empirical cubic equations (Peng-Robinson, Redlich-Kwong) or Carnahan-Starling for cDFT reservoir states. Derive bulk density $\rho_{\rm bulk}$ and chemical potential $\mu$ strictly via the Percus-Yevick compressibility EOS to prevent asymptotic density drift.
+- **Reference**: [pattern_percus_yevick_fmt_thermodynamic_consistency.md](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/patterns/pattern_percus_yevick_fmt_thermodynamic_consistency.md).
+
+### 18. Tensor-Native Generalized Born Solvation
+- **Rule**: Compute dielectric aqueous hydration using $O(1)$ GPU Bondi radii gathers, Hawkins/Grycuk smooth volume descreening ($\alpha_i \ge \rho_i$ without $1/r^4$ singularity), and Still pairwise screened electrostatics.
+- **Reference**: [pattern_generalized_born_implicit_solvation.md](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/patterns/pattern_generalized_born_implicit_solvation.md).
+
+### 19. EGNN Memory Decomposition & Charge Neutrality
+- **Rule**: In deep EGNN layers, decompose linear projections $e_{ij} = \text{SiLU}(W_{hi} h_i + W_{hj} h_j + W_d d^2 + W_a a + b)$ to avoid $(B, N, N, 258)$ OOM crashes. Normalize neighborhood messages by active degree and enforce exact formal charge conservation via mean-shift.
+- **Reference**: [pattern_egnn_quantum_charges_and_memory_decomposition.md](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/patterns/pattern_egnn_quantum_charges_and_memory_decomposition.md).
+
+### 20. Batched L-BFGS with Trust-Region Clamping
+- **Rule**: Minimize molecular geometries on GPU using vectorized two-loop recursion ($m=6$), enforce trust-region step clamping ($\Delta r_{\max} \le 0.20\text{ \AA}$) to prevent atoms jumping across Lennard-Jones repulsive cores, and freeze converged molecules via SIMD active masking.
+- **Reference**: [pattern_batched_lbfgs_trust_region_relaxation.md](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/patterns/pattern_batched_lbfgs_trust_region_relaxation.md).
+
+### 21. Ensembled EGNN & Cooperative Solvation (Weinreich FML)
+- **Rule**: Never evaluate hydration free energies on a single static vacuum geometry. Average predictions across thermal vibrational ensembles ($T=350\text{ K}$, $s \ge 8$) in a single vector-parallel pass $(B \cdot s, N, 3)$ without Python loops. Pool representations via multi-scale statistics (`mean`, masked `max`, `std`), provide $\ge 25.0$ kcal/mol headroom on cooperative heads to avoid $\tanh$ gradient vanishing on polyols/uracils, and use analytical KRR with $O(N^2)$ Sherman-Morrison LOOCV.
+- **Reference**: [pattern_egnn_ensembled_cooperative_solvation.md](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/patterns/pattern_egnn_ensembled_cooperative_solvation.md).
+
 ## Verification Workflow
 Always verify changes using the test suite:
 ```bash
@@ -86,6 +106,7 @@ export PATH="/home/gauss/code/cdft_sim/dens-city/.venv/bin:$PATH"
 pytest tests/test_tiny_cdft.py tests/test_batched_cdft.py tests/test_wikiskill.py -v
 ruff check src/ tests/
 ```
+
 
 
 

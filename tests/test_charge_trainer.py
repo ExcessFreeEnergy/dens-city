@@ -17,8 +17,8 @@ def test_quantum_charge_trainer_trunk_freezing():
     trainer = QuantumChargeTrainer()
     trainable_params = trainer.head_params
 
-    # Charge MLP (4 params) + VDW MLP (4 params) -> 8 parameters total
-    assert len(trainable_params) == 8, f"Expected 8 parameters in head_params, got {len(trainable_params)}"
+    # Charge MLP (4 params) + VDW MLP (4 params) + Global MLP (4 params) -> 12 parameters total
+    assert len(trainable_params) == 12, f"Expected 12 parameters in head_params, got {len(trainable_params)}"
 
     all_params = nn.state.get_parameters(trainer.ff)
     # 7 layers * 10 params/layer + 2 embedding params + 4 readout params + 4 charge params = 80 params
@@ -154,3 +154,34 @@ def test_static_dataset_and_sequential_jit_eval():
     assert len(preds) == static_ds.num_real_molecules, (
         f"Expected {static_ds.num_real_molecules} predictions, got {len(preds)}"
     )
+
+    # Test multi-conformer ensemble and Analytical KRR head (Weinreich FML principle)
+    assert static_ds.coords_ensemble is not None
+    assert static_ds.coords_ensemble.shape == (static_ds.total_padded_molecules, static_ds.s_conformers, expected_N, 3)
+
+    # Test KRR LOOCV analytical fit
+    mae_loo, rmse_loo, preds_loo = trainer.fit_krr_head(sigma=12.0, reg_lambda=1e-4)
+    assert mae_loo > 0.0, f"Expected positive LOOCV MAE, got {mae_loo}"
+    assert rmse_loo >= mae_loo
+    assert len(preds_loo) == static_ds.num_real_molecules
+
+
+def test_delta_krr_residual_inference():
+    """
+    Verifies that predict_krr_residual accurately loads checkpoints and computes
+    RBF kernel predictions for both single molecules and batches.
+    """
+    import numpy as np
+
+    from dens_city.boltzmann.train_charges import predict_krr_residual
+
+    z_single = np.zeros(384, dtype=np.float32)
+    d_single = np.zeros(6, dtype=np.float32)
+    pred_single = predict_krr_residual(z_single, d_single)
+    assert isinstance(pred_single, float)
+
+    z_batch = np.zeros((4, 384), dtype=np.float32)
+    d_batch = np.zeros((4, 6), dtype=np.float32)
+    pred_batch = predict_krr_residual(z_batch, d_batch)
+    assert isinstance(pred_batch, np.ndarray)
+    assert pred_batch.shape == (4,)

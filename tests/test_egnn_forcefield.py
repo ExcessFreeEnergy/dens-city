@@ -412,6 +412,53 @@ def test_egnn_solvation_readouts_dual_head():
     assert delta_vdw_mol.shape == (2,)
     assert delta_vdw_atomic.shape == (2, 128, 1)
 
-    # Initial zero-weights on vdw_mlp[2] must yield exactly 0.0 nonpolar correction
+    # Initial zero-weights on vdw_mlp[2] and global_mlp[2] must yield exactly 0.0 correction
     np.testing.assert_allclose(delta_vdw_mol.numpy(), [0.0, 0.0], atol=1e-6)
     np.testing.assert_allclose(delta_vdw_atomic.numpy(), np.zeros((2, 128, 1)), atol=1e-6)
+
+    # Test return_global=True
+    _, _, _, delta_coop, graph_feat = ff.compute_solvation_readouts(
+        coords, z, atom_mask, total_charge=0.0, return_global=True
+    )
+    assert delta_coop.shape == (2,)
+    assert graph_feat.shape == (2, 384)
+    np.testing.assert_allclose(delta_coop.numpy(), [0.0, 0.0], atol=1e-6)
+
+
+def test_egnn_ensembled_solvation_readouts():
+    """
+    Verifies that EGNNForceField.compute_ensembled_solvation_readouts
+    evaluates a batched multi-conformer tensor (B, s, N, 3) in a single vector-parallel pass.
+    """
+    ff = EGNNForceField(num_layers=7, hidden_dim=128, n_particles=128, load_default_weights=False)
+    B, s, N = 2, 4, 128
+    coords_ens = Tensor.randn(B, s, N, 3)
+    z = Tensor.full((B, N), 6.0, dtype=dtypes.float32)
+    atom_mask = Tensor.ones(B, N, 1)
+
+    q_mean, total_solv_mean, gb_mean = ff.compute_ensembled_solvation_readouts(
+        x_ensemble=coords_ens,
+        atomic_numbers=z,
+        atom_mask=atom_mask,
+        dielectric_constant=78.4,
+    )
+
+    assert q_mean.shape == (B, N)
+    assert total_solv_mean.shape == (B,)
+    assert gb_mean.shape == (B,)
+
+    # Test return_global=True with Boltzmann weights
+    internal_e = Tensor([[0.0, 1.2, 0.5, 3.0], [0.0, 0.1, 0.2, 0.3]], dtype=dtypes.float32)
+    q_m2, solv_m2, gb_m2, h_mol_m2, coop_m2 = ff.compute_ensembled_solvation_readouts(
+        x_ensemble=coords_ens,
+        atomic_numbers=z,
+        atom_mask=atom_mask,
+        dielectric_constant=78.4,
+        internal_energies=internal_e,
+        return_global=True,
+    )
+    assert q_m2.shape == (B, N)
+    assert solv_m2.shape == (B,)
+    assert gb_m2.shape == (B,)
+    assert h_mol_m2.shape == (B, 384)
+    assert coop_m2.shape == (B,)

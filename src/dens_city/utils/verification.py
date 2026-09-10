@@ -236,6 +236,12 @@ def verify_and_generate_report(
         f"| **Classical GAFF Baseline MAE** | **{gaff_mae:.3f} kcal/mol** | Historical 2014 Mobley et al. GAFF/TIP3P MD |"
     )
     report_lines.append(
+        "| **Literature SOTA (Weinreich et al. 2021)** | **0.570 kcal/mol** | Boltzmann Ensemble Average FML (JCP 154, 134113) |"
+    )
+    report_lines.append(
+        "| **Target Experimental Uncertainty** | **<0.600 kcal/mol** | Thermal fluctuation noise level (k_B * 298.15 K) |"
+    )
+    report_lines.append(
         f"| **Root Mean Square Error (RMSE)** | **{stats_summary.get('rmse', 0.0):.3f} kcal/mol** | Residual dispersion standard deviation |"
     )
     report_lines.append(

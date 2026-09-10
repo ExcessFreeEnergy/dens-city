@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple, Union
 
 import numpy as np
 from tinygrad import Tensor, TinyJit, dtypes, nn
@@ -156,6 +156,20 @@ class EGNNForceField:
         self.vdw_mlp[2].weight = Tensor.zeros(1, hidden_dim, dtype=dtypes.float32)
         self.vdw_mlp[2].bias = Tensor.zeros(1, dtype=dtypes.float32)
 
+        # Quaternary Readout MLP: molecular graph-level cooperative free energy correction delta_g_coop
+        # Ingests multi-scale pooled node embeddings (mean, max, std across active atoms: 3 * 128 = 384 dimensions)
+        # Resolves cooperative multi-center polarization and collective hydrogen-bonding networks in polyols/sugars
+        self.global_in_dim = hidden_dim * 3
+        self.global_mlp: List[Callable[[Tensor], Tensor]] = [
+            nn.Linear(self.global_in_dim, hidden_dim),
+            Tensor.silu,
+            nn.Linear(hidden_dim, 1),
+        ]
+        self.max_delta_global = 12.0  # Max allowed molecular cooperative perturbation |ΔG_coop| <= 12.0 kcal/mol
+        # Zero-initialize output layer so initial cooperative perturbations start cleanly at 0.0
+        self.global_mlp[2].weight = Tensor.zeros(1, hidden_dim, dtype=dtypes.float32)
+        self.global_mlp[2].bias = Tensor.zeros(1, dtype=dtypes.float32)
+
         # Load weights if specified or present at default location
         if weights_path is not None:
             self.load_weights(weights_path)
@@ -271,15 +285,18 @@ class EGNNForceField:
         base_charges: Optional[Tensor] = None,
         solvent_features: Optional[Tensor] = None,
         detach_trunk: bool = False,
-    ) -> Tuple[Tensor, Tensor, Tensor]:
+        return_global: bool = False,
+    ) -> Tuple[Tensor, ...]:
         """
-        Predicts both:
+        Predicts:
         1. Formally conserved quantum partial charges q_i(x) for electrostatic Born solvation.
         2. Volumetric cavitation & dispersion corrections delta_g_i^vdw(x) for nonpolar solvation.
+        3. Molecular graph-level cooperative free energy delta_g_coop(x) for hydrogen-bonding networks.
         Returns:
             q_pred: Tensor of shape (B, N)
-            delta_vdw_mol: Tensor of shape (B,) - extensive molecular nonpolar correction (kcal/mol)
+            delta_vdw_mol: Tensor of shape (B,) - total molecular nonpolar & cooperative correction (kcal/mol)
             delta_vdw_atomic: Tensor of shape (B, N, 1) - atomic nonpolar contributions
+            (Optional if return_global=True) delta_g_coop: Tensor of shape (B,)
         """
         x, atomic_numbers, atom_mask, molecule_mask, edge_mask = self._prepare_inputs(
             x, atomic_numbers, atom_mask, molecule_mask
@@ -349,14 +366,177 @@ class EGNNForceField:
         delta_vdw_raw = self.vdw_mlp[1](delta_vdw_raw)
         delta_vdw_raw = self.vdw_mlp[2](delta_vdw_raw)
         delta_vdw_atomic = self.max_delta_vdw * (delta_vdw_raw / self.max_delta_vdw).tanh() * atom_mask  # (B, N, 1)
-        delta_vdw_mol = (delta_vdw_atomic * molecule_mask.reshape(B, 1, 1)).sum(axis=(1, 2))  # (B,)
+        delta_vdw_mol_atomic = (delta_vdw_atomic * molecule_mask.reshape(B, 1, 1)).sum(axis=(1, 2))  # (B,)
 
+        # Head 3: Multi-Scale Molecular Graph Pooling & Cooperative Readout delta_g_coop
+        num_real_nodes = atom_mask.sum(axis=1).maximum(1.0)  # (B, 1)
+        mean_pool = (h * atom_mask).sum(axis=1) / num_real_nodes  # (B, F)
+        h_masked = h * atom_mask - (1.0 - atom_mask) * 1e4
+        max_pool = h_masked.max(axis=1)  # (B, F)
+        h_diff = (h - mean_pool.reshape(B, 1, self.hidden_dim)) * atom_mask
+        var_pool = (h_diff * h_diff).sum(axis=1) / num_real_nodes
+        std_pool = (var_pool + 1e-6).sqrt()  # (B, F)
+
+        graph_features = Tensor.cat(mean_pool, max_pool, std_pool, dim=-1)  # (B, 384)
+        delta_coop_raw = self.global_mlp[0](graph_features)
+        delta_coop_raw = self.global_mlp[1](delta_coop_raw)
+        delta_coop_raw = self.global_mlp[2](delta_coop_raw).reshape(B)
+        delta_g_coop = (
+            self.max_delta_global * (delta_coop_raw / self.max_delta_global).tanh() * molecule_mask.reshape(B)
+        )
+
+        # Total molecular nonpolar + cooperative free energy modulation
+        delta_vdw_mol = delta_vdw_mol_atomic + delta_g_coop
         if not Tensor.training:
             q_masked = q_masked.realize()
             delta_vdw_mol = delta_vdw_mol.realize()
             delta_vdw_atomic = delta_vdw_atomic.realize()
+            delta_g_coop = delta_g_coop.realize()
+            graph_features = graph_features.realize()
 
+        if return_global:
+            return q_masked, delta_vdw_mol, delta_vdw_atomic, delta_g_coop, graph_features
         return q_masked, delta_vdw_mol, delta_vdw_atomic
+
+    def compute_ensembled_solvation_readouts(
+        self,
+        x_ensemble: Tensor,
+        atomic_numbers: Tensor,
+        atom_mask: Optional[Tensor] = None,
+        molecule_mask: Optional[Tensor] = None,
+        total_charge: Optional[Union[float, Tensor]] = None,
+        base_charges: Optional[Tensor] = None,
+        solvent_features: Optional[Tensor] = None,
+        dielectric_constant: float = 78.4,
+        gb_solver=None,
+        detach_trunk: bool = False,
+        internal_energies: Optional[Tensor] = None,
+        temperature_k: float = 298.15,
+        return_global: bool = False,
+    ) -> Tuple[Tensor, ...]:
+        r"""
+        Computes Boltzmann conformational ensemble averages across s configurations per molecule:
+        Ingests x_ensemble of shape (B, s, N, 3) or (s, N, 3).
+        Evaluates dynamic charges, Born electrostatic free energy, and nonpolar/cooperative
+        cavitation across the ensemble in a single vector-parallel pass without Python loops.
+        Weights configurations using normalized Boltzmann factors w_k \propto exp(-\Delta E_k / k_B T).
+        Returns:
+            q_mean: Tensor of shape (B, N) - ensemble-averaged quantum partial charges
+            total_solv_mean: Tensor of shape (B,) - ensemble-averaged (delta_vdw + delta_g_born) free energy
+            gb_mean: Tensor of shape (B,) - ensemble-averaged Born electrostatic free energy
+            (optional) h_mol_mean: Tensor of shape (B, 384) if return_global is True
+            (optional) coop_mean: Tensor of shape (B,) if return_global is True
+        """
+        if len(x_ensemble.shape) == 3:
+            # (s, N, 3) -> treat as single molecule with B=1, s=s
+            x_ensemble = x_ensemble.reshape(1, x_ensemble.shape[0], x_ensemble.shape[1], 3)
+        B, s, N, _ = x_ensemble.shape
+
+        # Flatten (B, s, N, 3) -> (B * s, N, 3)
+        x_flat = x_ensemble.reshape(B * s, N, 3)
+
+        # Broadcast atomic numbers: (B, N) -> (B * s, N)
+        if len(atomic_numbers.shape) == 1:
+            atomic_numbers = atomic_numbers.reshape(1, N)
+        z_flat = atomic_numbers.reshape(B, 1, N).expand(B, s, N).reshape(B * s, N)
+
+        # Broadcast atom mask: (B, N, 1) -> (B * s, N, 1)
+        if atom_mask is None:
+            atom_mask = (atomic_numbers > 0).cast(dtypes.float32).reshape(B, N, 1)
+        elif len(atom_mask.shape) == 2:
+            atom_mask = atom_mask.reshape(B, N, 1)
+        m_flat = atom_mask.reshape(B, 1, N, 1).expand(B, s, N, 1).reshape(B * s, N, 1)
+
+        # Broadcast molecule mask: (B,) -> (B * s,)
+        if molecule_mask is None:
+            molecule_mask = Tensor.ones(B, dtype=dtypes.float32)
+        elif len(molecule_mask.shape) == 2:
+            molecule_mask = molecule_mask.reshape(B)
+        mol_flat = molecule_mask.reshape(B, 1).expand(B, s).reshape(B * s)
+
+        # Broadcast base charges: (B, N) -> (B * s, N)
+        if base_charges is not None:
+            if len(base_charges.shape) == 1:
+                base_charges = base_charges.reshape(1, N)
+            bq_flat = base_charges.reshape(B, 1, N).expand(B, s, N).reshape(B * s, N)
+        else:
+            bq_flat = None
+
+        # Broadcast total charge: (B, 1, 1) -> (B * s, 1, 1)
+        if total_charge is not None:
+            if isinstance(total_charge, (int, float)):
+                tq_flat = Tensor.full((B * s, 1, 1), float(total_charge), dtype=dtypes.float32)
+            else:
+                tq_flat = total_charge.reshape(B, 1, 1, 1).expand(B, s, 1, 1).reshape(B * s, 1, 1).cast(dtypes.float32)
+        else:
+            tq_flat = None
+
+        # Solvent features on flat ensemble
+        if solvent_features is not None:
+            if len(solvent_features.shape) == 2:
+                solvent_features = solvent_features.reshape(1, N, solvent_features.shape[-1])
+            if len(solvent_features.shape) == 4:
+                sf_flat = solvent_features.reshape(B * s, N, solvent_features.shape[-1])
+            else:
+                sf_flat = solvent_features.reshape(B, 1, N, -1).expand(B, s, N, -1).reshape(B * s, N, -1)
+        else:
+            sf_flat = None
+
+        # Execute single fused forward pass over all B * s conformers
+        q_pred, delta_vdw_mol, delta_vdw_atomic, delta_g_coop, graph_features = self.compute_solvation_readouts(
+            x=x_flat,
+            atomic_numbers=z_flat,
+            atom_mask=m_flat,
+            molecule_mask=mol_flat,
+            total_charge=tq_flat,
+            base_charges=bq_flat,
+            solvent_features=sf_flat,
+            detach_trunk=detach_trunk,
+            return_global=True,
+        )
+
+        if gb_solver is None:
+            from dens_city.cdft.generalized_born import GeneralizedBornSolvation
+
+            gb_solver = GeneralizedBornSolvation(dielectric_constant=dielectric_constant)
+
+        gb_tensor = gb_solver.compute_solvation_free_energy(
+            x=x_flat,
+            charges=q_pred,
+            atomic_numbers=z_flat,
+            atom_mask=m_flat,
+            dielectric_constant=dielectric_constant,
+        )
+
+        # Normalized Boltzmann weights: w_k \propto exp(-\Delta E_k / k_B T)
+        kb = 0.001987204  # kcal / (mol * K)
+        kb_t = kb * max(10.0, float(temperature_k))
+        if internal_energies is not None:
+            if len(internal_energies.shape) == 1:
+                e_int = internal_energies.reshape(B, s)
+            else:
+                e_int = internal_energies.reshape(B, s)
+            e_min = e_int.min(axis=1, keepdim=True)
+            delta_e = (e_int - e_min).maximum(0.0).minimum(50.0)
+            w_unnorm = (-delta_e / kb_t).exp()
+            w = w_unnorm / w_unnorm.sum(axis=1, keepdim=True).maximum(1e-8)
+        else:
+            w = Tensor.full((B, s), 1.0 / float(s), dtype=dtypes.float32)
+
+        total_solv_flat = delta_vdw_mol + gb_tensor  # (B * s,)
+        total_solv_mean = (total_solv_flat.reshape(B, s) * w).sum(axis=1)  # (B,)
+        gb_mean = (gb_tensor.reshape(B, s) * w).sum(axis=1)  # (B,)
+        q_mean = (q_pred.reshape(B, s, N) * w.reshape(B, s, 1)).sum(axis=1)  # (B, N)
+
+        if return_global:
+            h_mol_mean = (graph_features.reshape(B, s, -1) * w.reshape(B, s, 1)).sum(axis=1)
+            coop_mean = (delta_g_coop.reshape(B, s) * w).sum(axis=1)
+            if not Tensor.training:
+                h_mol_mean = h_mol_mean.realize()
+                coop_mean = coop_mean.realize()
+            return q_mean, total_solv_mean, gb_mean, h_mol_mean, coop_mean
+
+        return q_mean, total_solv_mean, gb_mean
 
     def compute_charges(
         self,

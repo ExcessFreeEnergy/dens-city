@@ -23,7 +23,7 @@ import pickle
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from tinygrad import GlobalCounters, Tensor, TinyJit, dtypes, nn
@@ -45,11 +45,14 @@ class ChargeTrainingConfig:
     huber_delta: float = 2.5  # kcal/mol (expanded quadratic MSE basin)
     lambda_l2: float = 0.02  # Penalty on (Δq)^2
     lambda_vdw: float = 0.002  # Penalty on (Δg_vdw)^2 (calibrated for max_delta_vdw=3.5)
+    lambda_global: float = 0.0005  # Penalty on (Δg_coop)^2
     max_delta_q: float = 0.25  # Max allowed perturbation |Δq| <= 0.25e
     max_delta_vdw: float = 3.5  # Max allowed atomic nonpolar perturbation |Δg_vdw| <= 3.5 kcal/mol
+    max_delta_global: float = 12.0  # Max allowed molecular cooperative perturbation |ΔG_coop| <= 12.0 kcal/mol
     n_particles: int = 128
     hidden_dim: int = 128
     num_layers: int = 7
+    n_conformers: int = 8  # Number of ensemble conformers per molecule during ensembled training
     dielectric_constant: float = 78.4
     weights_out: str = "data/checkpoints/egnn_charges_trained.npz"
     database_path: str = "FreeSolv/database.pickle"
@@ -82,9 +85,11 @@ class StaticFreeSolvDataset:
     expt_energies: Tensor  # (TOTAL_PADDED,)
     solvent_features: Tensor  # (TOTAL_PADDED, N, 4)
     cached_h: Optional[Tensor] = None  # (TOTAL_PADDED, N, 128)
+    coords_ensemble: Optional[Tensor] = None  # (TOTAL_PADDED, s, N, 3)
     material_names: List[str] = field(default_factory=list)
     num_real_molecules: int = 0
     total_padded_molecules: int = 0
+    s_conformers: int = 1
 
 
 class QuantumChargeTrainer:
@@ -109,8 +114,12 @@ class QuantumChargeTrainer:
         # Generalized Born continuous dielectric solver
         self.gb = GeneralizedBornSolvation(dielectric_constant=self.config.dielectric_constant)
 
-        # Parameters: dual readout heads (charge_mlp + vdw_mlp)
-        self.head_params = nn.state.get_parameters(self.ff.charge_mlp) + nn.state.get_parameters(self.ff.vdw_mlp)
+        # Parameters: triple readout heads (charge_mlp + vdw_mlp + global_mlp)
+        self.head_params = (
+            nn.state.get_parameters(self.ff.charge_mlp)
+            + nn.state.get_parameters(self.ff.vdw_mlp)
+            + nn.state.get_parameters(self.ff.global_mlp)
+        )
         self.charge_params = self.head_params  # Maintain alias for backwards compatibility
 
         trunk_layers = [self.ff.embedding] + list(self.ff.layers)
@@ -238,7 +247,17 @@ class QuantumChargeTrainer:
         sf_t = Tensor.cat(*sf_chunks, dim=0).contiguous().realize()
         h_t = Tensor.cat(*h_chunks, dim=0).contiguous().realize()
 
-        return StaticFreeSolvDataset(
+        # Multi-conformer ensemble generation (Weinreich FML principle):
+        # Conformer 0 is the exact ground state; conformers 1..s-1 sample the thermal conformational basin
+        s_conf = getattr(self.config, "n_conformers", 8)
+        coords_ens_np = np.zeros((total_padded, s_conf, N, 3), dtype=np.float32)
+        rng = np.random.default_rng(42)
+        coords_ens_np[:, 0] = coords_np
+        for k in range(1, s_conf):
+            coords_ens_np[:, k] = coords_np + rng.normal(0.0, 0.05, (total_padded, N, 3)).astype(np.float32) * mask_np
+        coords_ens_t = Tensor(coords_ens_np).contiguous().realize()
+
+        ds = StaticFreeSolvDataset(
             coords=coords_t,
             atomic_numbers=z_t,
             atom_mask=mask_t,
@@ -248,10 +267,14 @@ class QuantumChargeTrainer:
             expt_energies=expt_t,
             solvent_features=sf_t,
             cached_h=h_t,
+            coords_ensemble=coords_ens_t,
             material_names=names,
             num_real_molecules=num_real,
             total_padded_molecules=total_padded,
+            s_conformers=s_conf,
         )
+        self.dataset = ds
+        return ds
 
     def load_dataset(self) -> List[PreprocessedBatch]:
         """Loads legacy PreprocessedBatch list for compatibility with existing unit tests."""
@@ -336,7 +359,22 @@ class QuantumChargeTrainer:
         delta_vdw_raw = self.ff.vdw_mlp[1](delta_vdw_raw)
         delta_vdw_raw = self.ff.vdw_mlp[2](delta_vdw_raw)
         delta_vdw_atomic = self.config.max_delta_vdw * (delta_vdw_raw / self.config.max_delta_vdw).tanh() * m
-        delta_vdw_mol = delta_vdw_atomic.sum(axis=(1, 2))  # (B,)
+        delta_vdw_mol_atomic = delta_vdw_atomic.sum(axis=(1, 2))  # (B,)
+
+        # Head 3: Multi-Scale Graph Pooling & Cooperative Readout
+        num_real_nodes = m.sum(axis=1).maximum(1.0)
+        mean_pool = (h * m).sum(axis=1) / num_real_nodes
+        h_masked = h * m - (1.0 - m) * 1e4
+        max_pool = h_masked.max(axis=1)
+        h_diff = (h - mean_pool.reshape(B, 1, self.config.hidden_dim)) * m
+        var_pool = (h_diff * h_diff).sum(axis=1) / num_real_nodes
+        std_pool = (var_pool + 1e-6).sqrt()
+        graph_features = Tensor.cat(mean_pool, max_pool, std_pool, dim=-1)
+        delta_coop_raw = self.ff.global_mlp[0](graph_features)
+        delta_coop_raw = self.ff.global_mlp[1](delta_coop_raw)
+        delta_coop_raw = self.ff.global_mlp[2](delta_coop_raw).reshape(B)
+        delta_g_coop = self.ff.max_delta_global * (delta_coop_raw / self.ff.max_delta_global).tanh()
+        delta_vdw_mol = delta_vdw_mol_atomic + delta_g_coop
 
         dg_gb = self.gb.compute_solvation_free_energy(
             c, q_pred, z, m, dielectric_constant=self.config.dielectric_constant
@@ -354,8 +392,9 @@ class QuantumChargeTrainer:
         num_real_total = m.sum().maximum(1.0)
         l2_q = self.config.lambda_l2 * (delta_q * delta_q).sum() / num_real_total
         l2_vdw = self.config.lambda_vdw * (delta_vdw_atomic * delta_vdw_atomic).sum() / num_real_total
+        l2_coop = self.config.lambda_global * (delta_g_coop * delta_g_coop).sum() / num_valid
 
-        loss = (huber_loss + l2_q + l2_vdw).reshape(())
+        loss = (huber_loss + l2_q + l2_vdw + l2_coop).reshape(())
         loss.backward()
 
         mae_metric = abs_err.sum() / num_valid
@@ -476,9 +515,24 @@ class QuantumChargeTrainer:
                     delta_vdw_atomic = (
                         self.config.max_delta_vdw * (delta_vdw_raw / self.config.max_delta_vdw).tanh() * m
                     )
-                    delta_vdw_mol = delta_vdw_atomic.sum(axis=(1, 2))
+                    delta_vdw_mol_atomic = delta_vdw_atomic.sum(axis=(1, 2))
+
+                    # Molecular cooperative free energy readout in Phase 1
+                    num_real_nodes = m.sum(axis=1).maximum(1.0)
+                    mean_pool = (h * m).sum(axis=1) / num_real_nodes
+                    h_masked = h * m - (1.0 - m) * 1e4
+                    max_pool = h_masked.max(axis=1)
+                    h_diff = (h - mean_pool.reshape(B, 1, self.config.hidden_dim)) * m
+                    var_pool = (h_diff * h_diff).sum(axis=1) / num_real_nodes
+                    std_pool = (var_pool + 1e-6).sqrt()
+                    graph_features = Tensor.cat(mean_pool, max_pool, std_pool, dim=-1)
+                    delta_coop_raw = self.ff.global_mlp[0](graph_features)
+                    delta_coop_raw = self.ff.global_mlp[1](delta_coop_raw)
+                    delta_coop_raw = self.ff.global_mlp[2](delta_coop_raw).reshape(B)
+                    delta_g_coop = self.ff.max_delta_global * (delta_coop_raw / self.ff.max_delta_global).tanh()
+                    delta_vdw_mol = delta_vdw_mol_atomic + delta_g_coop
                 else:
-                    # Phase 2 evaluation: full forward pass through EGNN trunk and dual heads
+                    # Phase 2 evaluation: full forward pass through EGNN trunk and all three heads
                     q_pred, delta_vdw_mol, _ = self.ff.compute_solvation_readouts(
                         x=c,
                         atomic_numbers=z,
@@ -511,38 +565,173 @@ class QuantumChargeTrainer:
             rmse = float(np.sqrt(np.mean(np.square(all_errors))))
             max_err = float(np.max(all_errors))
             return mae, rmse, max_err, preds
+        else:
+            # Fallback for manual batches argument
+            assert batches is not None, "Neither self.dataset nor batches provided to evaluate()"
+            errors: List[float] = []
+            preds_fb: Dict[str, float] = {}
+            for b in batches:
+                q_pred = self.ff.compute_charges(
+                    x=b.coords,
+                    atomic_numbers=b.atomic_numbers,
+                    atom_mask=b.atom_mask,
+                    total_charge=b.total_charges,
+                    base_charges=b.base_charges,
+                    solvent_features=b.cached_solvent_features,
+                    detach_trunk=True,
+                )
+                dg_gb = self.gb.compute_solvation_free_energy(
+                    x=b.coords,
+                    charges=q_pred,
+                    atomic_numbers=b.atomic_numbers,
+                    atom_mask=b.atom_mask,
+                    dielectric_constant=self.config.dielectric_constant,
+                )
+                dg_calc = (b.vdw_energies + dg_gb).numpy()
+                dg_expt = b.expt_energies.numpy()
+                for name, calc, expt in zip(b.material_names, dg_calc, dg_expt):
+                    err = abs(calc - expt)
+                    errors.append(err)
+                    preds_fb[name] = float(calc)
+            mae = float(np.mean(errors))
+            rmse = float(np.sqrt(np.mean(np.square(errors))))
+            max_err = float(np.max(errors))
+            return mae, rmse, max_err, preds_fb
 
-        # Fallback for manual batches argument
-        assert batches is not None, "Neither self.dataset nor batches provided to evaluate()"
-        errors: List[float] = []
-        preds_fb: Dict[str, float] = {}
-        for b in batches:
-            q_pred = self.ff.compute_charges(
-                x=b.coords,
-                atomic_numbers=b.atomic_numbers,
-                atom_mask=b.atom_mask,
-                total_charge=b.total_charges,
-                base_charges=b.base_charges,
-                solvent_features=b.cached_solvent_features,
+    def fit_krr_head(
+        self,
+        sigma: float = 10.0,
+        reg_lambda: float = 0.1,
+        save_path: Optional[str] = "data/checkpoints/krr_residual_weights.npz",
+    ) -> Tuple[float, float, Dict[str, float]]:
+        """
+        Fits an analytical Delta-KRR residual stacking model on top of the trained EGNN readouts.
+        Features:
+          Z: standardized 384-dimensional multi-scale pooled graph embeddings (mean, max, std).
+          D_phys: standardized 6-dimensional physical descriptors (N_heavy, N_O, N_N, N_hal, ΔG_GB, v_vdw).
+        Target:
+          y_res = ΔG_expt - ΔG_EGNN.
+        Computes exact closed-form matrix inversion and Sherman-Morrison LOOCV predictions.
+        Saves kernel weights, training representations, and normalization statistics to save_path.
+        Returns:
+            mae_loo: float - Leave-one-out cross-validation MAE (kcal/mol)
+            rmse_loo: float - Leave-one-out cross-validation RMSE (kcal/mol)
+            preds_loo: Dict[str, float] - LOOCV prediction per molecule
+        """
+        if self.dataset is None:
+            self.dataset = self.load_static_dataset()
+        Tensor.training = False
+
+        B = self.config.batch_size
+        num_real = self.dataset.num_real_molecules
+        num_batches = self.dataset.total_padded_molecules // B
+
+        pooled_list = []
+        base_calc_list = []
+        expt_list = []
+        desc_list = []
+        names_list = []
+
+        for b_idx in range(num_batches):
+            start = b_idx * B
+            c = self.dataset.coords[start : start + B]
+            z = self.dataset.atomic_numbers[start : start + B]
+            m = self.dataset.atom_mask[start : start + B]
+            bq = self.dataset.base_charges[start : start + B]
+            tq = self.dataset.total_charges[start : start + B]
+            v = self.dataset.vdw_energies[start : start + B]
+            e = self.dataset.expt_energies[start : start + B]
+            sf = self.dataset.solvent_features[start : start + B]
+
+            q_pred, delta_vdw_mol, delta_vdw_atomic, delta_g_coop, graph_features = self.ff.compute_solvation_readouts(
+                x=c,
+                atomic_numbers=z,
+                atom_mask=m,
+                total_charge=tq,
+                base_charges=bq,
+                solvent_features=sf,
                 detach_trunk=True,
+                return_global=True,
             )
             dg_gb = self.gb.compute_solvation_free_energy(
-                x=b.coords,
-                charges=q_pred,
-                atomic_numbers=b.atomic_numbers,
-                atom_mask=b.atom_mask,
-                dielectric_constant=self.config.dielectric_constant,
+                c, q_pred, z, m, dielectric_constant=self.config.dielectric_constant
             )
-            dg_calc = (b.vdw_energies + dg_gb).numpy()
-            dg_expt = b.expt_energies.numpy()
-            for name, calc, expt in zip(b.material_names, dg_calc, dg_expt):
-                err = abs(calc - expt)
-                errors.append(err)
-                preds_fb[name] = float(calc)
-        mae = float(np.mean(errors))
-        rmse = float(np.sqrt(np.mean(np.square(errors))))
-        max_err = float(np.max(errors))
-        return mae, rmse, max_err, preds_fb
+            egnn_pred = v + delta_vdw_mol + dg_gb
+
+            # Physical descriptor counts: O, N, halogens, heavy atoms, dg_gb, v
+            z_np = z.numpy()
+            m_np = m.numpy().squeeze(-1)
+            n_heavy = np.sum((z_np > 1) * m_np, axis=1, keepdims=True)
+            n_o = np.sum((z_np == 8) * m_np, axis=1, keepdims=True)
+            n_n = np.sum((z_np == 7) * m_np, axis=1, keepdims=True)
+            n_hal = np.sum(np.isin(z_np, [9, 17, 35, 53]) * m_np, axis=1, keepdims=True)
+            dg_gb_np = dg_gb.numpy().reshape(-1, 1)
+            v_np = v.numpy().reshape(-1, 1)
+            phys_desc = np.concatenate([n_heavy, n_o, n_n, n_hal, dg_gb_np, v_np], axis=1)
+
+            n_valid = max(0, min(B, num_real - start))
+            if n_valid > 0:
+                pooled_list.append(graph_features.numpy()[:n_valid])
+                base_calc_list.append(egnn_pred.numpy()[:n_valid])
+                expt_list.append(e.numpy()[:n_valid])
+                desc_list.append(phys_desc[:n_valid])
+                names_list.extend(self.dataset.material_names[start : start + n_valid])
+
+        Z = np.concatenate(pooled_list, axis=0)  # (N_real, 384)
+        D_phys = np.concatenate(desc_list, axis=0)  # (N_real, 6)
+        y_egnn = np.concatenate(base_calc_list, axis=0)  # (N_real,)
+        y_expt = np.concatenate(expt_list, axis=0)  # (N_real,)
+        y_res = y_expt - y_egnn  # Residual target
+
+        # Standardize features
+        z_mean = np.mean(Z, axis=0, keepdims=True)
+        z_std = np.std(Z, axis=0, keepdims=True) + 1e-6
+        d_mean = np.mean(D_phys, axis=0, keepdims=True)
+        d_std = np.std(D_phys, axis=0, keepdims=True) + 1e-6
+
+        Z_norm = (Z - z_mean) / z_std
+        D_norm = (D_phys - d_mean) / d_std
+        Z_comb = np.concatenate([Z_norm, D_norm * 2.0], axis=1)  # (N_real, 390)
+
+        # Pairwise squared Euclidean distances between representations
+        z_sq = np.sum(Z_comb**2, axis=1, keepdims=True)
+        D2 = np.maximum(z_sq + z_sq.T - 2.0 * np.dot(Z_comb, Z_comb.T), 0.0)
+
+        # Gaussian RBF Kernel matrix: K_ij = exp(-D2_ij / (2 * sigma^2))
+        K = np.exp(-D2 / (2.0 * (sigma**2)))
+        A = K + reg_lambda * np.eye(num_real, dtype=np.float32)
+
+        # Exact closed-form matrix inversion
+        A_inv = np.linalg.inv(A)
+        alpha = np.dot(A_inv, y_res)
+
+        # Analytical Leave-One-Out Cross-Validation (LOOCV) prediction without re-inverting:
+        diag_A_inv = np.diag(A_inv)
+        y_loo_res = y_res - (alpha / diag_A_inv)
+        y_loo_pred = y_egnn + y_loo_res
+
+        loo_errors = np.abs(y_loo_pred - y_expt)
+        mae_loo = float(np.mean(loo_errors))
+        rmse_loo = float(np.sqrt(np.mean(loo_errors**2)))
+        preds_loo = {name: float(pred) for name, pred in zip(names_list, y_loo_pred)}
+
+        if save_path:
+            p = Path(save_path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(
+                p,
+                alpha=alpha.astype(np.float32),
+                z_train=Z_comb.astype(np.float32),
+                z_mean=z_mean.astype(np.float32),
+                z_std=z_std.astype(np.float32),
+                d_mean=d_mean.astype(np.float32),
+                d_std=d_std.astype(np.float32),
+                sigma=float(sigma),
+                reg_lambda=float(reg_lambda),
+                names=np.array(names_list),
+            )
+
+        return mae_loo, rmse_loo, preds_loo
 
     def train_epoch(
         self,
@@ -594,7 +783,21 @@ class QuantumChargeTrainer:
                 delta_vdw_raw = self.ff.vdw_mlp[1](delta_vdw_raw)
                 delta_vdw_raw = self.ff.vdw_mlp[2](delta_vdw_raw)
                 delta_vdw_atomic = max_vdw * (delta_vdw_raw / max_vdw).tanh() * b.atom_mask
-                delta_vdw_mol = delta_vdw_atomic.sum(axis=(1, 2))
+                delta_vdw_mol_atomic = delta_vdw_atomic.sum(axis=(1, 2))
+
+                # Multi-scale graph pooling & cooperative readout in Phase 1
+                mean_pool = (b.cached_h * b.atom_mask).sum(axis=1) / num_real.reshape(b_size, 1)
+                h_masked = b.cached_h * b.atom_mask - (1.0 - b.atom_mask) * 1e4
+                max_pool = h_masked.max(axis=1)
+                h_diff = (b.cached_h - mean_pool.reshape(b_size, 1, self.config.hidden_dim)) * b.atom_mask
+                var_pool = (h_diff * h_diff).sum(axis=1) / num_real.reshape(b_size, 1)
+                std_pool = (var_pool + 1e-6).sqrt()
+                graph_features = Tensor.cat(mean_pool, max_pool, std_pool, dim=-1)
+                delta_coop_raw = self.ff.global_mlp[0](graph_features)
+                delta_coop_raw = self.ff.global_mlp[1](delta_coop_raw)
+                delta_coop_raw = self.ff.global_mlp[2](delta_coop_raw).reshape(b_size)
+                delta_g_coop = self.ff.max_delta_global * (delta_coop_raw / self.ff.max_delta_global).tanh()
+                delta_vdw_mol = delta_vdw_mol_atomic + delta_g_coop
             else:
                 q_pred, delta_vdw_mol, delta_vdw_atomic = self.ff.compute_solvation_readouts(
                     x=b.coords,
@@ -624,8 +827,11 @@ class QuantumChargeTrainer:
             num_real_total = b.atom_mask.sum().maximum(1.0)
             l2_q = lambda_l2 * (delta_q * delta_q).sum() / num_real_total
             l2_vdw = lambda_vdw * (delta_vdw_atomic * delta_vdw_atomic).sum() / num_real_total
+            l2_coop = (
+                getattr(self.config, "lambda_global", 0.0005) * (delta_vdw_mol * delta_vdw_mol).sum() / num_valid_mols
+            )
 
-            loss = (huber_loss + l2_q + l2_vdw).reshape(())
+            loss = (huber_loss + l2_q + l2_vdw + l2_coop).reshape(())
             mae_metric = abs_err.sum() / num_valid_mols
             max_dq_metric = delta_q.abs().max()
 
@@ -818,10 +1024,13 @@ def run_train_charges(
     huber_delta: float = 2.5,
     lambda_l2: float = 0.02,
     lambda_vdw: float = 0.002,
+    lambda_global: float = 0.0005,
     max_delta_vdw: float = 3.5,
+    max_delta_global: float = 12.0,
+    n_conformers: int = 8,
     weights_out: str = "data/checkpoints/egnn_charges_trained.npz",
 ) -> Dict[str, float]:
-    """Convenience entry point for training dynamic quantum charges."""
+    """Convenience entry point for training dynamic quantum charges and cooperative solvation."""
     cfg = ChargeTrainingConfig(
         epochs=epochs,
         lr_head=lr,
@@ -829,8 +1038,85 @@ def run_train_charges(
         huber_delta=huber_delta,
         lambda_l2=lambda_l2,
         lambda_vdw=lambda_vdw,
+        lambda_global=lambda_global,
         max_delta_vdw=max_delta_vdw,
+        max_delta_global=max_delta_global,
+        n_conformers=n_conformers,
         weights_out=weights_out,
     )
     trainer = QuantumChargeTrainer(config=cfg)
     return trainer.train()
+
+
+_KRR_WEIGHTS_CACHE: Dict[str, Dict[str, np.ndarray]] = {}
+
+
+def load_krr_weights(
+    weights: Union[str, Path, Dict[str, np.ndarray]] = "data/checkpoints/krr_residual_weights.npz",
+) -> Optional[Dict[str, np.ndarray]]:
+    """Loads and caches fitted Delta-KRR residual model parameters."""
+    if isinstance(weights, dict):
+        return weights
+    p_str = str(weights)
+    if p_str in _KRR_WEIGHTS_CACHE:
+        return _KRR_WEIGHTS_CACHE[p_str]
+    p = Path(weights)
+    if not p.exists():
+        return None
+    data = dict(np.load(p, allow_pickle=True))
+    _KRR_WEIGHTS_CACHE[p_str] = data
+    return data
+
+
+def predict_krr_residual(
+    z_mol: Union[np.ndarray, Tensor],
+    d_phys: Union[np.ndarray, Tensor],
+    weights: Union[str, Path, Dict[str, np.ndarray]] = "data/checkpoints/krr_residual_weights.npz",
+) -> Union[float, np.ndarray]:
+    """
+    Evaluates the trained Delta-KRR residual model for query molecular embeddings and physical descriptors:
+      ΔG_res(z_query) = Σ_i α_i * exp(-||z_query - z_train_i||^2 / (2 * σ^2))
+    """
+    w_dict = load_krr_weights(weights)
+    if w_dict is None:
+        return (
+            0.0 if (hasattr(z_mol, "shape") and len(z_mol.shape) == 1) else np.zeros(z_mol.shape[0], dtype=np.float32)
+        )
+
+    if isinstance(z_mol, Tensor):
+        z_mol_np = z_mol.numpy()
+    else:
+        z_mol_np = np.asarray(z_mol, dtype=np.float32)
+
+    if isinstance(d_phys, Tensor):
+        d_phys_np = d_phys.numpy()
+    else:
+        d_phys_np = np.asarray(d_phys, dtype=np.float32)
+
+    single = len(z_mol_np.shape) == 1
+    if single:
+        z_mol_np = z_mol_np.reshape(1, -1)
+    if len(d_phys_np.shape) == 1:
+        d_phys_np = d_phys_np.reshape(1, -1)
+
+    z_mean = w_dict["z_mean"]
+    z_std = w_dict["z_std"]
+    d_mean = w_dict["d_mean"]
+    d_std = w_dict["d_std"]
+    alpha = w_dict["alpha"]
+    z_train = w_dict["z_train"]
+    sigma = float(w_dict["sigma"])
+
+    z_norm = (z_mol_np - z_mean) / z_std
+    d_norm = (d_phys_np - d_mean) / d_std
+    z_query = np.concatenate([z_norm, d_norm * 2.0], axis=1)
+
+    q_sq = np.sum(z_query**2, axis=1, keepdims=True)
+    t_sq = np.sum(z_train**2, axis=1, keepdims=True)
+    d2 = np.maximum(q_sq + t_sq.T - 2.0 * np.dot(z_query, z_train.T), 0.0)
+    k_query = np.exp(-d2 / (2.0 * (sigma**2)))
+    pred = np.dot(k_query, alpha)
+
+    if single:
+        return float(pred[0])
+    return pred

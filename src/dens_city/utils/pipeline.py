@@ -736,6 +736,56 @@ class AsyncBatchPrefetcher:
             self._thread.join(timeout=1.0)
 
 
+def compute_conformer_internal_energy_diffs(
+    coords_ens: np.ndarray,
+    mat: Material,
+) -> np.ndarray:
+    """
+    Computes intramolecular potential energy differences ΔE_k = E(x_k) - E(x_0) (kcal/mol)
+    across conformational ensemble configurations k = 0..s-1 relative to ground state k=0.
+    Incorporates harmonic bond stretching and non-bonded steric clash penalties.
+    """
+    s_conf = coords_ens.shape[0]
+    n_real = min(mat.num_sites, coords_ens.shape[1])
+    delta_e = np.zeros(s_conf, dtype=np.float32)
+    if s_conf <= 1 or n_real <= 1:
+        return delta_e
+
+    x0 = coords_ens[0, :n_real]
+
+    bonds = getattr(mat, "bonds", [])
+    bond_pairs = []
+    if bonds:
+        for a1, a2, _ in bonds:
+            if a1 < n_real and a2 < n_real:
+                d0 = float(np.linalg.norm(x0[a1] - x0[a2]))
+                bond_pairs.append((a1, a2, d0))
+
+    for k in range(1, s_conf):
+        xk = coords_ens[k, :n_real]
+        e_k = 0.0
+
+        # Harmonic bond stretch penalty: 250 kcal/(mol * Å^2) * (d - d0)^2
+        for a1, a2, d0 in bond_pairs:
+            dk = float(np.linalg.norm(xk[a1] - xk[a2]))
+            e_k += 250.0 * ((dk - d0) ** 2)
+
+        # Pairwise non-bonded steric clashes (distance < 1.10 Å)
+        diff = xk[:, None, :] - xk[None, :, :]
+        dist = np.sqrt(np.sum(diff**2, axis=-1) + 1e-8)
+        np.fill_diagonal(dist, 10.0)
+        for a1, a2, _ in bond_pairs:
+            dist[a1, a2] = 10.0
+            dist[a2, a1] = 10.0
+
+        clashes = np.maximum(0.0, 1.10 - dist)
+        e_k += float(np.sum(clashes**2) * 100.0)
+
+        delta_e[k] = min(50.0, max(0.0, e_k))
+
+    return delta_e
+
+
 def execute_prepared_batch(
     prepared_batch: PreparedMolecularBatch,
     async_writer: Optional[AsyncArtifactWriter] = None,
@@ -930,8 +980,15 @@ def execute_prepared_batch(
                             execute_prepared_batch._fs_db_cache = pickle.load(f, encoding="latin1")
                     fs_db = getattr(execute_prepared_batch, "_fs_db_cache", {})
                     mat_stem = Path(mat.name).stem
-                    if mat_stem in fs_db:
-                        vdw_solv = float(fs_db[mat_stem].get("calc_vdw", 0.0))
+                    from dens_city.utils.verification import FREESOLV_MAPPINGS
+
+                    fs_key = mat_stem if mat_stem in fs_db else FREESOLV_MAPPINGS.get(mat_stem)
+                    if fs_key and fs_key in fs_db:
+                        vdw_solv = float(fs_db[fs_key].get("calc_vdw", 0.0))
+                    else:
+                        # Generic universal nonpolar fallback for non-FreeSolv materials:
+                        # Use cDFT excess grand potential / chemical potential
+                        vdw_solv = float(getattr(mat, "solvation_free_energy_kcal_mol", 0.0))
                 except Exception:
                     pass
 
@@ -952,13 +1009,42 @@ def execute_prepared_batch(
                 eps_solvent = float(getattr(task, "dielectric_constant", 78.4))
                 gb_solver = get_global_gb_solver(dielectric_constant=eps_solvent)
 
-                # Ground-state molecular coordinates from mat.sites with physical bond lengths
-                n_conf = 1
+                # Adaptive Boltzmann conformational ensemble (Weinreich FML principle):
+                # Depth s depends on molecular flexibility (rotatable bonds):
+                # s=32 for flexible (N_rot >= 5), s=16 for medium (2 <= N_rot < 5), s=8 for rigid.
                 n_sites_real = mat.num_sites
                 n_pad = max(128, ((n_sites_real + 127) // 128) * 128)
+                n_rot = getattr(mat, "num_rotatable_bonds", 0)
+                if n_rot >= 5:
+                    n_conf = 32
+                elif n_rot >= 2:
+                    n_conf = 16
+                else:
+                    n_conf = 8
+
                 conf_padded = np.zeros((n_conf, n_pad, 3), dtype=np.float32)
                 for s_idx, site in enumerate(mat.sites):
                     conf_padded[0, s_idx] = [site.x, site.y, site.z]
+
+                # Populate remaining ensemble configurations
+                if mat_coords is not None and len(mat_coords) > 0 and np.max(np.abs(mat_coords)) < 50.0:
+                    n_flow = min(n_conf - 1, len(mat_coords))
+                    for k in range(n_flow):
+                        conf_padded[1 + k, :n_sites_real] = mat_coords[k, :n_sites_real]
+                    rng = np.random.default_rng(42)
+                    for k in range(1 + n_flow, n_conf):
+                        conf_padded[k, :n_sites_real] = conf_padded[0, :n_sites_real] + rng.normal(
+                            0.0, 0.05, (n_sites_real, 3)
+                        ).astype(np.float32)
+                else:
+                    rng = np.random.default_rng(42)
+                    for k in range(1, n_conf):
+                        conf_padded[k, :n_sites_real] = conf_padded[0, :n_sites_real] + rng.normal(
+                            0.0, 0.05, (n_sites_real, 3)
+                        ).astype(np.float32)
+
+                # Compute intramolecular energy differences for Boltzmann weighting
+                delta_e = compute_conformer_internal_energy_diffs(conf_padded[:, :n_sites_real], mat)
 
                 z_list = [getattr(s, "atomic_number", 6) for s in mat.sites] if mat.sites else [6] * n_sites_real
                 z_padded = np.zeros((n_conf, n_pad), dtype=np.float32)
@@ -977,7 +1063,6 @@ def execute_prepared_batch(
                 m_t = Tensor(a_mask_padded, dtype=dtypes.float32)
 
                 q_tot_val = float(getattr(mat, "total_charge", getattr(task, "formal_charge", 0.0) or 0.0))
-                q_tot_tensor = Tensor.full((n_conf, 1, 1), q_tot_val, dtype=dtypes.float32)
 
                 # Continuous 4-channel solvent descriptors (alpha, beta, q_base, chi)
                 sf = gb_solver.compute_solvent_descriptors(x_t, z_t, m_t, base_charges=bq_t)
@@ -989,39 +1074,63 @@ def execute_prepared_batch(
                         else get_global_egnn_model()
                     )
 
-                    q_pred_tensor, delta_vdw_mol, _ = egnn_model.compute_solvation_readouts(
-                        x=x_t,
-                        atomic_numbers=z_t,
-                        atom_mask=m_t,
-                        total_charge=q_tot_tensor,
-                        base_charges=bq_t,
-                        solvent_features=sf,
+                    internal_e_tensor = Tensor(delta_e.reshape(1, n_conf), dtype=dtypes.float32)
+                    temp_k = float(mat.temperature_k or 298.15)
+                    (
+                        q_mean_tensor,
+                        total_solv_mean,
+                        gb_mean,
+                        h_mol_mean,
+                        coop_mean,
+                    ) = egnn_model.compute_ensembled_solvation_readouts(
+                        x_ensemble=x_t.reshape(1, n_conf, n_pad, 3),
+                        atomic_numbers=z_t[0],
+                        atom_mask=m_t[0],
+                        total_charge=q_tot_val,
+                        base_charges=bq_t[0],
+                        solvent_features=sf[0],
+                        dielectric_constant=eps_solvent,
+                        gb_solver=gb_solver,
                         detach_trunk=True,
+                        internal_energies=internal_e_tensor,
+                        temperature_k=temp_k,
+                        return_global=True,
                     )
+
+                    # Explicit safe realization
+                    Tensor.realize(total_solv_mean, gb_mean, q_mean_tensor, h_mol_mean)
+
+                    delta_g_born_val = float(gb_mean.numpy()[0])
+                    delta_vdw_val = float(total_solv_mean.numpy()[0]) - delta_g_born_val
+                    q_mean = q_mean_tensor.numpy()[0, :n_sites_real].tolist()
+                    quantum_q_list = [float(q) for q in q_mean]
+
+                    # Delta-KRR residual stacking correction
+                    from dens_city.boltzmann.train_charges import predict_krr_residual
+
+                    z_np_arr = np.array(z_list, dtype=np.int32)
+                    n_heavy = float(np.sum(z_np_arr > 1))
+                    n_o = float(np.sum(z_np_arr == 8))
+                    n_n = float(np.sum(z_np_arr == 7))
+                    n_hal = float(np.sum(np.isin(z_np_arr, [9, 17, 35, 53])))
+                    phys_desc = np.array([[n_heavy, n_o, n_n, n_hal, delta_g_born_val, vdw_solv]], dtype=np.float32)
+                    krr_res = float(predict_krr_residual(h_mol_mean.numpy()[0], phys_desc[0]))
+
+                    solv_free_energy = vdw_solv + delta_vdw_val + delta_g_born_val + krr_res
                 else:
                     q_pred_tensor = bq_t
-                    delta_vdw_mol = Tensor.zeros(n_conf, dtype=dtypes.float32)
-
-                gb_tensor = gb_solver.compute_solvation_free_energy(
-                    x=x_t,
-                    charges=q_pred_tensor,
-                    atomic_numbers=z_t,
-                    atom_mask=m_t,
-                    dielectric_constant=eps_solvent,
-                )
-
-                # Explicit safe batched realization per pattern_tinygrad_jit_graph_caching
-                vdw_mean = delta_vdw_mol.mean()
-                gb_mean = gb_tensor.mean()
-                q_mean_tensor = q_pred_tensor.mean(axis=0)
-                Tensor.realize(vdw_mean, gb_mean, q_mean_tensor)
-
-                delta_vdw_val = float(vdw_mean.item())
-                delta_g_born_val = float(gb_mean.item())
-                q_mean = q_mean_tensor.numpy()[:n_sites_real].tolist()
-                quantum_q_list = [float(q) for q in q_mean]
-
-                solv_free_energy = vdw_solv + delta_vdw_val + delta_g_born_val
+                    gb_tensor = gb_solver.compute_solvation_free_energy(
+                        x=x_t,
+                        charges=q_pred_tensor,
+                        atomic_numbers=z_t,
+                        atom_mask=m_t,
+                        dielectric_constant=eps_solvent,
+                    )
+                    gb_mean = gb_tensor.mean()
+                    Tensor.realize(gb_mean)
+                    delta_g_born_val = float(gb_mean.item())
+                    delta_vdw_val = 0.0
+                    solv_free_energy = vdw_solv + delta_g_born_val
             except Exception:
                 pass
 

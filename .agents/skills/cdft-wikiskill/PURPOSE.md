@@ -22,11 +22,17 @@
   - `patterns/pattern_tinygrad_lowering_pipeline_and_codegen.md`
   - `patterns/pattern_tinygrad_decomposed_tensor_idioms.md`
   - `patterns/pattern_tinygrad_golden_idioms_beautiful_mnist.md`
+  - `patterns/pattern_percus_yevick_fmt_thermodynamic_consistency.md`
+  - `patterns/pattern_generalized_born_implicit_solvation.md`
+  - `patterns/pattern_egnn_quantum_charges_and_memory_decomposition.md`
+  - `patterns/pattern_batched_lbfgs_trust_region_relaxation.md`
 - **Evolution History**:
   - `v1.0.0`: Initial bootstrap with 7 foundational physics and computational patterns.
   - `v1.1.0`: Added 6 Boltzmann Generator statistical mechanics and normalizing flow invariants (Noé et al., arXiv:1812.01729v2).
   - `v1.2.0`: Added 5 patterns covering E(n) Equivariant Graph Neural Networks (Satorras et al., arXiv:2102.09844v3) and Tinygrad UOp compiler specification (`data/tinyspec.tex`).
   - `v1.3.0`: Added canonical Tinygrad training loop design and step fusion patterns from `beautiful_mnist.py`.
+  - `v1.4.0`: Consolidated specifications from legacy markdown specs (`cdft_spec.md`, `boltzman_spec.md`, `egnn_spec.md`) into 4 high-impact patterns (Percus-Yevick FMT consistency, Generalized Born solvation, EGNN memory decomposition/charge neutrality, Batched L-BFGS trust region) and cleanly retired the extraneous files.
+
 
 
 

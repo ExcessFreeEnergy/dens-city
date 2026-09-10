@@ -31,8 +31,9 @@ All source code lives under `src/dens_city/`:
 
 To eliminate the recurring cycle of **fixing, forgetting, and reimplementing errors** (per arXiv:2608.27454v1), all physical invariants, mathematical derivations, and compiler rules are maintained in the **WikiSkill persistent knowledge base**:
 
-- **Active Skill**: [`.agents/skills/cdft-wikiskill/SKILL.md`](file:///home/gauss/code/cdft_sim/dens-city/.agents/skills/cdft-wikiskill/SKILL.md) — 16 core procedural rules for cDFT, Boltzmann flows, EGNNs, and Tinygrad.
-- **Pattern Catalog**: [`.agents/wikiskill/wiki/index.md`](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/index.md) — Single-line `[Problem | Cause | Fix]` summaries for all 19 verified patterns in `patterns/`.
+- **Active Skill**: [`.agents/skills/cdft-wikiskill/SKILL.md`](file:///home/gauss/code/cdft_sim/dens-city/.agents/skills/cdft-wikiskill/SKILL.md) — 21 core procedural rules for cDFT, Boltzmann flows, EGNNs, and Tinygrad.
+- **Pattern Catalog**: [`.agents/wikiskill/wiki/index.md`](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/index.md) — Single-line `[Problem | Cause | Fix]` summaries for all 24 verified patterns in `patterns/`.
+
 - **Anti-Pattern Audit Ledger**: [`.agents/wikiskill/wiki/skill-impact.md`](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/skill-impact.md) — Historical audit log of all past proposals and outcomes. **Never repeat previously rejected approaches.**
 - **Lifecycle Automation**: Managed automatically via [`.agents/hooks.json`](file:///home/gauss/code/cdft_sim/dens-city/.agents/hooks.json):
   - `PostToolUse`: Automatically captures execution failure traces into `raw/traces/`.

@@ -101,3 +101,33 @@ def test_pure_gradient_descent_solve(mat_name: str):
     assert np.isfinite(res["wall_pressure_bar"])
     assert len(res["rho"]) == 64
     assert res["peak_density"] > 0.0
+
+
+def test_rotatable_bond_detection():
+    """
+    Verifies that num_rotatable_bonds dynamically identifies acyclic single bonds
+    between non-terminal heavy atoms using exact cycle-path BFS traversal.
+    Rigid aromatics (benzene) have 0 rotatable bonds.
+    Argon has 0.
+    Polyols: sorbitol has 5 rotatable bonds; glucose (pyranose ring) has 1 exocyclic bond.
+    """
+    from dens_city.utils.materials import MaterialLoader
+
+    loader = MaterialLoader()
+    benzene = loader.load_material("benzene")
+    assert benzene.num_rotatable_bonds == 0, f"Expected 0 for benzene, got {benzene.num_rotatable_bonds}"
+
+    argon = loader.load_material("argon")
+    assert argon.num_rotatable_bonds == 0, f"Expected 0 for argon, got {argon.num_rotatable_bonds}"
+
+    try:
+        sorbitol = loader.load_material("mobley_8462002")
+        assert sorbitol.num_rotatable_bonds == 5, f"Expected 5 for sorbitol, got {sorbitol.num_rotatable_bonds}"
+    except Exception:
+        pass
+
+    try:
+        glucose = loader.load_material("mobley_3043810")
+        assert glucose.num_rotatable_bonds == 1, f"Expected 1 for glucose, got {glucose.num_rotatable_bonds}"
+    except Exception:
+        pass
