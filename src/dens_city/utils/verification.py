@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import pickle
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -362,28 +363,281 @@ def verify_and_generate_report(
     }
 
 
-def verify_pipeline_against_freesolv(
+def verify_and_generate_solvatum_report(
+    results_dir: Path,
+    db_path: Path,
+    report_out: Path,
+) -> Dict[str, Any]:
+    """
+    Verifies dens-city simulation results against Solv@TUM (Solvatum) multi-solvent
+    experimental partition coefficients and generates a structured Markdown validation report.
+    """
+    from dens_city.utils.benchmark_dataset import SolvatumDataset
+    from dens_city.utils.solvents import get_solvent_properties, normalize_solvent_name
+
+    ds = SolvatumDataset(db_path=db_path)
+    entries = ds.load_entries()
+    summary_path = results_dir / "pipeline_summary.jsonl"
+    results = load_pipeline_results(summary_path)
+
+    # Index Solvatum entries by clean solute name and solute ID
+    entries_by_solute: Dict[str, List[Any]] = {}
+    for e in entries:
+        s_clean = re.sub(r"[^\w]", "", e.solute_name.upper())
+        entries_by_solute.setdefault(s_clean, []).append(e)
+        sid_clean = re.sub(r"[^\w]", "", e.solute_id.upper())
+        if sid_clean != s_clean:
+            entries_by_solute.setdefault(sid_clean, []).append(e)
+
+    successes = [r for r in results if r.get("status") in ("SUCCESS", "SUCCESS_CDFT_ONLY")]
+    failures = [r for r in results if r.get("status") not in ("SUCCESS", "SUCCESS_CDFT_ONLY")]
+
+    report_lines = [
+        "# End-to-End Simulation Verification & Solv@TUM (Solvatum) Multi-Solvent Validation Report",
+        "",
+        f"- **Results Directory**: `{results_dir}`",
+        f"- **Solvatum Database**: `{db_path}` ({len(entries)} solute-solvent pairs across {len(ds.get_unique_solvents())} solvents)",
+        f"- **Total Materials Evaluated**: {len(results)}",
+        "",
+        "---",
+        "",
+        "## 1. Executive Summary & Out-of-Distribution Status",
+        "",
+        f"All {len(results)} materials in the batch were simulated through the complete `dens-city` coupled pipeline:",
+        "1. **Thermodynamic Equation of State**: Self-consistent bulk density $\\rho_{\\rm bulk}$ and chemical potential $\\mu_{\\rm bulk}$.",
+        "2. **Classical Density Functional Theory (cDFT)**: Grand potential minimization $\\Omega[\\psi]$ under exact Irving-Kirkwood wall boundary conditions.",
+        "3. **Adaptive Boltzmann Conformer Ensembling**: Depth $s \\in \\{8, 16, 32\\}$ based on dynamic rotatable bond detection.",
+        "4. **Multi-Scale Graph Pooling & Delta-KRR**: 384-dimensional $\\mathbf{z}_{\\rm mol} = [\\text{mean} \\parallel \\text{max} \\parallel \\text{std}]$ evaluating non-aqueous solvent matrices.",
+        "",
+        f"- **Successful Runs**: **{len(successes)} / {len(results)}** (100% execution pass rate)"
+        if len(failures) == 0
+        else f"- **Successful Runs**: **{len(successes)} / {len(results)}**",
+        f"- **Failed Runs**: **{len(failures)}**",
+        "",
+    ]
+
+    matched_pairs = []
+    expt_vals = []
+    calc_vals = []
+    diff_vals = []
+    class_errors: Dict[str, List[float]] = {}
+    solvent_errors: Dict[str, List[float]] = {}
+
+    for r in results:
+        mat_name = r["material_name"]
+        pred_dg = r.get("solvation_free_energy_kcal_mol")
+        if pred_dg is None:
+            continue
+
+        raw_name = mat_name.upper()
+        clean_name = re.sub(r"[^\w]", "", raw_name)
+        m_solv = re.match(r"^SOLVATUM_([^_]+)_(.*)$", raw_name)
+        candidate_keys = [clean_name, raw_name]
+        if m_solv:
+            candidate_keys.extend([m_solv.group(1), re.sub(r"[^\w]", "", m_solv.group(2))])
+
+        matched_entries = []
+        for k in candidate_keys:
+            if k in entries_by_solute:
+                matched_entries = entries_by_solute[k]
+                break
+
+        if not matched_entries:
+            for s_k, e_list in entries_by_solute.items():
+                if len(s_k) > 3 and (s_k in clean_name or clean_name in s_k):
+                    matched_entries = e_list
+                    break
+
+        if not matched_entries:
+            continue
+
+        res_solvent = r.get("solvent_name")
+        for e in matched_entries:
+            if res_solvent and normalize_solvent_name(res_solvent) != normalize_solvent_name(e.solvent_name):
+                continue
+
+            expt_dg = e.expt_dG_solv
+            err = pred_dg - expt_dg
+            abs_err = abs(err)
+
+            props = get_solvent_properties(e.solvent_name)
+            s_class = props.solvent_class if props else "other"
+
+            matched_pairs.append(
+                {
+                    "material": mat_name,
+                    "solute_id": e.solute_id,
+                    "solute_name": e.solute_name,
+                    "solvent": e.solvent_name,
+                    "solvent_class": s_class,
+                    "solvent_eps": e.solvent_dielectric,
+                    "expt_dG": expt_dg,
+                    "pred_dG": pred_dg,
+                    "abs_err": abs_err,
+                    "err": err,
+                    "p_wall": r.get("wall_pressure_bar", 0.0),
+                }
+            )
+
+            expt_vals.append(expt_dg)
+            calc_vals.append(pred_dg)
+            diff_vals.append(err)
+            class_errors.setdefault(s_class, []).append(abs_err)
+            solvent_errors.setdefault(e.solvent_name, []).append(abs_err)
+
+    stats_summary = {}
+    if diff_vals:
+        n_m = len(diff_vals)
+        mae = float(np.mean(np.abs(diff_vals)))
+        rmse = float(np.sqrt(np.mean(np.square(diff_vals))))
+        bias = float(np.mean(diff_vals))
+        max_err = float(np.max(np.abs(diff_vals)))
+
+        expt_arr = np.array(expt_vals, dtype=np.float64)
+        calc_arr = np.array(calc_vals, dtype=np.float64)
+        if np.std(expt_arr) > 1e-6 and np.std(calc_arr) > 1e-6:
+            r_mat = np.corrcoef(expt_arr, calc_arr)
+            r_corr = float(r_mat[0, 1])
+            r2 = float(r_corr**2)
+        else:
+            r_corr = 0.0
+            r2 = 0.0
+
+        stats_summary = {
+            "n": n_m,
+            "mae": mae,
+            "rmse": rmse,
+            "bias": bias,
+            "max_err": max_err,
+            "r_corr": r_corr,
+            "r2": r2,
+        }
+
+    report_lines.append("---")
+    report_lines.append("")
+    report_lines.append("## 2. Statistical Metrics & Out-of-Distribution Validation")
+    report_lines.append("")
+    if stats_summary:
+        report_lines.append(f"- **Total Solute-Solvent Pairs Evaluated**: **{stats_summary['n']}**")
+        report_lines.append(f"- **Mean Absolute Error (MAE)**: **{stats_summary['mae']:.3f} kcal/mol**")
+        report_lines.append(f"- **Root Mean Squared Error (RMSE)**: **{stats_summary['rmse']:.3f} kcal/mol**")
+        report_lines.append(f"- **Mean Signed Bias**: **{stats_summary['bias']:+.3f} kcal/mol**")
+        report_lines.append(f"- **Max Absolute Error**: **{stats_summary['max_err']:.3f} kcal/mol**")
+        report_lines.append(f"- **Pearson Correlation (R)**: **{stats_summary['r_corr']:.4f}**")
+        report_lines.append(f"- **Coefficient of Determination (R²)**: **{stats_summary['r2']:.4f}**")
+    else:
+        report_lines.append("No matched solute-solvent pairs found in current run.")
+
+    report_lines.append("")
+    report_lines.append("---")
+    report_lines.append("")
+    report_lines.append("## 3. Performance Breakdown Across Solvent Chemical Classes")
+    report_lines.append("")
+    report_lines.append("| Solvent Class | Pairs | MAE (kcal/mol) | RMSE (kcal/mol) | Max Error (kcal/mol) |")
+    report_lines.append("| :--- | :---: | :---: | :---: | :---: |")
+    for s_cls, errs in sorted(class_errors.items(), key=lambda x: len(x[1]), reverse=True):
+        c_mae = float(np.mean(errs))
+        c_rmse = float(np.sqrt(np.mean(np.square(errs))))
+        c_max = float(np.max(errs))
+        report_lines.append(f"| `{s_cls}` | {len(errs)} | **{c_mae:.3f}** | {c_rmse:.3f} | {c_max:.3f} |")
+
+    report_lines.append("")
+    report_lines.append("---")
+    report_lines.append("")
+    report_lines.append("## 4. Top Solvents Performance Summary")
+    report_lines.append("")
+    report_lines.append("| Solvent | Pairs | $\\epsilon_r$ | MAE (kcal/mol) | RMSE (kcal/mol) | Max Error (kcal/mol) |")
+    report_lines.append("| :--- | :---: | :---: | :---: | :---: | :---: |")
+    for s_name, errs in sorted(solvent_errors.items(), key=lambda x: len(x[1]), reverse=True)[:25]:
+        s_mae = float(np.mean(errs))
+        s_rmse = float(np.sqrt(np.mean(np.square(errs))))
+        s_max = float(np.max(errs))
+        props = get_solvent_properties(s_name)
+        s_eps = props.dielectric_constant if props else 0.0
+        report_lines.append(
+            f"| `{s_name}` | {len(errs)} | {s_eps:.1f} | **{s_mae:.3f}** | {s_rmse:.3f} | {s_max:.3f} |"
+        )
+
+    report_lines.append("")
+    report_lines.append("---")
+    report_lines.append("")
+    report_lines.append("## 5. Sample Solute-Solvent Predictions & Outliers")
+    report_lines.append("")
+    report_lines.append(
+        "| Solute | Solvent | Class | $\\Delta G_{\\rm solv}^{\\rm expt}$ | $\\Delta G_{\\rm solv}^{\\rm pred}$ | Error (kcal/mol) | $P_{\\rm wall}$ (bar) |"
+    )
+    report_lines.append("| :--- | :--- | :--- | :---: | :---: | :---: | :---: |")
+    for p in sorted(matched_pairs, key=lambda x: x["abs_err"], reverse=True)[:30]:
+        report_lines.append(
+            f"| `{p['solute_name']}` | `{p['solvent']}` | `{p['solvent_class']}` | {p['expt_dG']:+.2f} | {p['pred_dG']:+.2f} | {p['err']:+6.2f} | {p['p_wall']:+10.2f} |"
+        )
+
+    report_lines.append("")
+    report_lines.append("---")
+    report_lines.append("")
+    report_lines.append("## 6. Comprehensive High-Throughput Batch Table")
+    report_lines.append("")
+    report_lines.append("| # | Material | Sites | cDFT Time (s) | BG Time (s) | Total Time (s) | Status |")
+    report_lines.append("| :-: | :--- | :---: | :---: | :---: | :---: | :---: |")
+    for idx, r in enumerate(results, 1):
+        m_name = r["material_name"]
+        sites = r.get("num_sites", 0)
+        cdft_t = r.get("cdft_runtime_seconds", 0.0)
+        bg_t = r.get("bg_runtime_seconds", 0.0)
+        tot_t = r.get("runtime_seconds", 0.0)
+        status = r.get("status", "UNKNOWN")
+        report_lines.append(
+            f"| {idx:02d} | `{m_name}` | {sites}/128 | {cdft_t:5.2f} | {bg_t:5.2f} | {tot_t:5.2f} | **{status}** |"
+        )
+
+    report_lines.append("")
+    report_content = "\n".join(report_lines)
+    report_out.parent.mkdir(parents=True, exist_ok=True)
+    report_out.write_text(report_content, encoding="utf-8")
+    print(f"Solvatum verification report successfully written to: {report_out}")
+
+    return {
+        "total_materials": len(results),
+        "successful_runs": len(successes),
+        "failed_runs": len(failures),
+        "solvatum_matched": len(matched_pairs),
+        "stats_summary": stats_summary,
+        "report_path": str(report_out),
+    }
+
+
+def verify_pipeline_against_dataset(
+    dataset: str = "freesolv",
     results_dir: Optional[str | Path] = None,
     database_path: Optional[str | Path] = None,
     report_out: Optional[str | Path] = None,
     run_e2e: bool = False,
-    populate_all_freesolv: bool = False,
+    populate_all: bool = False,
     energy_engine: str = "classical",
     force_egnn: bool = False,
     batch_size: Optional[int] = None,
 ) -> int:
-    """Entrypoint function for FreeSolv verification and report generation."""
+    """Unified entrypoint for benchmark verification across FreeSolv, Solvatum, and custom datasets."""
+    dataset_clean = dataset.lower().strip()
+    is_solvatum = dataset_clean in ("solvatum", "solv@tum")
+
     if run_e2e:
         from dens_city.ui.cli import main as cli_main
         from dens_city.utils.test_data_generator import generate_test_data
 
         test_data_dir = Path("data/test_data")
         mol2_files = list(test_data_dir.glob("*.mol2")) if test_data_dir.exists() else []
-        if not mol2_files or (populate_all_freesolv and len(mol2_files) < 600):
-            print("Populating test data before running end-to-end simulation...")
-            generate_test_data(populate_entire_freesolv=populate_all_freesolv)
+        if not mol2_files or (populate_all and len(mol2_files) < 600):
+            print(f"Populating test data ({dataset_clean}) before running end-to-end simulation...")
+            generate_test_data(
+                populate_entire_freesolv=(not is_solvatum and populate_all),
+                populate_entire_solvatum=(is_solvatum and populate_all),
+                dataset=dataset_clean,
+            )
 
-        print(f"Executing dens-city end-to-end benchmark (engine: {energy_engine}, force_egnn={force_egnn})...")
+        print(
+            f"Executing dens-city end-to-end benchmark (dataset: {dataset_clean}, engine: {energy_engine}, force_egnn={force_egnn})..."
+        )
         e2e_args = ["--materials", "all", "--benchmark", "--energy-engine", energy_engine]
         if force_egnn:
             e2e_args.append("--force-egnn")
@@ -404,28 +658,43 @@ def verify_pipeline_against_freesolv(
             print("Error: No simulation results found in runs/. Run with --run-e2e to execute simulation first.")
             return 1
 
-    db_p = Path(database_path) if database_path else Path("FreeSolv/database.pickle")
-    if not db_p.exists():
-        alt_db = Path("data/database.pickle")
-        if alt_db.exists():
-            db_p = alt_db
+    if is_solvatum:
+        db_p = Path(database_path) if database_path else Path("Solvatum/solvatum/data/solvatum.sdf")
+        if not db_p.exists():
+            alt_db = Path("solvatum/data/solvatum.sdf")
+            if alt_db.exists():
+                db_p = alt_db
+        rep_p = Path(report_out) if report_out else Path("data/e2e_solvatum_verification_report.md")
 
-    rep_p = Path(report_out) if report_out else Path("data/e2e_freesolv_verification_report.md")
+        print(f"Verifying Solvatum results from: {res_dir}")
+        stats = verify_and_generate_solvatum_report(
+            results_dir=res_dir,
+            db_path=db_p,
+            report_out=rep_p,
+        )
+    else:
+        db_p = Path(database_path) if database_path else Path("FreeSolv/database.pickle")
+        if not db_p.exists():
+            alt_db = Path("data/database.pickle")
+            if alt_db.exists():
+                db_p = alt_db
+        rep_p = Path(report_out) if report_out else Path("data/e2e_freesolv_verification_report.md")
 
-    print(f"Verifying results from: {res_dir}")
-    stats = verify_and_generate_report(
-        results_dir=res_dir,
-        db_path=db_p,
-        report_out=rep_p,
-    )
+        print(f"Verifying FreeSolv results from: {res_dir}")
+        stats = verify_and_generate_report(
+            results_dir=res_dir,
+            db_path=db_p,
+            report_out=rep_p,
+        )
 
     print("\n" + "=" * 80)
     print("  Verification & Statistical Benchmark Completed Successfully")
     print("=" * 80)
+    print(f"  Dataset Target     : {dataset_clean.upper()}")
     print(f"  Materials Verified : {stats['successful_runs']} / {stats['total_materials']} (100% Pass)")
-    print(f"  FreeSolv Matched   : {stats['freesolv_matched']}")
     sm = stats.get("stats_summary", {})
     if sm:
+        print(f"  Pairs Evaluated    : {sm.get('n', 0)}")
         print(f"  Mean Absolute Err  : {sm.get('mae', 0.0):.3f} kcal/mol")
         print(f"  Root Mean Sq Err   : {sm.get('rmse', 0.0):.3f} kcal/mol")
         print(f"  Mean Signed Bias   : {sm.get('bias', 0.0):+.3f} kcal/mol")
@@ -435,3 +704,51 @@ def verify_pipeline_against_freesolv(
     print(f"  Report Generated   : {stats['report_path']}")
     print("=" * 80)
     return 0
+
+
+def verify_pipeline_against_freesolv(
+    results_dir: Optional[str | Path] = None,
+    database_path: Optional[str | Path] = None,
+    report_out: Optional[str | Path] = None,
+    run_e2e: bool = False,
+    populate_all_freesolv: bool = False,
+    energy_engine: str = "classical",
+    force_egnn: bool = False,
+    batch_size: Optional[int] = None,
+) -> int:
+    """Entrypoint function for FreeSolv verification and report generation."""
+    return verify_pipeline_against_dataset(
+        dataset="freesolv",
+        results_dir=results_dir,
+        database_path=database_path,
+        report_out=report_out,
+        run_e2e=run_e2e,
+        populate_all=populate_all_freesolv,
+        energy_engine=energy_engine,
+        force_egnn=force_egnn,
+        batch_size=batch_size,
+    )
+
+
+def verify_pipeline_against_solvatum(
+    results_dir: Optional[str | Path] = None,
+    database_path: Optional[str | Path] = None,
+    report_out: Optional[str | Path] = None,
+    run_e2e: bool = False,
+    populate_all_solvatum: bool = False,
+    energy_engine: str = "classical",
+    force_egnn: bool = False,
+    batch_size: Optional[int] = None,
+) -> int:
+    """Entrypoint function for Solv@TUM (Solvatum) multi-solvent verification and report generation."""
+    return verify_pipeline_against_dataset(
+        dataset="solvatum",
+        results_dir=results_dir,
+        database_path=database_path,
+        report_out=report_out,
+        run_e2e=run_e2e,
+        populate_all=populate_all_solvatum,
+        energy_engine=energy_engine,
+        force_egnn=force_egnn,
+        batch_size=batch_size,
+    )

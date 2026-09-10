@@ -248,6 +248,10 @@ Execution Modes & Examples:
   # 10. FreeSolv Statistical Validation & Verification Report
   uv run dens-city --verify-freesolv --run-e2e
   uv run dens-city --verify-freesolv --results-dir runs/batch_20260828
+
+  # 11. Solv@TUM (Solvatum) Multi-Solvent Validation & Out-of-Distribution Report
+  uv run dens-city --verify-solvatum --run-e2e
+  uv run dens-city --populate-test-data --all-solvatum
 """
 
     parser = argparse.ArgumentParser(
@@ -323,6 +327,19 @@ Execution Modes & Examples:
         action="store_true",
         default=False,
         help="Validate simulation results against FreeSolv experimental hydration thermodynamics and output report",
+    )
+    mode_group.add_argument(
+        "--verify-solvatum",
+        action="store_true",
+        default=False,
+        help="Validate simulation results against Solv@TUM (Solvatum) multi-solvent benchmark and output report",
+    )
+    mode_group.add_argument(
+        "--verify-dataset",
+        type=str,
+        choices=["freesolv", "solvatum"],
+        default=None,
+        help="Validate simulation results against specified dataset ('freesolv' or 'solvatum')",
     )
     mode_group.add_argument(
         "--wikiskill-status",
@@ -783,21 +800,34 @@ Execution Modes & Examples:
     )
 
     # -------------------------------------------------------------------------
-    # FreeSolv & Test Data Options
+    # Solvation Benchmark & Dataset Options
     # -------------------------------------------------------------------------
-    data_group = parser.add_argument_group("FreeSolv & Dataset Options")
+    data_group = parser.add_argument_group("Solvation Benchmark & Dataset Options")
+    data_group.add_argument(
+        "--dataset",
+        type=str,
+        choices=["freesolv", "solvatum", "all"],
+        default="freesolv",
+        help="Benchmark dataset target: 'freesolv' (642 aqueous molecules) or 'solvatum' (~6,200 multi-solvent pairs across 146 solvents)",
+    )
+    data_group.add_argument(
+        "--all-solvatum",
+        action="store_true",
+        default=False,
+        help="Extract and populate EVERY molecule from the Solv@TUM (Solvatum) database into data/test_data/",
+    )
     data_group.add_argument(
         "--all-freesolv",
         "--all-data",
         action="store_true",
         default=False,
-        help="Extract and populate EVERY molecule from the FreeSolv database (642+ molecules) into data/test_data/",
+        help="Extract and populate EVERY molecule from the selected benchmark database (defaults to FreeSolv 642+ molecules)",
     )
     data_group.add_argument(
         "--run-e2e",
         action="store_true",
         default=False,
-        help="Execute full end-to-end simulation across benchmark materials before verifying against FreeSolv",
+        help="Execute full end-to-end simulation across benchmark materials before verifying against dataset",
     )
     data_group.add_argument(
         "--results-dir",
@@ -809,13 +839,13 @@ Execution Modes & Examples:
         "--database",
         type=str,
         default=None,
-        help="Path to FreeSolv database.pickle (default: FreeSolv/database.pickle)",
+        help="Path to benchmark database (defaults dynamically: FreeSolv/database.pickle or Solvatum/solvatum/data/solvatum.sdf)",
     )
     data_group.add_argument(
         "--report-out",
         type=str,
-        default="data/e2e_freesolv_verification_report.md",
-        help="Destination path for FreeSolv verification Markdown report",
+        default=None,
+        help="Destination path for benchmark verification Markdown report (defaults to e2e_<dataset>_verification_report.md)",
     )
 
     # -------------------------------------------------------------------------
@@ -1171,30 +1201,50 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
 
     # =========================================================================
-    # MODE 8: Populate Test Data & FreeSolv Mode
+    # MODE 8: Populate Test Data & Solvation Benchmark Datasets
     # =========================================================================
-    if args.populate_test_data:
+    if (
+        args.populate_test_data
+        or args.all_solvatum
+        or (
+            args.all_freesolv
+            and "--benchmark" not in argv
+            and "--verify-freesolv" not in argv
+            and "--verify-solvatum" not in argv
+            and not args.run_e2e
+        )
+    ):
         from dens_city.utils.test_data_generator import generate_test_data
 
         target_dir = args.data_dir if "--data-dir" in argv or "-d" in argv else "data/test_data"
+        is_solvatum = args.all_solvatum or args.dataset == "solvatum"
         generate_test_data(
             dest_dir=target_dir,
-            populate_entire_freesolv=args.all_freesolv,
+            populate_entire_freesolv=args.all_freesolv and not is_solvatum,
+            populate_entire_solvatum=is_solvatum,
+            dataset=args.dataset if not args.all_solvatum else "solvatum",
         )
         return 0
 
     # =========================================================================
-    # MODE 9: FreeSolv Validation & Verification Mode
+    # MODE 9: Solvation Benchmark Validation & Verification Mode
     # =========================================================================
-    if args.verify_freesolv:
-        from dens_city.utils.verification import verify_pipeline_against_freesolv
+    if args.verify_freesolv or args.verify_solvatum or args.verify_dataset:
+        from dens_city.utils.verification import verify_pipeline_against_dataset
 
-        return verify_pipeline_against_freesolv(
+        target_dataset = (
+            "solvatum"
+            if args.verify_solvatum or args.verify_dataset == "solvatum" or args.dataset == "solvatum"
+            else "freesolv"
+        )
+        is_pop_all = args.all_solvatum or args.all_freesolv
+        return verify_pipeline_against_dataset(
+            dataset=target_dataset,
             results_dir=args.results_dir,
             database_path=args.database,
             report_out=args.report_out,
             run_e2e=args.run_e2e,
-            populate_all_freesolv=args.all_freesolv,
+            populate_all=is_pop_all,
             energy_engine=args.energy_engine,
             force_egnn=args.force_egnn,
             batch_size=args.batch_size if ("-b" in argv or "--batch-size" in argv) else None,

@@ -91,6 +91,7 @@ class MaterialPipelineTask:
     energy_engine: str = "classical"  # "classical", "electronegativity", "egnn", "auto"
     force_egnn: bool = False
     material_obj: Optional[Material] = None
+    solvent_name: str = "water"
     dielectric_constant: float = 78.4
     formal_charge: Optional[float] = None
 
@@ -123,6 +124,8 @@ class MaterialPipelineResult:
     solvation_free_energy_kcal_mol: Optional[float] = None
     born_solvation_kcal_mol: Optional[float] = None
     quantum_charges: Optional[List[float]] = None
+    solvent_name: Optional[str] = None
+    solvent_dielectric: Optional[float] = None
     egnn_energy: Optional[float] = None
     egnn_force_rms: Optional[float] = None
     artifact_dir: Optional[str] = None
@@ -1006,7 +1009,13 @@ def execute_prepared_batch(
 
         if mat_engine in ("egnn", "electronegativity") and mat.num_sites > 0:
             try:
-                eps_solvent = float(getattr(task, "dielectric_constant", 78.4))
+                s_name = getattr(task, "solvent_name", "water") or "water"
+                if hasattr(task, "dielectric_constant") and task.dielectric_constant != 78.4:
+                    eps_solvent = float(task.dielectric_constant)
+                else:
+                    from dens_city.utils.solvents import get_solvent_dielectric
+
+                    eps_solvent = get_solvent_dielectric(s_name, default=getattr(task, "dielectric_constant", 78.4))
                 gb_solver = get_global_gb_solver(dielectric_constant=eps_solvent)
 
                 # Adaptive Boltzmann conformational ensemble (Weinreich FML principle):
@@ -1156,6 +1165,8 @@ def execute_prepared_batch(
             solvation_free_energy_kcal_mol=solv_free_energy,
             born_solvation_kcal_mol=delta_g_born_val,
             quantum_charges=quantum_q_list,
+            solvent_name=getattr(task, "solvent_name", "water") if task else "water",
+            solvent_dielectric=eps_solvent if "eps_solvent" in locals() else 78.4,
             artifact_dir=mat_out_dir,
         )
 

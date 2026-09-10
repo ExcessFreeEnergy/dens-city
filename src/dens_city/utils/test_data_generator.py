@@ -405,15 +405,35 @@ def verify_and_extract_freesolv(repo_root: Optional[Path] = None) -> Path:
     return data_dir
 
 
+def verify_and_extract_solvatum(root: Optional[Path] = None) -> Path:
+    """Verifies the Solvatum submodule and returns path to solvatum.sdf."""
+    root_p = root or Path.cwd()
+    candidates = [
+        root_p / "Solvatum" / "solvatum" / "data" / "solvatum.sdf",
+        root_p / "solvatum" / "data" / "solvatum.sdf",
+        root_p / "data" / "solvatum.sdf",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    raise FileNotFoundError(f"Solvatum database file (solvatum.sdf) not found under {root_p}")
+
+
 def generate_test_data(
     dest_dir: Optional[Path | str] = None,
     populate_entire_freesolv: bool = False,
+    populate_entire_solvatum: bool = False,
+    dataset: str = "freesolv",
     repo_root: Optional[Path] = None,
 ) -> Path:
     """Populates test data directory with benchmark molecules and force field files."""
     root = repo_root or Path.cwd()
     target_dir = Path(dest_dir) if dest_dir else root / "data" / "test_data"
     target_dir.mkdir(parents=True, exist_ok=True)
+
+    dataset_clean = dataset.lower().strip()
+    is_solvatum = populate_entire_solvatum or dataset_clean in ("solvatum", "all")
+    is_freesolv = populate_entire_freesolv or dataset_clean in ("freesolv", "all")
 
     print("================================================================================")
     print("  dens-city: Test Data & Benchmark Molecular Dataset Generator")
@@ -422,10 +442,14 @@ def generate_test_data(
     freesolv_src_dir = verify_and_extract_freesolv(root)
     print(f"  FreeSolv Source     : {freesolv_src_dir}")
     print(f"  Target Test Data Dir: {target_dir}")
-    mode_str = (
-        "ENTIRE FreeSolv Database (642+ molecules)" if populate_entire_freesolv else "32 Core Benchmark Materials"
-    )
-    print(f"  Mode                : {mode_str}")
+    modes = []
+    if is_freesolv and populate_entire_freesolv:
+        modes.append("FreeSolv (642+ molecules)")
+    if is_solvatum:
+        modes.append("Solvatum (~6,200+ multi-solvent pairs)")
+    if not modes:
+        modes.append("32 Core Benchmark Materials")
+    print(f"  Mode                : {' & '.join(modes)}")
     print("--------------------------------------------------------------------------------")
 
     for idx, (name, src_type, src_val, out_filename) in enumerate(BENCHMARK_MATERIALS, 1):
@@ -459,6 +483,18 @@ def generate_test_data(
                 shutil.copy2(f, dst)
                 copied_extra += 1
         print(f"  Copied {copied_extra} additional FreeSolv molecules into {target_dir}.")
+
+    if is_solvatum:
+        print("--------------------------------------------------------------------------------")
+        print(f"  Populating Solv@TUM (Solvatum) database into {target_dir}...")
+        try:
+            from dens_city.utils.benchmark_dataset import SolvatumDataset
+
+            solv_ds = SolvatumDataset(repo_root=root)
+            solv_count = solv_ds.populate_test_data(target_dir)
+            print(f"  Extracted and populated {solv_count} Solvatum solute molecules into {target_dir}.")
+        except Exception as exc:
+            print(f"  Warning: Solvatum extraction encountered issue: {exc}", file=sys.stderr)
 
     print("--------------------------------------------------------------------------------")
     print(f"  Generating Force Field Parameters & GAFF Database in {target_dir}...")

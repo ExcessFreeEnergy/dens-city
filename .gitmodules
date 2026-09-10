@@ -1,3 +1,6 @@
 [submodule "FreeSolv"]
 	path = FreeSolv
 	url = https://github.com/MobleyLab/FreeSolv
+[submodule "Solvatum"]
+	path = Solvatum
+	url = https://github.com/hille721/solvatum
