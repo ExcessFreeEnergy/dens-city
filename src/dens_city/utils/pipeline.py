@@ -971,29 +971,52 @@ def execute_prepared_batch(
         if hasattr(task, "vdw_energy") and task.vdw_energy is not None:
             vdw_solv = float(task.vdw_energy)
         else:
-            db_p = Path("FreeSolv/database.pickle")
-            if not db_p.exists():
-                db_p = Path("data/database.pickle")
-            if db_p.exists():
-                try:
-                    import pickle
+            use_synthetic_targets = getattr(task, "use_synthetic_targets", False)
+            database_path = getattr(task, "database_path", None)
+            s_name = getattr(task, "solvent_name", "water") or "water"
+            if not use_synthetic_targets:
+                if s_name == "water":
+                    db_p = Path(database_path or "FreeSolv/database.pickle")
+                    if not db_p.exists():
+                        db_p = Path("data/database.pickle")
+                    if db_p.exists():
+                        try:
+                            import pickle
 
-                    if not hasattr(execute_prepared_batch, "_fs_db_cache"):
-                        with open(db_p, "rb") as f:
-                            execute_prepared_batch._fs_db_cache = pickle.load(f, encoding="latin1")
-                    fs_db = getattr(execute_prepared_batch, "_fs_db_cache", {})
-                    mat_stem = Path(mat.name).stem
-                    from dens_city.utils.verification import FREESOLV_MAPPINGS
+                            if not hasattr(execute_prepared_batch, "_fs_db_cache"):
+                                with open(db_p, "rb") as f:
+                                    execute_prepared_batch._fs_db_cache = pickle.load(f, encoding="latin1")
+                            fs_db = getattr(execute_prepared_batch, "_fs_db_cache", {})
+                            mat_stem = Path(mat.name).stem
+                            from dens_city.utils.verification import FREESOLV_MAPPINGS
 
-                    fs_key = mat_stem if mat_stem in fs_db else FREESOLV_MAPPINGS.get(mat_stem)
-                    if fs_key and fs_key in fs_db:
-                        vdw_solv = float(fs_db[fs_key].get("calc_vdw", 0.0))
-                    else:
-                        # Generic universal nonpolar fallback for non-FreeSolv materials:
-                        # Use cDFT excess grand potential / chemical potential
+                            fs_key = mat_stem if mat_stem in fs_db else FREESOLV_MAPPINGS.get(mat_stem)
+                            if fs_key and fs_key in fs_db:
+                                vdw_solv = float(fs_db[fs_key].get("calc_vdw", 0.0))
+                            else:
+                                # Generic universal nonpolar fallback for non-FreeSolv materials:
+                                # Use cDFT excess grand potential / chemical potential
+                                vdw_solv = float(getattr(mat, "solvation_free_energy_kcal_mol", 0.0))
+                        except Exception:
+                            pass
+                else:
+                    # Dynamic BMCSL cavitation and WCA dispersion in non-aqueous solvent:
+                    try:
+                        from dens_city.utils.solvents import get_solvent_properties
+
+                        solv_props = get_solvent_properties(s_name)
+                        rho_s_a3 = (solv_props.density_g_cm3 * 6.02214076e23) / (
+                            max(1.0, solv_props.molecular_weight) * 1e24
+                        )
+                        vdw_solv = mat.compute_solvation_in_solvent(
+                            solvent_sigma=solv_props.kinetic_diameter_a,
+                            solvent_rho=rho_s_a3,
+                            solvent_epsilon_k=120.0,
+                            temp_k=mat.temperature_k or 298.15,
+                        )
+                    except Exception:
                         vdw_solv = float(getattr(mat, "solvation_free_energy_kcal_mol", 0.0))
-                except Exception:
-                    pass
+                        pass
 
         solv_free_energy = vdw_solv
         delta_g_born_val = None
@@ -1085,6 +1108,9 @@ def execute_prepared_batch(
 
                     internal_e_tensor = Tensor(delta_e.reshape(1, n_conf), dtype=dtypes.float32)
                     temp_k = float(mat.temperature_k or 298.15)
+                    from dens_city.utils.solvents import get_solvent_properties
+
+                    solv_props = get_solvent_properties(s_name)
                     (
                         q_mean_tensor,
                         total_solv_mean,
@@ -1098,6 +1124,7 @@ def execute_prepared_batch(
                         total_charge=q_tot_val,
                         base_charges=bq_t[0],
                         solvent_features=sf[0],
+                        solvent_hbond_capacity=solv_props.hbond_capacity,
                         dielectric_constant=eps_solvent,
                         gb_solver=gb_solver,
                         detach_trunk=True,
@@ -1123,7 +1150,7 @@ def execute_prepared_batch(
                     n_n = float(np.sum(z_np_arr == 7))
                     n_hal = float(np.sum(np.isin(z_np_arr, [9, 17, 35, 53])))
                     phys_desc = np.array([[n_heavy, n_o, n_n, n_hal, delta_g_born_val, vdw_solv]], dtype=np.float32)
-                    krr_res = float(predict_krr_residual(h_mol_mean.numpy()[0], phys_desc[0]))
+                    krr_res = float(predict_krr_residual(h_mol_mean.numpy()[0], phys_desc[0], s_solv=s_name))
 
                     solv_free_energy = vdw_solv + delta_vdw_val + delta_g_born_val + krr_res
                 else:

@@ -99,6 +99,10 @@ This skill equips Antigravity agents with the compiled, persistent knowledge bas
 - **Rule**: Never evaluate hydration free energies on a single static vacuum geometry. Average predictions across thermal vibrational ensembles ($T=350\text{ K}$, $s \ge 8$) in a single vector-parallel pass $(B \cdot s, N, 3)$ without Python loops. Pool representations via multi-scale statistics (`mean`, masked `max`, `std`), provide $\ge 25.0$ kcal/mol headroom on cooperative heads to avoid $\tanh$ gradient vanishing on polyols/uracils, and use analytical KRR with $O(N^2)$ Sherman-Morrison LOOCV.
 - **Reference**: [pattern_egnn_ensembled_cooperative_solvation.md](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/patterns/pattern_egnn_ensembled_cooperative_solvation.md).
 
+### 22. Universal Multi-Solvent Representation & Dynamic BMCSL Cavitation
+- **Rule**: Never use water's hard-sphere radius for non-aqueous fluids. Derive solvent kinetic diameters dynamically $\sigma_S = (6 V_m / \pi N_A)^{1/3}$ for BMCSL cavitation. In non-polar solvents, gate neural cooperative hydrogen-bonding readouts by Abraham H-bond capacity $\tanh((\alpha_S + \beta_S)/1.5)$ to suppress unphysical stabilization. For universal multi-solvent residual prediction, concatenate 7D normalized Abraham/physical descriptors into a 397D joint pair embedding $[\mathbf{z}_{\rm solute} \parallel 2.0\mathbf{d}_{\rm solute} \parallel 2.5\mathbf{s}_{\rm solvent}]$.
+- **Reference**: [pattern_solvatum_universal_solvent_architecture.md](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/patterns/pattern_solvatum_universal_solvent_architecture.md).
+
 ## Verification Workflow
 Always verify changes using the test suite:
 ```bash

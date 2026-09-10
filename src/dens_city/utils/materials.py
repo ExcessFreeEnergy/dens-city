@@ -60,6 +60,37 @@ def compute_bulk_pressure(
     return p_bar
 
 
+def compute_bmcsl_cavity_free_energy(
+    sigma_solute: float,
+    solvent_sigma: float = 2.8,
+    solvent_rho: float = 0.0333,
+    temp_k: float = 298.15,
+) -> float:
+    r"""
+    Computes the reversible cavitation free energy \Delta G_cav (in kcal/mol) for inserting a hard-sphere
+    solute of diameter `sigma_solute` (Å) into a solvent of kinetic diameter `solvent_sigma` (Å)
+    and number density `solvent_rho` (Å^-3) at temperature `temp_k` (K) using the
+    Boublík-Mansoori-Carnahan-Starling-Leland (BMCSL) and Scaled Particle Theory (SPT) formulation:
+
+    \eta_S = (\pi / 6) * \rho_S * \sigma_S^3
+    y = \sigma_solute / \sigma_S
+    \Delta G_cav / (k_B T) = -\ln(1 - \eta_S) + [3\eta_S / (1 - \eta_S)] y
+                            + [3\eta_S / (1 - \eta_S) + 4.5 * (\eta_S / (1 - \eta_S))^2] y^2
+    """
+    eta = (math.pi / 6.0) * solvent_rho * (solvent_sigma**3)
+    eta = max(0.01, min(0.65, eta))  # Physical bounds for dense liquid
+    one_minus_eta = max(1e-12, 1.0 - eta)
+    y = max(0.01, sigma_solute / max(0.5, solvent_sigma))
+
+    term1 = -math.log(one_minus_eta)
+    term2 = (3.0 * eta / one_minus_eta) * y
+    term3 = (3.0 * eta / one_minus_eta + 4.5 * (eta / one_minus_eta) ** 2) * (y**2)
+
+    delta_g_kbt = term1 + term2 + term3
+    kbt_to_kcal = 1.987204e-3 * temp_k
+    return float(delta_g_kbt * kbt_to_kcal)
+
+
 def solve_bulk_density_from_pressure(
     p_bar: float,
     temp_k: float,
@@ -444,10 +475,18 @@ class Material:
         rg_sq = sum(s.mass * ((s.x - cx) ** 2 + (s.y - cy) ** 2 + (s.z - cz) ** 2) for s in self.sites) / total_m
         return math.sqrt(max(0.0, rg_sq))
 
-    def compute_bulk_mu(self, T: Optional[float] = None, rho: Optional[float] = None) -> float:
+    def compute_bulk_mu(
+        self,
+        T: Optional[float] = None,
+        rho: Optional[float] = None,
+        solvent_sigma: Optional[float] = None,
+        solvent_rho: Optional[float] = None,
+        solvent_epsilon_k: Optional[float] = None,
+    ) -> float:
         """
         Computes theoretical bulk chemical potential mu_bulk(T, rho) in units of k_B * T
         using Rosenfeld FMT (Percus-Yevick compressibility) for hard-core repulsion + mean-field attractive dispersion.
+        If solvent_sigma and solvent_rho are provided, computes cross-solvation free energy via BMCSL cavity creation.
         Also calculates excess chemical potential and solvation free energy in kcal/mol.
         """
         temp = T if T is not None else self.temperature_k
@@ -455,25 +494,82 @@ class Material:
         sig = self.effective_sigma
         eps_k = self.effective_epsilon_k
 
-        # Packing fraction eta = (pi / 6) * rho * sigma^3
-        eta = (math.pi / 6.0) * rho_b * (sig**3)
+        if solvent_sigma is not None and solvent_rho is not None:
+            # BMCSL cross-cavitation free energy in solvent
+            s_sig = max(0.5, float(solvent_sigma))
+            s_rho = max(1e-5, float(solvent_rho))
+            s_eps = float(solvent_epsilon_k) if solvent_epsilon_k is not None else 120.0
 
-        # Ideal chemical potential (in k_B * T)
-        mu_id = math.log(max(1e-15, rho_b * (sig**3)))
+            eta = (math.pi / 6.0) * s_rho * (s_sig**3)
+            eta = max(0.01, min(0.65, eta))
+            one_minus_eta = max(1e-12, 1.0 - eta)
+            y = max(0.01, sig / s_sig)
 
-        # Rosenfeld FMT excess hard-sphere chemical potential (PY compressibility limit)
-        one_minus_eta = max(1e-12, 1.0 - eta)
-        mu_hs_ex = -math.log(one_minus_eta) + (eta * (14.0 - 13.0 * eta + 5.0 * (eta**2))) / (2.0 * (one_minus_eta**3))
+            mu_hs_ex = (
+                -math.log(one_minus_eta)
+                + (3.0 * eta / one_minus_eta) * y
+                + (3.0 * eta / one_minus_eta + 4.5 * (eta / one_minus_eta) ** 2) * (y**2)
+            )
 
-        # Mean-field attractive chemical potential: \int v_att(r) d^3r
-        v_att_integral = compute_wca_dispersion_integral(sig, eps_k) / temp
-        mu_att = rho_b * v_att_integral
+            # Cross-dispersion integral
+            sig_12 = 0.5 * (sig + s_sig)
+            eps_12 = math.sqrt(max(1e-6, eps_k * s_eps))
+            v_att_integral = compute_wca_dispersion_integral(sig_12, eps_12) / temp
+            mu_att = s_rho * v_att_integral
+            mu_id = math.log(max(1e-15, s_rho * (s_sig**3)))
+        else:
+            # Packing fraction eta = (pi / 6) * rho * sigma^3
+            eta = (math.pi / 6.0) * rho_b * (sig**3)
+
+            # Ideal chemical potential (in k_B * T)
+            mu_id = math.log(max(1e-15, rho_b * (sig**3)))
+
+            # Rosenfeld FMT excess hard-sphere chemical potential (PY compressibility limit)
+            one_minus_eta = max(1e-12, 1.0 - eta)
+            mu_hs_ex = -math.log(one_minus_eta) + (eta * (14.0 - 13.0 * eta + 5.0 * (eta**2))) / (
+                2.0 * (one_minus_eta**3)
+            )
+
+            # Mean-field attractive chemical potential: \int v_att(r) d^3r
+            v_att_integral = compute_wca_dispersion_integral(sig, eps_k) / temp
+            mu_att = rho_b * v_att_integral
 
         self.bulk_mu_ex = mu_hs_ex + mu_att
         self.bulk_mu = mu_id + self.bulk_mu_ex
         # 1 k_B * T = 1.987204e-3 * T kcal/mol
         self.solvation_free_energy_kcal_mol = self.bulk_mu_ex * (1.987204e-3 * temp)
         return self.bulk_mu
+
+    def compute_solvation_in_solvent(
+        self,
+        solvent_sigma: float = 2.8,
+        solvent_rho: float = 0.0333,
+        solvent_epsilon_k: float = 120.0,
+        temp_k: Optional[float] = None,
+    ) -> float:
+        """
+        Computes nonpolar solvation free energy (cavitation + WCA dispersion) in kcal/mol
+        in a specific solvent environment with kinetic diameter `solvent_sigma`, density `solvent_rho`,
+        and dispersion depth `solvent_epsilon_k`.
+        """
+        temp = temp_k if temp_k is not None else self.temperature_k
+        sig_solute = self.effective_sigma
+        eps_solute = self.effective_epsilon_k
+
+        dg_cav = compute_bmcsl_cavity_free_energy(
+            sigma_solute=sig_solute,
+            solvent_sigma=solvent_sigma,
+            solvent_rho=solvent_rho,
+            temp_k=temp,
+        )
+
+        sig_12 = 0.5 * (sig_solute + solvent_sigma)
+        eps_12 = math.sqrt(max(1e-6, eps_solute * solvent_epsilon_k))
+        v_att_int = compute_wca_dispersion_integral(sig_12, eps_12)
+        mu_att_kbt = solvent_rho * (v_att_int / temp)
+        dg_att = mu_att_kbt * (1.987204e-3 * temp)
+
+        return float(dg_cav + dg_att)
 
     def compute_bulk_pressure(self, T: Optional[float] = None, rho: Optional[float] = None) -> float:
         """

@@ -603,6 +603,8 @@ class QuantumChargeTrainer:
         sigma: float = 10.0,
         reg_lambda: float = 0.1,
         save_path: Optional[str] = "data/checkpoints/krr_residual_weights.npz",
+        solvent_descriptors: Optional[np.ndarray] = None,
+        include_solvent_descriptors: bool = True,
     ) -> Tuple[float, float, Dict[str, float]]:
         """
         Fits an analytical Delta-KRR residual stacking model on top of the trained EGNN readouts.
@@ -691,7 +693,24 @@ class QuantumChargeTrainer:
 
         Z_norm = (Z - z_mean) / z_std
         D_norm = (D_phys - d_mean) / d_std
-        Z_comb = np.concatenate([Z_norm, D_norm * 2.0], axis=1)  # (N_real, 390)
+
+        if include_solvent_descriptors:
+            if solvent_descriptors is None:
+                from dens_city.utils.solvents import get_solvent_descriptors_vector
+
+                s_water = get_solvent_descriptors_vector("water")
+                S_solv = np.tile(s_water, (num_real, 1))
+            else:
+                S_solv = np.asarray(solvent_descriptors, dtype=np.float32)
+
+            s_mean = np.mean(S_solv, axis=0, keepdims=True)
+            s_std = np.std(S_solv, axis=0, keepdims=True) + 1e-6
+            S_norm = (S_solv - s_mean) / s_std
+            Z_comb = np.concatenate([Z_norm, D_norm * 2.0, S_norm * 2.0], axis=1)  # (N_real, 397)
+        else:
+            s_mean = None
+            s_std = None
+            Z_comb = np.concatenate([Z_norm, D_norm * 2.0], axis=1)  # (N_real, 390)
 
         # Pairwise squared Euclidean distances between representations
         z_sq = np.sum(Z_comb**2, axis=1, keepdims=True)
@@ -718,18 +737,21 @@ class QuantumChargeTrainer:
         if save_path:
             p = Path(save_path)
             p.parent.mkdir(parents=True, exist_ok=True)
-            np.savez_compressed(
-                p,
-                alpha=alpha.astype(np.float32),
-                z_train=Z_comb.astype(np.float32),
-                z_mean=z_mean.astype(np.float32),
-                z_std=z_std.astype(np.float32),
-                d_mean=d_mean.astype(np.float32),
-                d_std=d_std.astype(np.float32),
-                sigma=float(sigma),
-                reg_lambda=float(reg_lambda),
-                names=np.array(names_list),
-            )
+            save_dict = {
+                "alpha": alpha.astype(np.float32),
+                "z_train": Z_comb.astype(np.float32),
+                "z_mean": z_mean.astype(np.float32),
+                "z_std": z_std.astype(np.float32),
+                "d_mean": d_mean.astype(np.float32),
+                "d_std": d_std.astype(np.float32),
+                "sigma": float(sigma),
+                "reg_lambda": float(reg_lambda),
+                "names": np.array(names_list),
+            }
+            if s_mean is not None and s_std is not None:
+                save_dict["s_mean"] = s_mean.astype(np.float32)
+                save_dict["s_std"] = s_std.astype(np.float32)
+            np.savez_compressed(p, **save_dict)
 
         return mae_loo, rmse_loo, preds_loo
 
@@ -1072,10 +1094,12 @@ def predict_krr_residual(
     z_mol: Union[np.ndarray, Tensor],
     d_phys: Union[np.ndarray, Tensor],
     weights: Union[str, Path, Dict[str, np.ndarray]] = "data/checkpoints/krr_residual_weights.npz",
+    s_solv: Optional[Union[str, np.ndarray, Tensor]] = None,
 ) -> Union[float, np.ndarray]:
     """
     Evaluates the trained Delta-KRR residual model for query molecular embeddings and physical descriptors:
       ΔG_res(z_query) = Σ_i α_i * exp(-||z_query - z_train_i||^2 / (2 * σ^2))
+    Supports optional solvent descriptors vector `s_solv` for universal cross-solvent generalization.
     """
     w_dict = load_krr_weights(weights)
     if w_dict is None:
@@ -1109,7 +1133,33 @@ def predict_krr_residual(
 
     z_norm = (z_mol_np - z_mean) / z_std
     d_norm = (d_phys_np - d_mean) / d_std
-    z_query = np.concatenate([z_norm, d_norm * 2.0], axis=1)
+
+    if "s_mean" in w_dict and "s_std" in w_dict:
+        s_mean = w_dict["s_mean"]
+        s_std = w_dict["s_std"]
+        n_queries = z_mol_np.shape[0]
+
+        from dens_city.utils.solvents import get_solvent_descriptors_vector
+
+        if s_solv is None:
+            s_vec = get_solvent_descriptors_vector("water")
+            s_np = np.tile(s_vec, (n_queries, 1))
+        elif isinstance(s_solv, str):
+            s_vec = get_solvent_descriptors_vector(s_solv)
+            s_np = np.tile(s_vec, (n_queries, 1))
+        elif isinstance(s_solv, Tensor):
+            s_np = s_solv.numpy()
+            if len(s_np.shape) == 1:
+                s_np = np.tile(s_np, (n_queries, 1))
+        else:
+            s_np = np.asarray(s_solv, dtype=np.float32)
+            if len(s_np.shape) == 1:
+                s_np = np.tile(s_np, (n_queries, 1))
+
+        s_norm = (s_np - s_mean) / s_std
+        z_query = np.concatenate([z_norm, d_norm * 2.0, s_norm * 2.0], axis=1)
+    else:
+        z_query = np.concatenate([z_norm, d_norm * 2.0], axis=1)
 
     q_sq = np.sum(z_query**2, axis=1, keepdims=True)
     t_sq = np.sum(z_train**2, axis=1, keepdims=True)

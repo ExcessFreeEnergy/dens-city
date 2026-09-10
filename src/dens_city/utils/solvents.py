@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from typing import Dict, Tuple
 
+import numpy as np
+
 
 @dataclass(frozen=True)
 class SolventProperties:
@@ -24,11 +26,32 @@ class SolventProperties:
     density_g_cm3: float  # Liquid mass density in g/cm³
     surface_tension_mn_m: float  # Cavitation surface tension gamma in mN/m (dyn/cm)
     solvent_class: str  # polar_protic, polar_aprotic, alkane_nonpolar, aromatic, chlorinated, ether, ester
+    molecular_weight: float = 100.0  # Molar mass M in g/mol
+    abraham_alpha: float = 0.0  # Hydrogen bond acidity alpha_2^H
+    abraham_beta: float = 0.0  # Hydrogen bond basicity beta_2^H
+    abraham_pi2: float = 0.0  # Dipolarity / polarizability pi_2^H
+    dipole_moment_debye: float = 0.0  # Molecular dipole moment in Debye
 
     @property
     def optical_dielectric(self) -> float:
         """Optical dielectric permittivity epsilon_infinity approx n_D^2."""
         return self.refractive_index**2
+
+    @property
+    def molar_volume_cm3_mol(self) -> float:
+        """Liquid molar volume V_m = M / rho in cm³/mol."""
+        return self.molecular_weight / max(1e-4, self.density_g_cm3)
+
+    @property
+    def kinetic_diameter_a(self) -> float:
+        """Effective spherical packing diameter sigma_S in Angstroms from molar volume."""
+        v_mol_a3 = (self.molar_volume_cm3_mol * 1e24) / 6.02214076e23
+        return float((6.0 * v_mol_a3 / math.pi) ** (1.0 / 3.0))
+
+    @property
+    def hbond_capacity(self) -> float:
+        """Total hydrogen bonding interaction capacity alpha + beta."""
+        return self.abraham_alpha + self.abraham_beta
 
 
 def normalize_solvent_name(name: str) -> str:
@@ -265,6 +288,188 @@ _SOLVENT_REGISTRY: Dict[str, SolventProperties] = {
     "TRIBUTYL PHOSPHATE": SolventProperties("TRIBUTYL PHOSPHATE", ("TBP",), 8.0, 1.425, 0.976, 27.8, "polar_aprotic"),
 }
 
+# Verified experimental Abraham solvation parameters (alpha_2^H, beta_2^H, pi_2^H),
+# molecular weights (g/mol), and dipole moments (Debye) (Acree, Abraham, CRC Handbook)
+_SOLVENT_ABRAHAM_DATA: Dict[str, Tuple[float, float, float, float, float]] = {
+    # Reference Aqueous
+    "WATER": (18.015, 1.17, 0.47, 1.09, 1.85),
+    # Alkanes & Cycloalkanes
+    "HEXADECANE": (226.44, 0.0, 0.0, 0.0, 0.0),
+    "HEPTANE": (100.20, 0.0, 0.0, 0.0, 0.0),
+    "HEXANE": (86.18, 0.0, 0.0, 0.0, 0.0),
+    "OCTANE": (114.23, 0.0, 0.0, 0.0, 0.0),
+    "NONANE": (128.26, 0.0, 0.0, 0.0, 0.0),
+    "DECANE": (142.28, 0.0, 0.0, 0.0, 0.0),
+    "UNDECANE": (156.31, 0.0, 0.0, 0.0, 0.0),
+    "DODECANE": (170.33, 0.0, 0.0, 0.0, 0.0),
+    "TETRADECANE": (198.39, 0.0, 0.0, 0.0, 0.0),
+    "PENTANE": (72.15, 0.0, 0.0, 0.0, 0.0),
+    "2,2,4-TRIMETHYLPENTANE": (114.23, 0.0, 0.0, 0.0, 0.0),
+    "CYCLOOCTANE": (112.21, 0.0, 0.0, 0.0, 0.0),
+    "METHYLCYCLOHEXANE": (98.19, 0.0, 0.0, 0.0, 0.0),
+    "1-HEXADECENE": (224.43, 0.0, 0.08, 0.08, 0.40),
+    # Chlorinated & Halogenated
+    "CHLOROFORM": (119.38, 0.20, 0.02, 0.58, 1.04),
+    "CARBON TETRACHLORIDE": (153.82, 0.0, 0.0, 0.38, 0.0),
+    "DICHLOROMETHANE": (84.93, 0.10, 0.05, 0.82, 1.60),
+    "DICHLOROETHANE": (98.96, 0.10, 0.11, 0.81, 1.83),
+    "1-CHLOROBUTANE": (92.57, 0.0, 0.05, 0.40, 1.90),
+    "CHLOROBENZENE": (112.56, 0.0, 0.07, 0.71, 1.54),
+    "BROMOBENZENE": (157.01, 0.0, 0.06, 0.73, 1.70),
+    "BROMOETHANE": (108.97, 0.0, 0.05, 0.40, 2.03),
+    "FLUOROBENZENE": (96.10, 0.0, 0.07, 0.62, 1.60),
+    "IODOBENZENE": (204.01, 0.0, 0.07, 0.81, 1.70),
+    "DIIODOMETHANE": (267.84, 0.05, 0.05, 0.90, 1.10),
+    "PERFLUOROBENZENE": (186.05, 0.0, 0.0, -0.02, 0.0),
+    # Aromatics
+    "TOLUENE": (92.14, 0.0, 0.11, 0.55, 0.36),
+    "M-XYLENE": (106.17, 0.0, 0.16, 0.52, 0.30),
+    "O-XYLENE": (106.17, 0.0, 0.16, 0.56, 0.62),
+    "P-XYLENE": (106.17, 0.0, 0.16, 0.52, 0.0),
+    "ETHYLBENZENE": (106.17, 0.0, 0.15, 0.51, 0.59),
+    # Alcohols & Polyols (Polar Protic)
+    "METHANOL": (32.04, 0.93, 0.62, 0.60, 1.70),
+    "ETHANOL": (46.07, 0.83, 0.77, 0.54, 1.69),
+    "1-PROPANOL": (60.10, 0.78, 0.78, 0.52, 1.68),
+    "ISOPROPANOL": (60.10, 0.76, 0.84, 0.48, 1.66),
+    "N-BUTANOL": (74.12, 0.73, 0.85, 0.47, 1.66),
+    "ISOBUTANOL": (74.12, 0.73, 0.84, 0.40, 1.79),
+    "2-BUTANOL": (74.12, 0.69, 0.80, 0.40, 1.66),
+    "TERT-BUTANOL": (74.12, 0.68, 0.93, 0.41, 1.66),
+    "PENTANOL": (88.15, 0.66, 0.84, 0.45, 1.68),
+    "2-PENTANOL": (88.15, 0.65, 0.82, 0.42, 1.66),
+    "PENTAN-3-OL": (88.15, 0.65, 0.82, 0.42, 1.66),
+    "2-METHYLBUTAN-1-OL": (88.15, 0.66, 0.84, 0.44, 1.68),
+    "3-METHYLBUTAN-1-OL": (88.15, 0.66, 0.84, 0.44, 1.68),
+    "TERT-AMYL ALCOHOL": (88.15, 0.60, 0.90, 0.40, 1.66),
+    "HEXANOL": (102.17, 0.63, 0.82, 0.42, 1.68),
+    "2-HEXANOL": (102.17, 0.62, 0.80, 0.40, 1.66),
+    "3-HEXANOL": (102.17, 0.62, 0.80, 0.40, 1.66),
+    "4-METHYLPENTAN-2-OL": (102.17, 0.62, 0.80, 0.40, 1.66),
+    "HEPTAN-1-OL": (116.20, 0.62, 0.80, 0.42, 1.68),
+    "2-HEPTANOL": (116.20, 0.61, 0.80, 0.40, 1.66),
+    "4-HEPTANOL": (116.20, 0.61, 0.80, 0.40, 1.66),
+    "1-OCTANOL": (130.23, 0.60, 0.79, 0.40, 1.68),
+    "2-ETHYLHEXANOL": (130.23, 0.58, 0.80, 0.40, 1.68),
+    "4-OCTANOL": (130.23, 0.58, 0.80, 0.40, 1.66),
+    "NONANOL": (144.25, 0.57, 0.79, 0.40, 1.68),
+    "DECAN-1-OL": (158.28, 0.57, 0.79, 0.40, 1.68),
+    "UNDECANOL": (172.31, 0.55, 0.78, 0.40, 1.68),
+    "DODECAN-1-OL": (186.33, 0.55, 0.78, 0.40, 1.68),
+    "ALLYL ALCOHOL": (58.08, 0.75, 0.70, 0.60, 1.60),
+    "BENZYL ALCOHOL": (108.14, 0.70, 0.65, 0.85, 1.71),
+    "ETHYLENE GLYCOL": (62.07, 0.90, 0.52, 0.92, 2.28),
+    "1,2-PROPANEDIOL": (76.09, 0.80, 0.60, 0.80, 2.20),
+    "M-CRESOL": (108.14, 0.82, 0.35, 0.88, 1.54),
+    "ACETIC ACID": (60.05, 0.61, 0.45, 0.65, 1.74),
+    # Polar Aprotic
+    "DIMETHYL SULFOXIDE": (78.13, 0.0, 0.76, 1.00, 3.96),
+    "DIMETHYLFORMAMIDE": (73.09, 0.0, 0.69, 0.88, 3.82),
+    "N-METHYLPYRROLIDONE": (99.13, 0.0, 0.77, 0.92, 4.09),
+    "1,5-DIMETHYL-2-PYRROLIDINONE": (113.16, 0.0, 0.75, 0.90, 4.00),
+    "1-ETHYL-2-PYRROLIDINONE": (113.16, 0.0, 0.76, 0.90, 4.05),
+    "1-METHYL-2-PIPERIDINONE": (113.16, 0.0, 0.77, 0.90, 4.00),
+    "FORMAMIDE": (45.04, 0.62, 0.60, 1.05, 3.73),
+    "N-METHYLFORMAMIDE": (59.07, 0.40, 0.70, 1.00, 3.83),
+    "N-ETHYLFORMAMIDE": (73.09, 0.38, 0.70, 0.98, 3.85),
+    "N,N-DIMETHYLACETAMIDE": (87.12, 0.0, 0.78, 0.88, 3.79),
+    "N-METHYLACETAMIDE": (73.09, 0.36, 0.74, 0.95, 3.75),
+    "N-ETHYLACETAMIDE": (87.12, 0.35, 0.74, 0.95, 3.75),
+    "N,N-DIETHYLACETAMIDE": (115.17, 0.0, 0.78, 0.85, 3.80),
+    "N,N-DIBUTYLFORMAMID": (157.25, 0.0, 0.75, 0.80, 3.70),
+    "4-FORMYLMORPHOLINE": (115.13, 0.0, 0.75, 0.95, 4.10),
+    "ACETONITRILE": (41.05, 0.04, 0.29, 0.75, 3.92),
+    "PROPIONITRILE": (55.08, 0.02, 0.30, 0.73, 4.05),
+    "BUTYRONITRILE": (69.11, 0.02, 0.30, 0.71, 4.10),
+    "BENZONITRILE": (103.12, 0.0, 0.33, 0.90, 4.18),
+    "NITROMETHANE": (61.04, 0.06, 0.28, 0.85, 3.46),
+    "NITROETHANE": (75.07, 0.04, 0.28, 0.83, 3.65),
+    "NITROBENZENE": (123.11, 0.0, 0.30, 0.86, 4.22),
+    "SULFOLANE": (120.17, 0.0, 0.39, 0.98, 4.81),
+    "PROPYLENE CARBONATE": (102.09, 0.0, 0.40, 0.83, 4.90),
+    "BUTYROLACTONE": (86.09, 0.0, 0.49, 0.86, 4.27),
+    "EPSILON-CAPROLACTONE": (114.14, 0.0, 0.50, 0.85, 4.20),
+    # Ketones
+    "ACETONE": (58.08, 0.04, 0.49, 0.71, 2.88),
+    "BUTANONE": (72.11, 0.0, 0.48, 0.67, 2.78),
+    "PENTAN-2-ONE": (86.13, 0.0, 0.48, 0.65, 2.70),
+    "3-PENTANONE": (86.13, 0.0, 0.48, 0.65, 2.70),
+    "2-HEXANONE": (100.16, 0.0, 0.48, 0.64, 2.70),
+    "3-HEXANONE": (100.16, 0.0, 0.48, 0.64, 2.70),
+    "4-METHYLPENTAN-2-ONE": (100.16, 0.0, 0.48, 0.62, 2.70),
+    "2-HEPTANONE": (114.19, 0.0, 0.48, 0.64, 2.70),
+    "CYCLOHEXANONE": (98.14, 0.0, 0.53, 0.76, 3.01),
+    "ACETOPHENONE": (120.15, 0.0, 0.48, 0.90, 3.05),
+    # Ethers
+    "TETRAHYDROFURAN": (72.11, 0.0, 0.55, 0.58, 1.63),
+    "1,4-DIOXANE": (88.11, 0.0, 0.37, 0.55, 0.45),
+    "TETRAHYDROPYRAN": (86.13, 0.0, 0.55, 0.55, 1.55),
+    "DIETHYL ETHER": (74.12, 0.0, 0.45, 0.27, 1.15),
+    "DIISOPROPYL ETHER": (102.17, 0.0, 0.49, 0.20, 1.13),
+    "DIBUTYL ETHER": (130.23, 0.0, 0.46, 0.24, 1.18),
+    "PROPYL ETHER": (102.17, 0.0, 0.46, 0.25, 1.15),
+    "METHYL TERT-BUTYL ETHER": (88.15, 0.0, 0.50, 0.24, 1.22),
+    "ETBE": (102.17, 0.0, 0.50, 0.24, 1.22),
+    "TERT-AMYL METHYL ETHER": (102.17, 0.0, 0.50, 0.24, 1.22),
+    "ANISOLE": (108.14, 0.0, 0.29, 0.73, 1.38),
+    "ETHYL PHENYL ETHER": (122.16, 0.0, 0.30, 0.70, 1.35),
+    "DIBENZYL ETHER": (198.26, 0.0, 0.35, 0.85, 1.35),
+    "1-METHOXYBUTANE": (88.15, 0.0, 0.46, 0.30, 1.20),
+    "1-ETHOXYBUTANE": (102.17, 0.0, 0.46, 0.28, 1.20),
+    "1-ETHOXYPROPANE": (88.15, 0.0, 0.46, 0.28, 1.20),
+    "2-METHOXYPROPANE": (74.12, 0.0, 0.48, 0.28, 1.20),
+    "METHOXYPROPANE": (74.12, 0.0, 0.48, 0.28, 1.20),
+    "METHOXYETHANOL": (76.09, 0.55, 0.65, 0.65, 2.04),
+    "2-ETHOXYETHANOL": (90.12, 0.52, 0.65, 0.60, 2.08),
+    "2-PROPOXYETHANOL": (104.15, 0.50, 0.65, 0.58, 2.05),
+    "2-ISOPROPOXYETHANOL": (104.15, 0.50, 0.65, 0.58, 2.05),
+    "2-BUTOXYETHANOL": (118.17, 0.50, 0.65, 0.58, 2.08),
+    "DIETHYLDIGLYCOL": (162.23, 0.0, 0.60, 0.55, 1.80),
+    "DIETHYLENE GLYCOL DIBUTYL ETHER": (218.33, 0.0, 0.60, 0.50, 1.80),
+    "TETRAETHYLENE GLYCOL DIMETHYL ETHER": (222.28, 0.0, 0.70, 0.70, 2.40),
+    "5,8,11,14-TETRAOXAOCTADECANE": (278.39, 0.0, 0.70, 0.60, 2.20),
+    # Esters
+    "METHYL ACETATE": (74.08, 0.0, 0.45, 0.60, 1.72),
+    "ETHYL ACETATE": (88.11, 0.0, 0.45, 0.55, 1.78),
+    "PROPYL ACETATE": (102.13, 0.0, 0.45, 0.53, 1.78),
+    "ISOPROPYL ACETATE": (102.13, 0.0, 0.47, 0.50, 1.80),
+    "BUTYL ACETATE": (116.16, 0.0, 0.45, 0.50, 1.84),
+    "ISOBUTYL ACETATE": (116.16, 0.0, 0.46, 0.48, 1.80),
+    "PENTYL ACETATE": (130.18, 0.0, 0.45, 0.48, 1.80),
+    "HEXYL ACETATE": (144.21, 0.0, 0.45, 0.46, 1.80),
+    "HEPTYLACETAT": (158.24, 0.0, 0.45, 0.46, 1.80),
+    "ETHYL BUTANOATE": (116.16, 0.0, 0.45, 0.48, 1.80),
+    "ETHYL HEXANOATE": (144.21, 0.0, 0.45, 0.46, 1.80),
+    "ETHYLBENZOATE": (150.17, 0.0, 0.41, 0.75, 2.00),
+    # Amines & Pyridines
+    "TRIETHYLAMINE": (101.19, 0.0, 0.71, 0.14, 0.66),
+    "PYRIDINE": (79.10, 0.0, 0.52, 0.87, 2.21),
+    "2-PICOLINE": (93.13, 0.0, 0.57, 0.80, 1.96),
+    "PHENYLAMINE": (93.13, 0.26, 0.50, 0.96, 1.53),
+    # Sulfur & Phosphorus Organics
+    "CARBON DISULFIDE": (76.14, 0.0, 0.06, 0.35, 0.0),
+    "TRIBUTYL PHOSPHATE": (266.32, 0.0, 0.77, 0.60, 3.07),
+}
+
+# Enrich registry instances with verified Abraham descriptors
+for _s_name, (_mw, _alpha, _beta, _pi2, _dipole) in _SOLVENT_ABRAHAM_DATA.items():
+    if _s_name in _SOLVENT_REGISTRY:
+        _old = _SOLVENT_REGISTRY[_s_name]
+        _SOLVENT_REGISTRY[_s_name] = SolventProperties(
+            name=_old.name,
+            aliases=_old.aliases,
+            dielectric_constant=_old.dielectric_constant,
+            refractive_index=_old.refractive_index,
+            density_g_cm3=_old.density_g_cm3,
+            surface_tension_mn_m=_old.surface_tension_mn_m,
+            solvent_class=_old.solvent_class,
+            molecular_weight=_mw,
+            abraham_alpha=_alpha,
+            abraham_beta=_beta,
+            abraham_pi2=_pi2,
+            dipole_moment_debye=_dipole,
+        )
+
 # Alias map for O(1) canonical resolution
 _ALIAS_MAP: Dict[str, str] = {}
 for _canon, _props in _SOLVENT_REGISTRY.items():
@@ -342,6 +547,11 @@ def get_solvent_properties(name: str) -> SolventProperties:
         density_g_cm3=0.85,
         surface_tension_mn_m=25.0,
         solvent_class="alkane_nonpolar",
+        molecular_weight=100.0,
+        abraham_alpha=0.0,
+        abraham_beta=0.0,
+        abraham_pi2=0.0,
+        dipole_moment_debye=0.0,
     )
 
 
@@ -351,6 +561,30 @@ def get_solvent_dielectric(name: str, default: float = 78.4) -> float:
         return 78.4
     props = get_solvent_properties(name)
     return props.dielectric_constant if props else default
+
+
+def get_solvent_descriptors_vector(name: str) -> np.ndarray:
+    """
+    Returns a standardized 7-dimensional physical descriptor vector for the solvent:
+    0: Onsager dielectric factor f_eps = (eps - 1) / (2*eps + 1) in [0, 0.5]
+    1: Lorentz-Lorenz polarizability factor f_n = (n^2 - 1) / (n^2 + 2) in [0.15, 0.4]
+    2: Cavitation surface tension ratio gamma / 72.8 in [0.2, 1.0]
+    3: Molar volume ratio V_m / 100.0 in [0.18, 3.0]
+    4: Abraham hydrogen-bond acidity alpha in [0.0, 1.2]
+    5: Abraham hydrogen-bond basicity beta in [0.0, 1.0]
+    6: Normalized dipole moment mu / 4.0 in [0.0, 1.2]
+    """
+    props = get_solvent_properties(name)
+    eps = max(1.0, props.dielectric_constant)
+    f_eps = (eps - 1.0) / (2.0 * eps + 1.0)
+    n = max(1.0, props.refractive_index)
+    f_n = (n**2 - 1.0) / (n**2 + 2.0)
+    gamma_ratio = props.surface_tension_mn_m / 72.8
+    v_m_ratio = props.molar_volume_cm3_mol / 100.0
+    alpha = props.abraham_alpha
+    beta = props.abraham_beta
+    dipole_norm = props.dipole_moment_debye / 4.0
+    return np.array([f_eps, f_n, gamma_ratio, v_m_ratio, alpha, beta, dipole_norm], dtype=np.float32)
 
 
 def list_registered_solvents() -> Tuple[str, ...]:

@@ -284,6 +284,7 @@ class EGNNForceField:
         total_charge: Optional[Tensor | float] = None,
         base_charges: Optional[Tensor] = None,
         solvent_features: Optional[Tensor] = None,
+        solvent_hbond_capacity: Optional[Union[float, Tensor]] = None,
         detach_trunk: bool = False,
         return_global: bool = False,
     ) -> Tuple[Tensor, ...]:
@@ -384,6 +385,13 @@ class EGNNForceField:
         delta_g_coop = (
             self.max_delta_global * (delta_coop_raw / self.max_delta_global).tanh() * molecule_mask.reshape(B)
         )
+        if solvent_hbond_capacity is not None:
+            if isinstance(solvent_hbond_capacity, (int, float)):
+                gate_s = math.tanh(max(0.0, float(solvent_hbond_capacity)) / 1.5)
+                delta_g_coop = delta_g_coop * gate_s
+            else:
+                gate_s = (solvent_hbond_capacity.maximum(0.0) / 1.5).tanh().reshape(B)
+                delta_g_coop = delta_g_coop * gate_s
 
         # Total molecular nonpolar + cooperative free energy modulation
         delta_vdw_mol = delta_vdw_mol_atomic + delta_g_coop
@@ -407,6 +415,7 @@ class EGNNForceField:
         total_charge: Optional[Union[float, Tensor]] = None,
         base_charges: Optional[Tensor] = None,
         solvent_features: Optional[Tensor] = None,
+        solvent_hbond_capacity: Optional[Union[float, Tensor]] = None,
         dielectric_constant: float = 78.4,
         gb_solver=None,
         detach_trunk: bool = False,
@@ -482,6 +491,18 @@ class EGNNForceField:
         else:
             sf_flat = None
 
+        if solvent_hbond_capacity is not None:
+            if isinstance(solvent_hbond_capacity, (int, float)):
+                cap_flat = float(solvent_hbond_capacity)
+            elif len(solvent_hbond_capacity.shape) == 0:
+                cap_flat = solvent_hbond_capacity
+            elif len(solvent_hbond_capacity.shape) == 1:
+                cap_flat = solvent_hbond_capacity.reshape(B, 1).expand(B, s).reshape(B * s)
+            else:
+                cap_flat = solvent_hbond_capacity.reshape(B * s)
+        else:
+            cap_flat = None
+
         # Execute single fused forward pass over all B * s conformers
         q_pred, delta_vdw_mol, delta_vdw_atomic, delta_g_coop, graph_features = self.compute_solvation_readouts(
             x=x_flat,
@@ -491,6 +512,7 @@ class EGNNForceField:
             total_charge=tq_flat,
             base_charges=bq_flat,
             solvent_features=sf_flat,
+            solvent_hbond_capacity=cap_flat,
             detach_trunk=detach_trunk,
             return_global=True,
         )
