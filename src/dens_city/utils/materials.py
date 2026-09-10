@@ -544,13 +544,16 @@ class Material:
         self,
         solvent_sigma: float = 2.8,
         solvent_rho: float = 0.0333,
-        solvent_epsilon_k: float = 120.0,
+        solvent_epsilon_k: Optional[float] = None,
+        refractive_index: Optional[float] = None,
         temp_k: Optional[float] = None,
     ) -> float:
         """
         Computes nonpolar solvation free energy (cavitation + WCA dispersion) in kcal/mol
         in a specific solvent environment with kinetic diameter `solvent_sigma`, density `solvent_rho`,
-        and dispersion depth `solvent_epsilon_k`.
+        and dispersion depth `solvent_epsilon_k`. If solvent_epsilon_k is not provided,
+        it is derived dynamically from the solvent's refractive index via the Lorentz-Lorenz
+        optical polarizability factor: eps_S = 120.0 * (f(n_D) / 0.205).
         """
         temp = temp_k if temp_k is not None else self.temperature_k
         sig_solute = self.effective_sigma
@@ -563,8 +566,18 @@ class Material:
             temp_k=temp,
         )
 
+        # Dynamic Lorentz-Lorenz polarizability scaling for solvent well depth:
+        if solvent_epsilon_k is not None:
+            eps_solvent = solvent_epsilon_k
+        elif refractive_index is not None:
+            n_d = max(1.0, float(refractive_index))
+            f_n = (n_d**2 - 1.0) / (n_d**2 + 2.0)
+            eps_solvent = 120.0 * (f_n / 0.205)
+        else:
+            eps_solvent = 120.0
+
         sig_12 = 0.5 * (sig_solute + solvent_sigma)
-        eps_12 = math.sqrt(max(1e-6, eps_solute * solvent_epsilon_k))
+        eps_12 = math.sqrt(max(1e-6, eps_solute * eps_solvent))
         v_att_int = compute_wca_dispersion_integral(sig_12, eps_12)
         mu_att_kbt = solvent_rho * (v_att_int / temp)
         dg_att = mu_att_kbt * (1.987204e-3 * temp)

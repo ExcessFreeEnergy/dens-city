@@ -500,6 +500,14 @@ def generate_test_data(
     print(f"  Generating Force Field Parameters & GAFF Database in {target_dir}...")
     generate_forcefield_database(target_dir)
 
+    src_solv_db = root / "src" / "dens_city" / "data" / "solvent_database.json"
+    if not src_solv_db.exists():
+        src_solv_db = root / "data" / "solvent_database.json"
+    if src_solv_db.exists():
+        dst_solv_db = target_dir / "solvent_database.json"
+        if not dst_solv_db.exists():
+            shutil.copy2(src_solv_db, dst_solv_db)
+
     mol2_files = list(target_dir.glob("*.mol2"))
     print("--------------------------------------------------------------------------------")
     print(f"  Verification: Found {len(mol2_files)} total .mol2 files in {target_dir}")

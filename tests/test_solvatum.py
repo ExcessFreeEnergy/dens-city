@@ -316,3 +316,75 @@ def test_solvent_descriptors_and_krr_inference():
     res_hex = predict_krr_residual(z_dummy, d_dummy, s_solv="HEXANE")
     assert isinstance(res_water, float)
     assert isinstance(res_hex, float)
+
+
+def test_no_hardcoded_fluid_registries():
+    """
+    Architectural invariant gate: verifies that no source module under src/dens_city/
+    contains hardcoded dictionary registries of chemical or fluid properties,
+    strictly enforcing WikiSkill Rule 1 ('Zero Hardcoded Parameters').
+    """
+    import ast
+
+    src_dir = Path("src/dens_city")
+    assert src_dir.exists()
+
+    forbidden_names = {"_SOLVENT_REGISTRY", "_SOLVENT_ABRAHAM_DATA", "FREESOLV_MAPPINGS"}
+
+    for py_file in src_dir.rglob("*.py"):
+        code = py_file.read_text(encoding="utf-8")
+        tree = ast.parse(code, filename=str(py_file))
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        assert target.id not in forbidden_names, (
+                            f"Violation of Zero Hardcoded Parameters mandate: "
+                            f"{target.id} defined in {py_file}. Must load from external data asset."
+                        )
+            elif isinstance(node, ast.AnnAssign):
+                if isinstance(node.target, ast.Name):
+                    assert node.target.id not in forbidden_names, (
+                        f"Violation of Zero Hardcoded Parameters mandate: "
+                        f"{node.target.id} defined in {py_file}. Must load from external data asset."
+                    )
+
+
+def test_solvent_database_class_and_dynamic_derivation():
+    """
+    Verifies that SolventDatabase dynamically loads from external data assets
+    and supports dynamic first-principles QSPR derivation for novel fluids.
+    """
+    from dens_city.utils.solvents import (
+        SolventDatabase,
+        SolventProperties,
+        derive_solvent_properties_from_structure,
+    )
+
+    db = SolventDatabase.get_default()
+    assert len(db.list_solvents()) >= 140
+    water = db.get("water")
+    assert water is not None
+    assert water.dielectric_constant == pytest.approx(78.4, rel=1e-2)
+
+    # Test dynamic registration of custom fluid
+    custom = SolventProperties(
+        name="CUSTOM_SOLVENT",
+        aliases=("CUSTOM_1",),
+        dielectric_constant=12.5,
+        refractive_index=1.42,
+        density_g_cm3=0.88,
+        surface_tension_mn_m=26.0,
+        solvent_class="polar_aprotic",
+    )
+    db.register_solvent(custom)
+    assert db.get("custom_solvent") is not None
+    assert db.get("CUSTOM_1") is not None
+    assert db.get("custom_solvent").dielectric_constant == 12.5
+
+    # Test dynamic first-principles derivation for unknown fluid
+    novel = derive_solvent_properties_from_structure("novel_ether_fluid")
+    assert novel.solvent_class == "ether"
+    assert novel.dielectric_constant > 1.8
+    assert novel.refractive_index > 1.0

@@ -165,7 +165,7 @@ class EGNNForceField:
             Tensor.silu,
             nn.Linear(hidden_dim, 1),
         ]
-        self.max_delta_global = 12.0  # Max allowed molecular cooperative perturbation |ΔG_coop| <= 12.0 kcal/mol
+        self.max_delta_global = 25.0  # Max allowed molecular cooperative perturbation |ΔG_coop| <= 25.0 kcal/mol
         # Zero-initialize output layer so initial cooperative perturbations start cleanly at 0.0
         self.global_mlp[2].weight = Tensor.zeros(1, hidden_dim, dtype=dtypes.float32)
         self.global_mlp[2].bias = Tensor.zeros(1, dtype=dtypes.float32)

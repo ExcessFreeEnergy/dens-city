@@ -1,0 +1,2261 @@
+{
+  "WATER": {
+    "name": "WATER",
+    "aliases": [
+      "H2O",
+      "AQUEOUS"
+    ],
+    "dielectric_constant": 78.4,
+    "refractive_index": 1.333,
+    "density_g_cm3": 0.997,
+    "surface_tension_mn_m": 72.8,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 18.015,
+    "abraham_alpha": 1.17,
+    "abraham_beta": 0.47,
+    "abraham_pi2": 1.09,
+    "dipole_moment_debye": 1.85
+  },
+  "HEXADECANE": {
+    "name": "HEXADECANE",
+    "aliases": [
+      "N-HEXADECANE",
+      "CETANE"
+    ],
+    "dielectric_constant": 2.05,
+    "refractive_index": 1.434,
+    "density_g_cm3": 0.773,
+    "surface_tension_mn_m": 27.5,
+    "solvent_class": "alkane_nonpolar",
+    "molecular_weight": 226.44,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.0,
+    "abraham_pi2": 0.0,
+    "dipole_moment_debye": 0.0
+  },
+  "HEPTANE": {
+    "name": "HEPTANE",
+    "aliases": [
+      "N-HEPTANE"
+    ],
+    "dielectric_constant": 1.92,
+    "refractive_index": 1.388,
+    "density_g_cm3": 0.684,
+    "surface_tension_mn_m": 20.1,
+    "solvent_class": "alkane_nonpolar",
+    "molecular_weight": 100.2,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.0,
+    "abraham_pi2": 0.0,
+    "dipole_moment_debye": 0.0
+  },
+  "HEXANE": {
+    "name": "HEXANE",
+    "aliases": [
+      "N-HEXANE"
+    ],
+    "dielectric_constant": 1.88,
+    "refractive_index": 1.375,
+    "density_g_cm3": 0.655,
+    "surface_tension_mn_m": 18.4,
+    "solvent_class": "alkane_nonpolar",
+    "molecular_weight": 86.18,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.0,
+    "abraham_pi2": 0.0,
+    "dipole_moment_debye": 0.0
+  },
+  "OCTANE": {
+    "name": "OCTANE",
+    "aliases": [
+      "N-OCTANE"
+    ],
+    "dielectric_constant": 1.95,
+    "refractive_index": 1.397,
+    "density_g_cm3": 0.703,
+    "surface_tension_mn_m": 21.6,
+    "solvent_class": "alkane_nonpolar",
+    "molecular_weight": 114.23,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.0,
+    "abraham_pi2": 0.0,
+    "dipole_moment_debye": 0.0
+  },
+  "NONANE": {
+    "name": "NONANE",
+    "aliases": [
+      "N-NONANE"
+    ],
+    "dielectric_constant": 1.97,
+    "refractive_index": 1.405,
+    "density_g_cm3": 0.718,
+    "surface_tension_mn_m": 22.8,
+    "solvent_class": "alkane_nonpolar",
+    "molecular_weight": 128.26,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.0,
+    "abraham_pi2": 0.0,
+    "dipole_moment_debye": 0.0
+  },
+  "DECANE": {
+    "name": "DECANE",
+    "aliases": [
+      "N-DECANE"
+    ],
+    "dielectric_constant": 1.99,
+    "refractive_index": 1.411,
+    "density_g_cm3": 0.73,
+    "surface_tension_mn_m": 23.8,
+    "solvent_class": "alkane_nonpolar",
+    "molecular_weight": 142.28,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.0,
+    "abraham_pi2": 0.0,
+    "dipole_moment_debye": 0.0
+  },
+  "UNDECANE": {
+    "name": "UNDECANE",
+    "aliases": [
+      "N-UNDECANE"
+    ],
+    "dielectric_constant": 2.01,
+    "refractive_index": 1.417,
+    "density_g_cm3": 0.74,
+    "surface_tension_mn_m": 24.7,
+    "solvent_class": "alkane_nonpolar",
+    "molecular_weight": 156.31,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.0,
+    "abraham_pi2": 0.0,
+    "dipole_moment_debye": 0.0
+  },
+  "DODECANE": {
+    "name": "DODECANE",
+    "aliases": [
+      "N-DODECANE"
+    ],
+    "dielectric_constant": 2.01,
+    "refractive_index": 1.422,
+    "density_g_cm3": 0.749,
+    "surface_tension_mn_m": 25.4,
+    "solvent_class": "alkane_nonpolar",
+    "molecular_weight": 170.33,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.0,
+    "abraham_pi2": 0.0,
+    "dipole_moment_debye": 0.0
+  },
+  "TETRADECANE": {
+    "name": "TETRADECANE",
+    "aliases": [
+      "N-TETRADECANE"
+    ],
+    "dielectric_constant": 2.04,
+    "refractive_index": 1.429,
+    "density_g_cm3": 0.763,
+    "surface_tension_mn_m": 26.5,
+    "solvent_class": "alkane_nonpolar",
+    "molecular_weight": 198.39,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.0,
+    "abraham_pi2": 0.0,
+    "dipole_moment_debye": 0.0
+  },
+  "PENTANE": {
+    "name": "PENTANE",
+    "aliases": [
+      "N-PENTANE"
+    ],
+    "dielectric_constant": 1.84,
+    "refractive_index": 1.358,
+    "density_g_cm3": 0.626,
+    "surface_tension_mn_m": 16.0,
+    "solvent_class": "alkane_nonpolar",
+    "molecular_weight": 72.15,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.0,
+    "abraham_pi2": 0.0,
+    "dipole_moment_debye": 0.0
+  },
+  "2,2,4-TRIMETHYLPENTANE": {
+    "name": "2,2,4-TRIMETHYLPENTANE",
+    "aliases": [
+      "ISOOCTANE",
+      "ISO-OCTANE"
+    ],
+    "dielectric_constant": 1.94,
+    "refractive_index": 1.391,
+    "density_g_cm3": 0.692,
+    "surface_tension_mn_m": 18.8,
+    "solvent_class": "alkane_nonpolar",
+    "molecular_weight": 114.23,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.0,
+    "abraham_pi2": 0.0,
+    "dipole_moment_debye": 0.0
+  },
+  "CYCLOOCTANE": {
+    "name": "CYCLOOCTANE",
+    "aliases": [],
+    "dielectric_constant": 2.09,
+    "refractive_index": 1.458,
+    "density_g_cm3": 0.836,
+    "surface_tension_mn_m": 30.0,
+    "solvent_class": "alkane_nonpolar",
+    "molecular_weight": 112.21,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.0,
+    "abraham_pi2": 0.0,
+    "dipole_moment_debye": 0.0
+  },
+  "METHYLCYCLOHEXANE": {
+    "name": "METHYLCYCLOHEXANE",
+    "aliases": [],
+    "dielectric_constant": 2.02,
+    "refractive_index": 1.423,
+    "density_g_cm3": 0.77,
+    "surface_tension_mn_m": 23.3,
+    "solvent_class": "alkane_nonpolar",
+    "molecular_weight": 98.19,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.0,
+    "abraham_pi2": 0.0,
+    "dipole_moment_debye": 0.0
+  },
+  "1-HEXADECENE": {
+    "name": "1-HEXADECENE",
+    "aliases": [],
+    "dielectric_constant": 2.1,
+    "refractive_index": 1.441,
+    "density_g_cm3": 0.783,
+    "surface_tension_mn_m": 27.8,
+    "solvent_class": "alkane_nonpolar",
+    "molecular_weight": 224.43,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.08,
+    "abraham_pi2": 0.08,
+    "dipole_moment_debye": 0.4
+  },
+  "CHLOROFORM": {
+    "name": "CHLOROFORM",
+    "aliases": [
+      "TRICHLOROMETHANE"
+    ],
+    "dielectric_constant": 4.81,
+    "refractive_index": 1.446,
+    "density_g_cm3": 1.489,
+    "surface_tension_mn_m": 27.2,
+    "solvent_class": "chlorinated",
+    "molecular_weight": 119.38,
+    "abraham_alpha": 0.2,
+    "abraham_beta": 0.02,
+    "abraham_pi2": 0.58,
+    "dipole_moment_debye": 1.04
+  },
+  "CARBON TETRACHLORIDE": {
+    "name": "CARBON TETRACHLORIDE",
+    "aliases": [
+      "TETRACHLOROMETHANE"
+    ],
+    "dielectric_constant": 2.24,
+    "refractive_index": 1.46,
+    "density_g_cm3": 1.594,
+    "surface_tension_mn_m": 26.4,
+    "solvent_class": "chlorinated",
+    "molecular_weight": 153.82,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.0,
+    "abraham_pi2": 0.38,
+    "dipole_moment_debye": 0.0
+  },
+  "DICHLOROMETHANE": {
+    "name": "DICHLOROMETHANE",
+    "aliases": [
+      "METHYLENE CHLORIDE",
+      "DCM"
+    ],
+    "dielectric_constant": 8.93,
+    "refractive_index": 1.424,
+    "density_g_cm3": 1.326,
+    "surface_tension_mn_m": 28.1,
+    "solvent_class": "chlorinated",
+    "molecular_weight": 84.93,
+    "abraham_alpha": 0.1,
+    "abraham_beta": 0.05,
+    "abraham_pi2": 0.82,
+    "dipole_moment_debye": 1.6
+  },
+  "DICHLOROETHANE": {
+    "name": "DICHLOROETHANE",
+    "aliases": [
+      "1,2-DICHLOROETHANE",
+      "EDC"
+    ],
+    "dielectric_constant": 10.36,
+    "refractive_index": 1.445,
+    "density_g_cm3": 1.253,
+    "surface_tension_mn_m": 32.2,
+    "solvent_class": "chlorinated",
+    "molecular_weight": 98.96,
+    "abraham_alpha": 0.1,
+    "abraham_beta": 0.11,
+    "abraham_pi2": 0.81,
+    "dipole_moment_debye": 1.83
+  },
+  "1-CHLOROBUTANE": {
+    "name": "1-CHLOROBUTANE",
+    "aliases": [
+      "BUTYL CHLORIDE"
+    ],
+    "dielectric_constant": 7.39,
+    "refractive_index": 1.402,
+    "density_g_cm3": 0.886,
+    "surface_tension_mn_m": 23.8,
+    "solvent_class": "chlorinated",
+    "molecular_weight": 92.57,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.05,
+    "abraham_pi2": 0.4,
+    "dipole_moment_debye": 1.9
+  },
+  "CHLOROBENZENE": {
+    "name": "CHLOROBENZENE",
+    "aliases": [],
+    "dielectric_constant": 5.62,
+    "refractive_index": 1.524,
+    "density_g_cm3": 1.106,
+    "surface_tension_mn_m": 33.6,
+    "solvent_class": "chlorinated",
+    "molecular_weight": 112.56,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.07,
+    "abraham_pi2": 0.71,
+    "dipole_moment_debye": 1.54
+  },
+  "BROMOBENZENE": {
+    "name": "BROMOBENZENE",
+    "aliases": [],
+    "dielectric_constant": 5.4,
+    "refractive_index": 1.559,
+    "density_g_cm3": 1.495,
+    "surface_tension_mn_m": 36.5,
+    "solvent_class": "chlorinated",
+    "molecular_weight": 157.01,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.06,
+    "abraham_pi2": 0.73,
+    "dipole_moment_debye": 1.7
+  },
+  "BROMOETHANE": {
+    "name": "BROMOETHANE",
+    "aliases": [
+      "ETHYL BROMIDE"
+    ],
+    "dielectric_constant": 9.4,
+    "refractive_index": 1.424,
+    "density_g_cm3": 1.46,
+    "surface_tension_mn_m": 24.2,
+    "solvent_class": "chlorinated",
+    "molecular_weight": 108.97,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.05,
+    "abraham_pi2": 0.4,
+    "dipole_moment_debye": 2.03
+  },
+  "FLUOROBENZENE": {
+    "name": "FLUOROBENZENE",
+    "aliases": [],
+    "dielectric_constant": 5.42,
+    "refractive_index": 1.465,
+    "density_g_cm3": 1.024,
+    "surface_tension_mn_m": 27.7,
+    "solvent_class": "chlorinated",
+    "molecular_weight": 96.1,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.07,
+    "abraham_pi2": 0.62,
+    "dipole_moment_debye": 1.6
+  },
+  "IODOBENZENE": {
+    "name": "IODOBENZENE",
+    "aliases": [],
+    "dielectric_constant": 4.6,
+    "refractive_index": 1.62,
+    "density_g_cm3": 1.831,
+    "surface_tension_mn_m": 39.8,
+    "solvent_class": "chlorinated",
+    "molecular_weight": 204.01,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.07,
+    "abraham_pi2": 0.81,
+    "dipole_moment_debye": 1.7
+  },
+  "DIIODOMETHANE": {
+    "name": "DIIODOMETHANE",
+    "aliases": [
+      "METHYLENE IODIDE"
+    ],
+    "dielectric_constant": 5.32,
+    "refractive_index": 1.742,
+    "density_g_cm3": 3.325,
+    "surface_tension_mn_m": 50.8,
+    "solvent_class": "chlorinated",
+    "molecular_weight": 267.84,
+    "abraham_alpha": 0.05,
+    "abraham_beta": 0.05,
+    "abraham_pi2": 0.9,
+    "dipole_moment_debye": 1.1
+  },
+  "PERFLUOROBENZENE": {
+    "name": "PERFLUOROBENZENE",
+    "aliases": [
+      "HEXAFLUOROBENZENE"
+    ],
+    "dielectric_constant": 2.05,
+    "refractive_index": 1.377,
+    "density_g_cm3": 1.612,
+    "surface_tension_mn_m": 21.6,
+    "solvent_class": "chlorinated",
+    "molecular_weight": 186.05,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.0,
+    "abraham_pi2": -0.02,
+    "dipole_moment_debye": 0.0
+  },
+  "TOLUENE": {
+    "name": "TOLUENE",
+    "aliases": [
+      "METHYLBENZENE"
+    ],
+    "dielectric_constant": 2.38,
+    "refractive_index": 1.496,
+    "density_g_cm3": 0.867,
+    "surface_tension_mn_m": 28.5,
+    "solvent_class": "aromatic",
+    "molecular_weight": 92.14,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.11,
+    "abraham_pi2": 0.55,
+    "dipole_moment_debye": 0.36
+  },
+  "M-XYLENE": {
+    "name": "M-XYLENE",
+    "aliases": [
+      "1,3-DIMETHYLBENZENE"
+    ],
+    "dielectric_constant": 2.37,
+    "refractive_index": 1.497,
+    "density_g_cm3": 0.864,
+    "surface_tension_mn_m": 28.9,
+    "solvent_class": "aromatic",
+    "molecular_weight": 106.17,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.16,
+    "abraham_pi2": 0.52,
+    "dipole_moment_debye": 0.3
+  },
+  "O-XYLENE": {
+    "name": "O-XYLENE",
+    "aliases": [
+      "1,2-DIMETHYLBENZENE"
+    ],
+    "dielectric_constant": 2.57,
+    "refractive_index": 1.505,
+    "density_g_cm3": 0.88,
+    "surface_tension_mn_m": 30.1,
+    "solvent_class": "aromatic",
+    "molecular_weight": 106.17,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.16,
+    "abraham_pi2": 0.56,
+    "dipole_moment_debye": 0.62
+  },
+  "P-XYLENE": {
+    "name": "P-XYLENE",
+    "aliases": [
+      "1,4-DIMETHYLBENZENE"
+    ],
+    "dielectric_constant": 2.27,
+    "refractive_index": 1.496,
+    "density_g_cm3": 0.861,
+    "surface_tension_mn_m": 28.3,
+    "solvent_class": "aromatic",
+    "molecular_weight": 106.17,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.16,
+    "abraham_pi2": 0.52,
+    "dipole_moment_debye": 0.0
+  },
+  "ETHYLBENZENE": {
+    "name": "ETHYLBENZENE",
+    "aliases": [],
+    "dielectric_constant": 2.4,
+    "refractive_index": 1.495,
+    "density_g_cm3": 0.867,
+    "surface_tension_mn_m": 29.0,
+    "solvent_class": "aromatic",
+    "molecular_weight": 106.17,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.15,
+    "abraham_pi2": 0.51,
+    "dipole_moment_debye": 0.59
+  },
+  "METHANOL": {
+    "name": "METHANOL",
+    "aliases": [
+      "MEOH"
+    ],
+    "dielectric_constant": 32.7,
+    "refractive_index": 1.328,
+    "density_g_cm3": 0.791,
+    "surface_tension_mn_m": 22.5,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 32.04,
+    "abraham_alpha": 0.93,
+    "abraham_beta": 0.62,
+    "abraham_pi2": 0.6,
+    "dipole_moment_debye": 1.7
+  },
+  "ETHANOL": {
+    "name": "ETHANOL",
+    "aliases": [
+      "ETOH"
+    ],
+    "dielectric_constant": 24.5,
+    "refractive_index": 1.361,
+    "density_g_cm3": 0.789,
+    "surface_tension_mn_m": 22.3,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 46.07,
+    "abraham_alpha": 0.83,
+    "abraham_beta": 0.77,
+    "abraham_pi2": 0.54,
+    "dipole_moment_debye": 1.69
+  },
+  "1-PROPANOL": {
+    "name": "1-PROPANOL",
+    "aliases": [
+      "N-PROPANOL"
+    ],
+    "dielectric_constant": 20.1,
+    "refractive_index": 1.385,
+    "density_g_cm3": 0.804,
+    "surface_tension_mn_m": 23.8,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 60.1,
+    "abraham_alpha": 0.78,
+    "abraham_beta": 0.78,
+    "abraham_pi2": 0.52,
+    "dipole_moment_debye": 1.68
+  },
+  "ISOPROPANOL": {
+    "name": "ISOPROPANOL",
+    "aliases": [
+      "2-PROPANOL",
+      "IPA"
+    ],
+    "dielectric_constant": 19.9,
+    "refractive_index": 1.377,
+    "density_g_cm3": 0.785,
+    "surface_tension_mn_m": 21.7,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 60.1,
+    "abraham_alpha": 0.76,
+    "abraham_beta": 0.84,
+    "abraham_pi2": 0.48,
+    "dipole_moment_debye": 1.66
+  },
+  "N-BUTANOL": {
+    "name": "N-BUTANOL",
+    "aliases": [
+      "1-BUTANOL"
+    ],
+    "dielectric_constant": 17.5,
+    "refractive_index": 1.399,
+    "density_g_cm3": 0.81,
+    "surface_tension_mn_m": 24.6,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 74.12,
+    "abraham_alpha": 0.73,
+    "abraham_beta": 0.85,
+    "abraham_pi2": 0.47,
+    "dipole_moment_debye": 1.66
+  },
+  "ISOBUTANOL": {
+    "name": "ISOBUTANOL",
+    "aliases": [
+      "2-METHYLPROPAN-1-OL"
+    ],
+    "dielectric_constant": 16.6,
+    "refractive_index": 1.396,
+    "density_g_cm3": 0.803,
+    "surface_tension_mn_m": 23.0,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 74.12,
+    "abraham_alpha": 0.73,
+    "abraham_beta": 0.84,
+    "abraham_pi2": 0.4,
+    "dipole_moment_debye": 1.79
+  },
+  "2-BUTANOL": {
+    "name": "2-BUTANOL",
+    "aliases": [
+      "SEC-BUTANOL"
+    ],
+    "dielectric_constant": 16.6,
+    "refractive_index": 1.397,
+    "density_g_cm3": 0.806,
+    "surface_tension_mn_m": 23.5,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 74.12,
+    "abraham_alpha": 0.69,
+    "abraham_beta": 0.8,
+    "abraham_pi2": 0.4,
+    "dipole_moment_debye": 1.66
+  },
+  "TERT-BUTANOL": {
+    "name": "TERT-BUTANOL",
+    "aliases": [
+      "2-METHYLPROPAN-2-OL"
+    ],
+    "dielectric_constant": 12.4,
+    "refractive_index": 1.387,
+    "density_g_cm3": 0.786,
+    "surface_tension_mn_m": 20.7,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 74.12,
+    "abraham_alpha": 0.68,
+    "abraham_beta": 0.93,
+    "abraham_pi2": 0.41,
+    "dipole_moment_debye": 1.66
+  },
+  "PENTANOL": {
+    "name": "PENTANOL",
+    "aliases": [
+      "1-PENTANOL",
+      "N-PENTANOL"
+    ],
+    "dielectric_constant": 15.1,
+    "refractive_index": 1.41,
+    "density_g_cm3": 0.814,
+    "surface_tension_mn_m": 25.8,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 88.15,
+    "abraham_alpha": 0.66,
+    "abraham_beta": 0.84,
+    "abraham_pi2": 0.45,
+    "dipole_moment_debye": 1.68
+  },
+  "2-PENTANOL": {
+    "name": "2-PENTANOL",
+    "aliases": [],
+    "dielectric_constant": 13.7,
+    "refractive_index": 1.406,
+    "density_g_cm3": 0.81,
+    "surface_tension_mn_m": 24.5,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 88.15,
+    "abraham_alpha": 0.65,
+    "abraham_beta": 0.82,
+    "abraham_pi2": 0.42,
+    "dipole_moment_debye": 1.66
+  },
+  "PENTAN-3-OL": {
+    "name": "PENTAN-3-OL",
+    "aliases": [
+      "3-PENTANOL"
+    ],
+    "dielectric_constant": 13.0,
+    "refractive_index": 1.408,
+    "density_g_cm3": 0.82,
+    "surface_tension_mn_m": 24.8,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 88.15,
+    "abraham_alpha": 0.65,
+    "abraham_beta": 0.82,
+    "abraham_pi2": 0.42,
+    "dipole_moment_debye": 1.66
+  },
+  "2-METHYLBUTAN-1-OL": {
+    "name": "2-METHYLBUTAN-1-OL",
+    "aliases": [],
+    "dielectric_constant": 14.7,
+    "refractive_index": 1.41,
+    "density_g_cm3": 0.819,
+    "surface_tension_mn_m": 25.2,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 88.15,
+    "abraham_alpha": 0.66,
+    "abraham_beta": 0.84,
+    "abraham_pi2": 0.44,
+    "dipole_moment_debye": 1.68
+  },
+  "3-METHYLBUTAN-1-OL": {
+    "name": "3-METHYLBUTAN-1-OL",
+    "aliases": [
+      "ISOAMYL ALCOHOL"
+    ],
+    "dielectric_constant": 15.2,
+    "refractive_index": 1.406,
+    "density_g_cm3": 0.813,
+    "surface_tension_mn_m": 24.8,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 88.15,
+    "abraham_alpha": 0.66,
+    "abraham_beta": 0.84,
+    "abraham_pi2": 0.44,
+    "dipole_moment_debye": 1.68
+  },
+  "TERT-AMYL ALCOHOL": {
+    "name": "TERT-AMYL ALCOHOL",
+    "aliases": [
+      "2-METHYL-2-BUTANOL"
+    ],
+    "dielectric_constant": 5.8,
+    "refractive_index": 1.405,
+    "density_g_cm3": 0.809,
+    "surface_tension_mn_m": 22.0,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 88.15,
+    "abraham_alpha": 0.6,
+    "abraham_beta": 0.9,
+    "abraham_pi2": 0.4,
+    "dipole_moment_debye": 1.66
+  },
+  "HEXANOL": {
+    "name": "HEXANOL",
+    "aliases": [
+      "1-HEXANOL",
+      "N-HEXANOL"
+    ],
+    "dielectric_constant": 13.3,
+    "refractive_index": 1.418,
+    "density_g_cm3": 0.819,
+    "surface_tension_mn_m": 26.2,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 102.17,
+    "abraham_alpha": 0.63,
+    "abraham_beta": 0.82,
+    "abraham_pi2": 0.42,
+    "dipole_moment_debye": 1.68
+  },
+  "2-HEXANOL": {
+    "name": "2-HEXANOL",
+    "aliases": [],
+    "dielectric_constant": 11.0,
+    "refractive_index": 1.414,
+    "density_g_cm3": 0.81,
+    "surface_tension_mn_m": 25.1,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 102.17,
+    "abraham_alpha": 0.62,
+    "abraham_beta": 0.8,
+    "abraham_pi2": 0.4,
+    "dipole_moment_debye": 1.66
+  },
+  "3-HEXANOL": {
+    "name": "3-HEXANOL",
+    "aliases": [],
+    "dielectric_constant": 10.5,
+    "refractive_index": 1.414,
+    "density_g_cm3": 0.82,
+    "surface_tension_mn_m": 25.0,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 102.17,
+    "abraham_alpha": 0.62,
+    "abraham_beta": 0.8,
+    "abraham_pi2": 0.4,
+    "dipole_moment_debye": 1.66
+  },
+  "4-METHYLPENTAN-2-OL": {
+    "name": "4-METHYLPENTAN-2-OL",
+    "aliases": [
+      "METHYL ISOBUTYL CARBINOL"
+    ],
+    "dielectric_constant": 11.2,
+    "refractive_index": 1.411,
+    "density_g_cm3": 0.808,
+    "surface_tension_mn_m": 23.5,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 102.17,
+    "abraham_alpha": 0.62,
+    "abraham_beta": 0.8,
+    "abraham_pi2": 0.4,
+    "dipole_moment_debye": 1.66
+  },
+  "HEPTAN-1-OL": {
+    "name": "HEPTAN-1-OL",
+    "aliases": [
+      "1-HEPTANOL"
+    ],
+    "dielectric_constant": 11.8,
+    "refractive_index": 1.424,
+    "density_g_cm3": 0.822,
+    "surface_tension_mn_m": 26.8,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 116.2,
+    "abraham_alpha": 0.62,
+    "abraham_beta": 0.8,
+    "abraham_pi2": 0.42,
+    "dipole_moment_debye": 1.68
+  },
+  "2-HEPTANOL": {
+    "name": "2-HEPTANOL",
+    "aliases": [],
+    "dielectric_constant": 9.5,
+    "refractive_index": 1.421,
+    "density_g_cm3": 0.817,
+    "surface_tension_mn_m": 25.9,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 116.2,
+    "abraham_alpha": 0.61,
+    "abraham_beta": 0.8,
+    "abraham_pi2": 0.4,
+    "dipole_moment_debye": 1.66
+  },
+  "4-HEPTANOL": {
+    "name": "4-HEPTANOL",
+    "aliases": [],
+    "dielectric_constant": 8.5,
+    "refractive_index": 1.42,
+    "density_g_cm3": 0.818,
+    "surface_tension_mn_m": 25.5,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 116.2,
+    "abraham_alpha": 0.61,
+    "abraham_beta": 0.8,
+    "abraham_pi2": 0.4,
+    "dipole_moment_debye": 1.66
+  },
+  "1-OCTANOL": {
+    "name": "1-OCTANOL",
+    "aliases": [
+      "OCTANOL",
+      "N-OCTANOL"
+    ],
+    "dielectric_constant": 10.3,
+    "refractive_index": 1.429,
+    "density_g_cm3": 0.824,
+    "surface_tension_mn_m": 27.5,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 130.23,
+    "abraham_alpha": 0.6,
+    "abraham_beta": 0.79,
+    "abraham_pi2": 0.4,
+    "dipole_moment_debye": 1.68
+  },
+  "2-ETHYLHEXANOL": {
+    "name": "2-ETHYLHEXANOL",
+    "aliases": [],
+    "dielectric_constant": 7.7,
+    "refractive_index": 1.431,
+    "density_g_cm3": 0.833,
+    "surface_tension_mn_m": 27.0,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 130.23,
+    "abraham_alpha": 0.58,
+    "abraham_beta": 0.8,
+    "abraham_pi2": 0.4,
+    "dipole_moment_debye": 1.68
+  },
+  "4-OCTANOL": {
+    "name": "4-OCTANOL",
+    "aliases": [],
+    "dielectric_constant": 7.0,
+    "refractive_index": 1.425,
+    "density_g_cm3": 0.82,
+    "surface_tension_mn_m": 26.2,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 130.23,
+    "abraham_alpha": 0.58,
+    "abraham_beta": 0.8,
+    "abraham_pi2": 0.4,
+    "dipole_moment_debye": 1.66
+  },
+  "NONANOL": {
+    "name": "NONANOL",
+    "aliases": [
+      "1-NONANOL"
+    ],
+    "dielectric_constant": 8.8,
+    "refractive_index": 1.433,
+    "density_g_cm3": 0.827,
+    "surface_tension_mn_m": 28.1,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 144.25,
+    "abraham_alpha": 0.57,
+    "abraham_beta": 0.79,
+    "abraham_pi2": 0.4,
+    "dipole_moment_debye": 1.68
+  },
+  "DECAN-1-OL": {
+    "name": "DECAN-1-OL",
+    "aliases": [
+      "1-DECANOL"
+    ],
+    "dielectric_constant": 8.1,
+    "refractive_index": 1.437,
+    "density_g_cm3": 0.829,
+    "surface_tension_mn_m": 28.9,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 158.28,
+    "abraham_alpha": 0.57,
+    "abraham_beta": 0.79,
+    "abraham_pi2": 0.4,
+    "dipole_moment_debye": 1.68
+  },
+  "UNDECANOL": {
+    "name": "UNDECANOL",
+    "aliases": [
+      "1-UNDECANOL"
+    ],
+    "dielectric_constant": 7.2,
+    "refractive_index": 1.44,
+    "density_g_cm3": 0.83,
+    "surface_tension_mn_m": 29.5,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 172.31,
+    "abraham_alpha": 0.55,
+    "abraham_beta": 0.78,
+    "abraham_pi2": 0.4,
+    "dipole_moment_debye": 1.68
+  },
+  "DODECAN-1-OL": {
+    "name": "DODECAN-1-OL",
+    "aliases": [
+      "1-DODECANOL",
+      "LAURYL ALCOHOL"
+    ],
+    "dielectric_constant": 6.5,
+    "refractive_index": 1.442,
+    "density_g_cm3": 0.833,
+    "surface_tension_mn_m": 30.1,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 186.33,
+    "abraham_alpha": 0.55,
+    "abraham_beta": 0.78,
+    "abraham_pi2": 0.4,
+    "dipole_moment_debye": 1.68
+  },
+  "ALLYL ALCOHOL": {
+    "name": "ALLYL ALCOHOL",
+    "aliases": [],
+    "dielectric_constant": 19.7,
+    "refractive_index": 1.413,
+    "density_g_cm3": 0.854,
+    "surface_tension_mn_m": 25.8,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 58.08,
+    "abraham_alpha": 0.75,
+    "abraham_beta": 0.7,
+    "abraham_pi2": 0.6,
+    "dipole_moment_debye": 1.6
+  },
+  "BENZYL ALCOHOL": {
+    "name": "BENZYL ALCOHOL",
+    "aliases": [],
+    "dielectric_constant": 13.1,
+    "refractive_index": 1.54,
+    "density_g_cm3": 1.044,
+    "surface_tension_mn_m": 39.0,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 108.14,
+    "abraham_alpha": 0.7,
+    "abraham_beta": 0.65,
+    "abraham_pi2": 0.85,
+    "dipole_moment_debye": 1.71
+  },
+  "ETHYLENE GLYCOL": {
+    "name": "ETHYLENE GLYCOL",
+    "aliases": [
+      "1,2-ETHANEDIOL"
+    ],
+    "dielectric_constant": 37.7,
+    "refractive_index": 1.431,
+    "density_g_cm3": 1.113,
+    "surface_tension_mn_m": 47.7,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 62.07,
+    "abraham_alpha": 0.9,
+    "abraham_beta": 0.52,
+    "abraham_pi2": 0.92,
+    "dipole_moment_debye": 2.28
+  },
+  "1,2-PROPANEDIOL": {
+    "name": "1,2-PROPANEDIOL",
+    "aliases": [
+      "PROPYLENE GLYCOL"
+    ],
+    "dielectric_constant": 32.0,
+    "refractive_index": 1.432,
+    "density_g_cm3": 1.036,
+    "surface_tension_mn_m": 36.0,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 76.09,
+    "abraham_alpha": 0.8,
+    "abraham_beta": 0.6,
+    "abraham_pi2": 0.8,
+    "dipole_moment_debye": 2.2
+  },
+  "M-CRESOL": {
+    "name": "M-CRESOL",
+    "aliases": [
+      "3-METHYLPHENOL"
+    ],
+    "dielectric_constant": 11.8,
+    "refractive_index": 1.539,
+    "density_g_cm3": 1.034,
+    "surface_tension_mn_m": 38.0,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 108.14,
+    "abraham_alpha": 0.82,
+    "abraham_beta": 0.35,
+    "abraham_pi2": 0.88,
+    "dipole_moment_debye": 1.54
+  },
+  "ACETIC ACID": {
+    "name": "ACETIC ACID",
+    "aliases": [
+      "ETHANOIC ACID"
+    ],
+    "dielectric_constant": 6.17,
+    "refractive_index": 1.372,
+    "density_g_cm3": 1.049,
+    "surface_tension_mn_m": 27.6,
+    "solvent_class": "polar_protic",
+    "molecular_weight": 60.05,
+    "abraham_alpha": 0.61,
+    "abraham_beta": 0.45,
+    "abraham_pi2": 0.65,
+    "dipole_moment_debye": 1.74
+  },
+  "DIMETHYL SULFOXIDE": {
+    "name": "DIMETHYL SULFOXIDE",
+    "aliases": [
+      "DMSO"
+    ],
+    "dielectric_constant": 46.7,
+    "refractive_index": 1.479,
+    "density_g_cm3": 1.1,
+    "surface_tension_mn_m": 43.5,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 78.13,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.76,
+    "abraham_pi2": 1.0,
+    "dipole_moment_debye": 3.96
+  },
+  "DIMETHYLFORMAMIDE": {
+    "name": "DIMETHYLFORMAMIDE",
+    "aliases": [
+      "DMF",
+      "N,N-DIMETHYLFORMAMIDE"
+    ],
+    "dielectric_constant": 36.7,
+    "refractive_index": 1.43,
+    "density_g_cm3": 0.944,
+    "surface_tension_mn_m": 37.1,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 73.09,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.69,
+    "abraham_pi2": 0.88,
+    "dipole_moment_debye": 3.82
+  },
+  "N-METHYLPYRROLIDONE": {
+    "name": "N-METHYLPYRROLIDONE",
+    "aliases": [
+      "NMP",
+      "1-METHYL-2-PYRROLIDINONE"
+    ],
+    "dielectric_constant": 32.2,
+    "refractive_index": 1.47,
+    "density_g_cm3": 1.028,
+    "surface_tension_mn_m": 40.7,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 99.13,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.77,
+    "abraham_pi2": 0.92,
+    "dipole_moment_debye": 4.09
+  },
+  "1,5-DIMETHYL-2-PYRROLIDINONE": {
+    "name": "1,5-DIMETHYL-2-PYRROLIDINONE",
+    "aliases": [],
+    "dielectric_constant": 30.0,
+    "refractive_index": 1.465,
+    "density_g_cm3": 0.99,
+    "surface_tension_mn_m": 38.0,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 113.16,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.75,
+    "abraham_pi2": 0.9,
+    "dipole_moment_debye": 4.0
+  },
+  "1-ETHYL-2-PYRROLIDINONE": {
+    "name": "1-ETHYL-2-PYRROLIDINONE",
+    "aliases": [
+      "NEP"
+    ],
+    "dielectric_constant": 28.2,
+    "refractive_index": 1.465,
+    "density_g_cm3": 0.992,
+    "surface_tension_mn_m": 36.5,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 113.16,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.76,
+    "abraham_pi2": 0.9,
+    "dipole_moment_debye": 4.05
+  },
+  "1-METHYL-2-PIPERIDINONE": {
+    "name": "1-METHYL-2-PIPERIDINONE",
+    "aliases": [],
+    "dielectric_constant": 26.0,
+    "refractive_index": 1.478,
+    "density_g_cm3": 1.025,
+    "surface_tension_mn_m": 38.5,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 113.16,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.77,
+    "abraham_pi2": 0.9,
+    "dipole_moment_debye": 4.0
+  },
+  "FORMAMIDE": {
+    "name": "FORMAMIDE",
+    "aliases": [],
+    "dielectric_constant": 109.5,
+    "refractive_index": 1.447,
+    "density_g_cm3": 1.133,
+    "surface_tension_mn_m": 58.2,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 45.04,
+    "abraham_alpha": 0.62,
+    "abraham_beta": 0.6,
+    "abraham_pi2": 1.05,
+    "dipole_moment_debye": 3.73
+  },
+  "N-METHYLFORMAMIDE": {
+    "name": "N-METHYLFORMAMIDE",
+    "aliases": [
+      "NMF"
+    ],
+    "dielectric_constant": 182.4,
+    "refractive_index": 1.432,
+    "density_g_cm3": 1.011,
+    "surface_tension_mn_m": 39.2,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 59.07,
+    "abraham_alpha": 0.4,
+    "abraham_beta": 0.7,
+    "abraham_pi2": 1.0,
+    "dipole_moment_debye": 3.83
+  },
+  "N-ETHYLFORMAMIDE": {
+    "name": "N-ETHYLFORMAMIDE",
+    "aliases": [],
+    "dielectric_constant": 115.0,
+    "refractive_index": 1.434,
+    "density_g_cm3": 0.952,
+    "surface_tension_mn_m": 36.0,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 73.09,
+    "abraham_alpha": 0.38,
+    "abraham_beta": 0.7,
+    "abraham_pi2": 0.98,
+    "dipole_moment_debye": 3.85
+  },
+  "N,N-DIMETHYLACETAMIDE": {
+    "name": "N,N-DIMETHYLACETAMIDE",
+    "aliases": [
+      "DMAC"
+    ],
+    "dielectric_constant": 37.8,
+    "refractive_index": 1.438,
+    "density_g_cm3": 0.937,
+    "surface_tension_mn_m": 34.0,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 87.12,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.78,
+    "abraham_pi2": 0.88,
+    "dipole_moment_debye": 3.79
+  },
+  "N-METHYLACETAMIDE": {
+    "name": "N-METHYLACETAMIDE",
+    "aliases": [
+      "NMA"
+    ],
+    "dielectric_constant": 191.3,
+    "refractive_index": 1.43,
+    "density_g_cm3": 0.957,
+    "surface_tension_mn_m": 34.2,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 73.09,
+    "abraham_alpha": 0.36,
+    "abraham_beta": 0.74,
+    "abraham_pi2": 0.95,
+    "dipole_moment_debye": 3.75
+  },
+  "N-ETHYLACETAMIDE": {
+    "name": "N-ETHYLACETAMIDE",
+    "aliases": [],
+    "dielectric_constant": 135.0,
+    "refractive_index": 1.436,
+    "density_g_cm3": 0.925,
+    "surface_tension_mn_m": 33.5,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 87.12,
+    "abraham_alpha": 0.35,
+    "abraham_beta": 0.74,
+    "abraham_pi2": 0.95,
+    "dipole_moment_debye": 3.75
+  },
+  "N,N-DIETHYLACETAMIDE": {
+    "name": "N,N-DIETHYLACETAMIDE",
+    "aliases": [],
+    "dielectric_constant": 32.0,
+    "refractive_index": 1.438,
+    "density_g_cm3": 0.908,
+    "surface_tension_mn_m": 31.0,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 115.17,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.78,
+    "abraham_pi2": 0.85,
+    "dipole_moment_debye": 3.8
+  },
+  "N,N-DIBUTYLFORMAMID": {
+    "name": "N,N-DIBUTYLFORMAMID",
+    "aliases": [
+      "N,N-DIBUTYLFORMAMIDE"
+    ],
+    "dielectric_constant": 18.0,
+    "refractive_index": 1.442,
+    "density_g_cm3": 0.86,
+    "surface_tension_mn_m": 29.5,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 157.25,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.75,
+    "abraham_pi2": 0.8,
+    "dipole_moment_debye": 3.7
+  },
+  "4-FORMYLMORPHOLINE": {
+    "name": "4-FORMYLMORPHOLINE",
+    "aliases": [],
+    "dielectric_constant": 36.0,
+    "refractive_index": 1.484,
+    "density_g_cm3": 1.145,
+    "surface_tension_mn_m": 45.0,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 115.13,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.75,
+    "abraham_pi2": 0.95,
+    "dipole_moment_debye": 4.1
+  },
+  "ACETONITRILE": {
+    "name": "ACETONITRILE",
+    "aliases": [
+      "MECN"
+    ],
+    "dielectric_constant": 37.5,
+    "refractive_index": 1.344,
+    "density_g_cm3": 0.786,
+    "surface_tension_mn_m": 29.1,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 41.05,
+    "abraham_alpha": 0.04,
+    "abraham_beta": 0.29,
+    "abraham_pi2": 0.75,
+    "dipole_moment_debye": 3.92
+  },
+  "PROPIONITRILE": {
+    "name": "PROPIONITRILE",
+    "aliases": [],
+    "dielectric_constant": 27.2,
+    "refractive_index": 1.366,
+    "density_g_cm3": 0.782,
+    "surface_tension_mn_m": 27.0,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 55.08,
+    "abraham_alpha": 0.02,
+    "abraham_beta": 0.3,
+    "abraham_pi2": 0.73,
+    "dipole_moment_debye": 4.05
+  },
+  "BUTYRONITRILE": {
+    "name": "BUTYRONITRILE",
+    "aliases": [],
+    "dielectric_constant": 20.7,
+    "refractive_index": 1.384,
+    "density_g_cm3": 0.796,
+    "surface_tension_mn_m": 26.5,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 69.11,
+    "abraham_alpha": 0.02,
+    "abraham_beta": 0.3,
+    "abraham_pi2": 0.71,
+    "dipole_moment_debye": 4.1
+  },
+  "BENZONITRILE": {
+    "name": "BENZONITRILE",
+    "aliases": [],
+    "dielectric_constant": 25.2,
+    "refractive_index": 1.528,
+    "density_g_cm3": 1.006,
+    "surface_tension_mn_m": 39.0,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 103.12,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.33,
+    "abraham_pi2": 0.9,
+    "dipole_moment_debye": 4.18
+  },
+  "NITROMETHANE": {
+    "name": "NITROMETHANE",
+    "aliases": [],
+    "dielectric_constant": 35.8,
+    "refractive_index": 1.382,
+    "density_g_cm3": 1.137,
+    "surface_tension_mn_m": 36.8,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 61.04,
+    "abraham_alpha": 0.06,
+    "abraham_beta": 0.28,
+    "abraham_pi2": 0.85,
+    "dipole_moment_debye": 3.46
+  },
+  "NITROETHANE": {
+    "name": "NITROETHANE",
+    "aliases": [],
+    "dielectric_constant": 28.1,
+    "refractive_index": 1.392,
+    "density_g_cm3": 1.045,
+    "surface_tension_mn_m": 33.2,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 75.07,
+    "abraham_alpha": 0.04,
+    "abraham_beta": 0.28,
+    "abraham_pi2": 0.83,
+    "dipole_moment_debye": 3.65
+  },
+  "NITROBENZENE": {
+    "name": "NITROBENZENE",
+    "aliases": [],
+    "dielectric_constant": 34.8,
+    "refractive_index": 1.556,
+    "density_g_cm3": 1.204,
+    "surface_tension_mn_m": 43.9,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 123.11,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.3,
+    "abraham_pi2": 0.86,
+    "dipole_moment_debye": 4.22
+  },
+  "SULFOLANE": {
+    "name": "SULFOLANE",
+    "aliases": [],
+    "dielectric_constant": 43.3,
+    "refractive_index": 1.484,
+    "density_g_cm3": 1.261,
+    "surface_tension_mn_m": 45.5,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 120.17,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.39,
+    "abraham_pi2": 0.98,
+    "dipole_moment_debye": 4.81
+  },
+  "PROPYLENE CARBONATE": {
+    "name": "PROPYLENE CARBONATE",
+    "aliases": [],
+    "dielectric_constant": 64.9,
+    "refractive_index": 1.421,
+    "density_g_cm3": 1.205,
+    "surface_tension_mn_m": 41.1,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 102.09,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.4,
+    "abraham_pi2": 0.83,
+    "dipole_moment_debye": 4.9
+  },
+  "BUTYROLACTONE": {
+    "name": "BUTYROLACTONE",
+    "aliases": [
+      "GAMMA-BUTYROLACTONE",
+      "GBL"
+    ],
+    "dielectric_constant": 39.0,
+    "refractive_index": 1.436,
+    "density_g_cm3": 1.129,
+    "surface_tension_mn_m": 43.2,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 86.09,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.49,
+    "abraham_pi2": 0.86,
+    "dipole_moment_debye": 4.27
+  },
+  "EPSILON-CAPROLACTONE": {
+    "name": "EPSILON-CAPROLACTONE",
+    "aliases": [],
+    "dielectric_constant": 38.0,
+    "refractive_index": 1.463,
+    "density_g_cm3": 1.03,
+    "surface_tension_mn_m": 39.5,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 114.14,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.5,
+    "abraham_pi2": 0.85,
+    "dipole_moment_debye": 4.2
+  },
+  "ACETONE": {
+    "name": "ACETONE",
+    "aliases": [
+      "2-PROPANONE"
+    ],
+    "dielectric_constant": 20.7,
+    "refractive_index": 1.359,
+    "density_g_cm3": 0.791,
+    "surface_tension_mn_m": 23.7,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 58.08,
+    "abraham_alpha": 0.04,
+    "abraham_beta": 0.49,
+    "abraham_pi2": 0.71,
+    "dipole_moment_debye": 2.88
+  },
+  "BUTANONE": {
+    "name": "BUTANONE",
+    "aliases": [
+      "METHYL ETHYL KETONE",
+      "MEK"
+    ],
+    "dielectric_constant": 18.5,
+    "refractive_index": 1.379,
+    "density_g_cm3": 0.805,
+    "surface_tension_mn_m": 24.6,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 72.11,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.48,
+    "abraham_pi2": 0.67,
+    "dipole_moment_debye": 2.78
+  },
+  "PENTAN-2-ONE": {
+    "name": "PENTAN-2-ONE",
+    "aliases": [
+      "2-PENTANONE"
+    ],
+    "dielectric_constant": 15.4,
+    "refractive_index": 1.39,
+    "density_g_cm3": 0.809,
+    "surface_tension_mn_m": 25.0,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 86.13,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.48,
+    "abraham_pi2": 0.65,
+    "dipole_moment_debye": 2.7
+  },
+  "3-PENTANONE": {
+    "name": "3-PENTANONE",
+    "aliases": [
+      "DIETHYL KETONE"
+    ],
+    "dielectric_constant": 17.0,
+    "refractive_index": 1.392,
+    "density_g_cm3": 0.814,
+    "surface_tension_mn_m": 25.5,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 86.13,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.48,
+    "abraham_pi2": 0.65,
+    "dipole_moment_debye": 2.7
+  },
+  "2-HEXANONE": {
+    "name": "2-HEXANONE",
+    "aliases": [],
+    "dielectric_constant": 14.6,
+    "refractive_index": 1.401,
+    "density_g_cm3": 0.812,
+    "surface_tension_mn_m": 25.8,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 100.16,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.48,
+    "abraham_pi2": 0.64,
+    "dipole_moment_debye": 2.7
+  },
+  "3-HEXANONE": {
+    "name": "3-HEXANONE",
+    "aliases": [],
+    "dielectric_constant": 14.0,
+    "refractive_index": 1.4,
+    "density_g_cm3": 0.813,
+    "surface_tension_mn_m": 25.6,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 100.16,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.48,
+    "abraham_pi2": 0.64,
+    "dipole_moment_debye": 2.7
+  },
+  "4-METHYLPENTAN-2-ONE": {
+    "name": "4-METHYLPENTAN-2-ONE",
+    "aliases": [
+      "MIBK"
+    ],
+    "dielectric_constant": 13.1,
+    "refractive_index": 1.396,
+    "density_g_cm3": 0.802,
+    "surface_tension_mn_m": 23.6,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 100.16,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.48,
+    "abraham_pi2": 0.62,
+    "dipole_moment_debye": 2.7
+  },
+  "2-HEPTANONE": {
+    "name": "2-HEPTANONE",
+    "aliases": [],
+    "dielectric_constant": 12.0,
+    "refractive_index": 1.408,
+    "density_g_cm3": 0.815,
+    "surface_tension_mn_m": 26.5,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 114.19,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.48,
+    "abraham_pi2": 0.64,
+    "dipole_moment_debye": 2.7
+  },
+  "CYCLOHEXANONE": {
+    "name": "CYCLOHEXANONE",
+    "aliases": [],
+    "dielectric_constant": 18.3,
+    "refractive_index": 1.451,
+    "density_g_cm3": 0.948,
+    "surface_tension_mn_m": 35.1,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 98.14,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.53,
+    "abraham_pi2": 0.76,
+    "dipole_moment_debye": 3.01
+  },
+  "ACETOPHENONE": {
+    "name": "ACETOPHENONE",
+    "aliases": [],
+    "dielectric_constant": 17.4,
+    "refractive_index": 1.534,
+    "density_g_cm3": 1.028,
+    "surface_tension_mn_m": 39.8,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 120.15,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.48,
+    "abraham_pi2": 0.9,
+    "dipole_moment_debye": 3.05
+  },
+  "TETRAHYDROFURAN": {
+    "name": "TETRAHYDROFURAN",
+    "aliases": [
+      "THF"
+    ],
+    "dielectric_constant": 7.58,
+    "refractive_index": 1.407,
+    "density_g_cm3": 0.889,
+    "surface_tension_mn_m": 26.4,
+    "solvent_class": "ether",
+    "molecular_weight": 72.11,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.55,
+    "abraham_pi2": 0.58,
+    "dipole_moment_debye": 1.63
+  },
+  "1,4-DIOXANE": {
+    "name": "1,4-DIOXANE",
+    "aliases": [
+      "DIOXANE"
+    ],
+    "dielectric_constant": 2.21,
+    "refractive_index": 1.422,
+    "density_g_cm3": 1.033,
+    "surface_tension_mn_m": 33.0,
+    "solvent_class": "ether",
+    "molecular_weight": 88.11,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.37,
+    "abraham_pi2": 0.55,
+    "dipole_moment_debye": 0.45
+  },
+  "TETRAHYDROPYRAN": {
+    "name": "TETRAHYDROPYRAN",
+    "aliases": [
+      "THP"
+    ],
+    "dielectric_constant": 5.7,
+    "refractive_index": 1.42,
+    "density_g_cm3": 0.881,
+    "surface_tension_mn_m": 28.0,
+    "solvent_class": "ether",
+    "molecular_weight": 86.13,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.55,
+    "abraham_pi2": 0.55,
+    "dipole_moment_debye": 1.55
+  },
+  "DIETHYL ETHER": {
+    "name": "DIETHYL ETHER",
+    "aliases": [
+      "ETHER"
+    ],
+    "dielectric_constant": 4.33,
+    "refractive_index": 1.353,
+    "density_g_cm3": 0.713,
+    "surface_tension_mn_m": 17.0,
+    "solvent_class": "ether",
+    "molecular_weight": 74.12,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.45,
+    "abraham_pi2": 0.27,
+    "dipole_moment_debye": 1.15
+  },
+  "DIISOPROPYL ETHER": {
+    "name": "DIISOPROPYL ETHER",
+    "aliases": [],
+    "dielectric_constant": 3.88,
+    "refractive_index": 1.368,
+    "density_g_cm3": 0.724,
+    "surface_tension_mn_m": 17.7,
+    "solvent_class": "ether",
+    "molecular_weight": 102.17,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.49,
+    "abraham_pi2": 0.2,
+    "dipole_moment_debye": 1.13
+  },
+  "DIBUTYL ETHER": {
+    "name": "DIBUTYL ETHER",
+    "aliases": [],
+    "dielectric_constant": 3.08,
+    "refractive_index": 1.399,
+    "density_g_cm3": 0.764,
+    "surface_tension_mn_m": 22.9,
+    "solvent_class": "ether",
+    "molecular_weight": 130.23,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.46,
+    "abraham_pi2": 0.24,
+    "dipole_moment_debye": 1.18
+  },
+  "PROPYL ETHER": {
+    "name": "PROPYL ETHER",
+    "aliases": [
+      "DIPROPYL ETHER"
+    ],
+    "dielectric_constant": 3.39,
+    "refractive_index": 1.381,
+    "density_g_cm3": 0.736,
+    "surface_tension_mn_m": 20.5,
+    "solvent_class": "ether",
+    "molecular_weight": 102.17,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.46,
+    "abraham_pi2": 0.25,
+    "dipole_moment_debye": 1.15
+  },
+  "METHYL TERT-BUTYL ETHER": {
+    "name": "METHYL TERT-BUTYL ETHER",
+    "aliases": [
+      "MTBE"
+    ],
+    "dielectric_constant": 2.6,
+    "refractive_index": 1.369,
+    "density_g_cm3": 0.74,
+    "surface_tension_mn_m": 19.4,
+    "solvent_class": "ether",
+    "molecular_weight": 88.15,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.5,
+    "abraham_pi2": 0.24,
+    "dipole_moment_debye": 1.22
+  },
+  "ETBE": {
+    "name": "ETBE",
+    "aliases": [
+      "ETHYL TERT-BUTYL ETHER"
+    ],
+    "dielectric_constant": 2.45,
+    "refractive_index": 1.375,
+    "density_g_cm3": 0.745,
+    "surface_tension_mn_m": 19.8,
+    "solvent_class": "ether",
+    "molecular_weight": 102.17,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.5,
+    "abraham_pi2": 0.24,
+    "dipole_moment_debye": 1.22
+  },
+  "TERT-AMYL METHYL ETHER": {
+    "name": "TERT-AMYL METHYL ETHER",
+    "aliases": [
+      "TAME"
+    ],
+    "dielectric_constant": 2.5,
+    "refractive_index": 1.38,
+    "density_g_cm3": 0.77,
+    "surface_tension_mn_m": 20.5,
+    "solvent_class": "ether",
+    "molecular_weight": 102.17,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.5,
+    "abraham_pi2": 0.24,
+    "dipole_moment_debye": 1.22
+  },
+  "ANISOLE": {
+    "name": "ANISOLE",
+    "aliases": [
+      "METHOXYBENZENE"
+    ],
+    "dielectric_constant": 4.33,
+    "refractive_index": 1.517,
+    "density_g_cm3": 0.995,
+    "surface_tension_mn_m": 35.0,
+    "solvent_class": "ether",
+    "molecular_weight": 108.14,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.29,
+    "abraham_pi2": 0.73,
+    "dipole_moment_debye": 1.38
+  },
+  "ETHYL PHENYL ETHER": {
+    "name": "ETHYL PHENYL ETHER",
+    "aliases": [
+      "PHENETOLE"
+    ],
+    "dielectric_constant": 4.22,
+    "refractive_index": 1.507,
+    "density_g_cm3": 0.965,
+    "surface_tension_mn_m": 33.0,
+    "solvent_class": "ether",
+    "molecular_weight": 122.16,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.3,
+    "abraham_pi2": 0.7,
+    "dipole_moment_debye": 1.35
+  },
+  "DIBENZYL ETHER": {
+    "name": "DIBENZYL ETHER",
+    "aliases": [],
+    "dielectric_constant": 3.8,
+    "refractive_index": 1.54,
+    "density_g_cm3": 1.043,
+    "surface_tension_mn_m": 38.0,
+    "solvent_class": "ether",
+    "molecular_weight": 198.26,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.35,
+    "abraham_pi2": 0.85,
+    "dipole_moment_debye": 1.35
+  },
+  "1-METHOXYBUTANE": {
+    "name": "1-METHOXYBUTANE",
+    "aliases": [
+      "BUTYL METHYL ETHER"
+    ],
+    "dielectric_constant": 3.9,
+    "refractive_index": 1.374,
+    "density_g_cm3": 0.744,
+    "surface_tension_mn_m": 20.0,
+    "solvent_class": "ether",
+    "molecular_weight": 88.15,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.46,
+    "abraham_pi2": 0.3,
+    "dipole_moment_debye": 1.2
+  },
+  "1-ETHOXYBUTANE": {
+    "name": "1-ETHOXYBUTANE",
+    "aliases": [
+      "BUTYL ETHYL ETHER"
+    ],
+    "dielectric_constant": 3.5,
+    "refractive_index": 1.382,
+    "density_g_cm3": 0.749,
+    "surface_tension_mn_m": 21.0,
+    "solvent_class": "ether",
+    "molecular_weight": 102.17,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.46,
+    "abraham_pi2": 0.28,
+    "dipole_moment_debye": 1.2
+  },
+  "1-ETHOXYPROPANE": {
+    "name": "1-ETHOXYPROPANE",
+    "aliases": [
+      "ETHYL PROPYL ETHER"
+    ],
+    "dielectric_constant": 3.6,
+    "refractive_index": 1.373,
+    "density_g_cm3": 0.739,
+    "surface_tension_mn_m": 19.5,
+    "solvent_class": "ether",
+    "molecular_weight": 88.15,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.46,
+    "abraham_pi2": 0.28,
+    "dipole_moment_debye": 1.2
+  },
+  "2-METHOXYPROPANE": {
+    "name": "2-METHOXYPROPANE",
+    "aliases": [],
+    "dielectric_constant": 3.8,
+    "refractive_index": 1.36,
+    "density_g_cm3": 0.725,
+    "surface_tension_mn_m": 18.5,
+    "solvent_class": "ether",
+    "molecular_weight": 74.12,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.48,
+    "abraham_pi2": 0.28,
+    "dipole_moment_debye": 1.2
+  },
+  "METHOXYPROPANE": {
+    "name": "METHOXYPROPANE",
+    "aliases": [
+      "1-METHOXYPROPANE"
+    ],
+    "dielectric_constant": 3.9,
+    "refractive_index": 1.37,
+    "density_g_cm3": 0.738,
+    "surface_tension_mn_m": 19.0,
+    "solvent_class": "ether",
+    "molecular_weight": 74.12,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.48,
+    "abraham_pi2": 0.28,
+    "dipole_moment_debye": 1.2
+  },
+  "METHOXYETHANOL": {
+    "name": "METHOXYETHANOL",
+    "aliases": [
+      "2-METHOXYETHANOL",
+      "METHYL CELLOSOLVE"
+    ],
+    "dielectric_constant": 16.9,
+    "refractive_index": 1.402,
+    "density_g_cm3": 0.965,
+    "surface_tension_mn_m": 31.8,
+    "solvent_class": "ether",
+    "molecular_weight": 76.09,
+    "abraham_alpha": 0.55,
+    "abraham_beta": 0.65,
+    "abraham_pi2": 0.65,
+    "dipole_moment_debye": 2.04
+  },
+  "2-ETHOXYETHANOL": {
+    "name": "2-ETHOXYETHANOL",
+    "aliases": [
+      "CELLOSOLVE"
+    ],
+    "dielectric_constant": 14.1,
+    "refractive_index": 1.408,
+    "density_g_cm3": 0.93,
+    "surface_tension_mn_m": 28.6,
+    "solvent_class": "ether",
+    "molecular_weight": 90.12,
+    "abraham_alpha": 0.52,
+    "abraham_beta": 0.65,
+    "abraham_pi2": 0.6,
+    "dipole_moment_debye": 2.08
+  },
+  "2-PROPOXYETHANOL": {
+    "name": "2-PROPOXYETHANOL",
+    "aliases": [],
+    "dielectric_constant": 11.5,
+    "refractive_index": 1.413,
+    "density_g_cm3": 0.912,
+    "surface_tension_mn_m": 27.5,
+    "solvent_class": "ether",
+    "molecular_weight": 104.15,
+    "abraham_alpha": 0.5,
+    "abraham_beta": 0.65,
+    "abraham_pi2": 0.58,
+    "dipole_moment_debye": 2.05
+  },
+  "2-ISOPROPOXYETHANOL": {
+    "name": "2-ISOPROPOXYETHANOL",
+    "aliases": [],
+    "dielectric_constant": 10.8,
+    "refractive_index": 1.41,
+    "density_g_cm3": 0.904,
+    "surface_tension_mn_m": 26.8,
+    "solvent_class": "ether",
+    "molecular_weight": 104.15,
+    "abraham_alpha": 0.5,
+    "abraham_beta": 0.65,
+    "abraham_pi2": 0.58,
+    "dipole_moment_debye": 2.05
+  },
+  "2-BUTOXYETHANOL": {
+    "name": "2-BUTOXYETHANOL",
+    "aliases": [
+      "BUTYL CELLOSOLVE"
+    ],
+    "dielectric_constant": 9.4,
+    "refractive_index": 1.419,
+    "density_g_cm3": 0.902,
+    "surface_tension_mn_m": 27.4,
+    "solvent_class": "ether",
+    "molecular_weight": 118.17,
+    "abraham_alpha": 0.5,
+    "abraham_beta": 0.65,
+    "abraham_pi2": 0.58,
+    "dipole_moment_debye": 2.08
+  },
+  "DIETHYLDIGLYCOL": {
+    "name": "DIETHYLDIGLYCOL",
+    "aliases": [
+      "DIETHYLENE GLYCOL DIETHYL ETHER"
+    ],
+    "dielectric_constant": 5.7,
+    "refractive_index": 1.412,
+    "density_g_cm3": 0.909,
+    "surface_tension_mn_m": 27.2,
+    "solvent_class": "ether",
+    "molecular_weight": 162.23,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.6,
+    "abraham_pi2": 0.55,
+    "dipole_moment_debye": 1.8
+  },
+  "DIETHYLENE GLYCOL DIBUTYL ETHER": {
+    "name": "DIETHYLENE GLYCOL DIBUTYL ETHER",
+    "aliases": [],
+    "dielectric_constant": 4.5,
+    "refractive_index": 1.423,
+    "density_g_cm3": 0.885,
+    "surface_tension_mn_m": 27.0,
+    "solvent_class": "ether",
+    "molecular_weight": 218.33,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.6,
+    "abraham_pi2": 0.5,
+    "dipole_moment_debye": 1.8
+  },
+  "TETRAETHYLENE GLYCOL DIMETHYL ETHER": {
+    "name": "TETRAETHYLENE GLYCOL DIMETHYL ETHER",
+    "aliases": [
+      "TETRAGLYME"
+    ],
+    "dielectric_constant": 7.7,
+    "refractive_index": 1.432,
+    "density_g_cm3": 1.009,
+    "surface_tension_mn_m": 33.8,
+    "solvent_class": "ether",
+    "molecular_weight": 222.28,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.7,
+    "abraham_pi2": 0.7,
+    "dipole_moment_debye": 2.4
+  },
+  "5,8,11,14-TETRAOXAOCTADECANE": {
+    "name": "5,8,11,14-TETRAOXAOCTADECANE",
+    "aliases": [],
+    "dielectric_constant": 6.5,
+    "refractive_index": 1.43,
+    "density_g_cm3": 0.92,
+    "surface_tension_mn_m": 28.5,
+    "solvent_class": "ether",
+    "molecular_weight": 278.39,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.7,
+    "abraham_pi2": 0.6,
+    "dipole_moment_debye": 2.2
+  },
+  "METHYL ACETATE": {
+    "name": "METHYL ACETATE",
+    "aliases": [],
+    "dielectric_constant": 6.68,
+    "refractive_index": 1.361,
+    "density_g_cm3": 0.932,
+    "surface_tension_mn_m": 24.6,
+    "solvent_class": "ester",
+    "molecular_weight": 74.08,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.45,
+    "abraham_pi2": 0.6,
+    "dipole_moment_debye": 1.72
+  },
+  "ETHYL ACETATE": {
+    "name": "ETHYL ACETATE",
+    "aliases": [
+      "ETOAC"
+    ],
+    "dielectric_constant": 6.02,
+    "refractive_index": 1.372,
+    "density_g_cm3": 0.902,
+    "surface_tension_mn_m": 23.9,
+    "solvent_class": "ester",
+    "molecular_weight": 88.11,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.45,
+    "abraham_pi2": 0.55,
+    "dipole_moment_debye": 1.78
+  },
+  "PROPYL ACETATE": {
+    "name": "PROPYL ACETATE",
+    "aliases": [],
+    "dielectric_constant": 6.0,
+    "refractive_index": 1.384,
+    "density_g_cm3": 0.888,
+    "surface_tension_mn_m": 24.3,
+    "solvent_class": "ester",
+    "molecular_weight": 102.13,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.45,
+    "abraham_pi2": 0.53,
+    "dipole_moment_debye": 1.78
+  },
+  "ISOPROPYL ACETATE": {
+    "name": "ISOPROPYL ACETATE",
+    "aliases": [],
+    "dielectric_constant": 6.3,
+    "refractive_index": 1.377,
+    "density_g_cm3": 0.872,
+    "surface_tension_mn_m": 22.1,
+    "solvent_class": "ester",
+    "molecular_weight": 102.13,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.47,
+    "abraham_pi2": 0.5,
+    "dipole_moment_debye": 1.8
+  },
+  "BUTYL ACETATE": {
+    "name": "BUTYL ACETATE",
+    "aliases": [
+      "N-BUTYL ACETATE"
+    ],
+    "dielectric_constant": 5.01,
+    "refractive_index": 1.394,
+    "density_g_cm3": 0.882,
+    "surface_tension_mn_m": 25.1,
+    "solvent_class": "ester",
+    "molecular_weight": 116.16,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.45,
+    "abraham_pi2": 0.5,
+    "dipole_moment_debye": 1.84
+  },
+  "ISOBUTYL ACETATE": {
+    "name": "ISOBUTYL ACETATE",
+    "aliases": [],
+    "dielectric_constant": 5.3,
+    "refractive_index": 1.39,
+    "density_g_cm3": 0.871,
+    "surface_tension_mn_m": 23.7,
+    "solvent_class": "ester",
+    "molecular_weight": 116.16,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.46,
+    "abraham_pi2": 0.48,
+    "dipole_moment_debye": 1.8
+  },
+  "PENTYL ACETATE": {
+    "name": "PENTYL ACETATE",
+    "aliases": [
+      "AMYL ACETATE"
+    ],
+    "dielectric_constant": 4.75,
+    "refractive_index": 1.402,
+    "density_g_cm3": 0.876,
+    "surface_tension_mn_m": 25.8,
+    "solvent_class": "ester",
+    "molecular_weight": 130.18,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.45,
+    "abraham_pi2": 0.48,
+    "dipole_moment_debye": 1.8
+  },
+  "HEXYL ACETATE": {
+    "name": "HEXYL ACETATE",
+    "aliases": [],
+    "dielectric_constant": 4.4,
+    "refractive_index": 1.409,
+    "density_g_cm3": 0.873,
+    "surface_tension_mn_m": 26.5,
+    "solvent_class": "ester",
+    "molecular_weight": 144.21,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.45,
+    "abraham_pi2": 0.46,
+    "dipole_moment_debye": 1.8
+  },
+  "HEPTYLACETAT": {
+    "name": "HEPTYLACETAT",
+    "aliases": [
+      "HEPTYL ACETATE"
+    ],
+    "dielectric_constant": 4.2,
+    "refractive_index": 1.415,
+    "density_g_cm3": 0.87,
+    "surface_tension_mn_m": 27.0,
+    "solvent_class": "ester",
+    "molecular_weight": 158.24,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.45,
+    "abraham_pi2": 0.46,
+    "dipole_moment_debye": 1.8
+  },
+  "ETHYL BUTANOATE": {
+    "name": "ETHYL BUTANOATE",
+    "aliases": [
+      "ETHYL BUTYRATE"
+    ],
+    "dielectric_constant": 5.12,
+    "refractive_index": 1.392,
+    "density_g_cm3": 0.879,
+    "surface_tension_mn_m": 24.5,
+    "solvent_class": "ester",
+    "molecular_weight": 116.16,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.45,
+    "abraham_pi2": 0.48,
+    "dipole_moment_debye": 1.8
+  },
+  "ETHYL HEXANOATE": {
+    "name": "ETHYL HEXANOATE",
+    "aliases": [],
+    "dielectric_constant": 4.0,
+    "refractive_index": 1.407,
+    "density_g_cm3": 0.871,
+    "surface_tension_mn_m": 26.0,
+    "solvent_class": "ester",
+    "molecular_weight": 144.21,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.45,
+    "abraham_pi2": 0.46,
+    "dipole_moment_debye": 1.8
+  },
+  "ETHYLBENZOATE": {
+    "name": "ETHYLBENZOATE",
+    "aliases": [
+      "ETHYL BENZOATE"
+    ],
+    "dielectric_constant": 6.02,
+    "refractive_index": 1.505,
+    "density_g_cm3": 1.047,
+    "surface_tension_mn_m": 35.5,
+    "solvent_class": "ester",
+    "molecular_weight": 150.17,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.41,
+    "abraham_pi2": 0.75,
+    "dipole_moment_debye": 2.0
+  },
+  "TRIETHYLAMINE": {
+    "name": "TRIETHYLAMINE",
+    "aliases": [
+      "TEA"
+    ],
+    "dielectric_constant": 2.42,
+    "refractive_index": 1.401,
+    "density_g_cm3": 0.728,
+    "surface_tension_mn_m": 20.7,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 101.19,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.71,
+    "abraham_pi2": 0.14,
+    "dipole_moment_debye": 0.66
+  },
+  "PYRIDINE": {
+    "name": "PYRIDINE",
+    "aliases": [],
+    "dielectric_constant": 12.4,
+    "refractive_index": 1.51,
+    "density_g_cm3": 0.982,
+    "surface_tension_mn_m": 38.0,
+    "solvent_class": "aromatic",
+    "molecular_weight": 79.1,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.52,
+    "abraham_pi2": 0.87,
+    "dipole_moment_debye": 2.21
+  },
+  "2-PICOLINE": {
+    "name": "2-PICOLINE",
+    "aliases": [
+      "2-METHYLPYRIDINE"
+    ],
+    "dielectric_constant": 9.8,
+    "refractive_index": 1.501,
+    "density_g_cm3": 0.944,
+    "surface_tension_mn_m": 33.5,
+    "solvent_class": "aromatic",
+    "molecular_weight": 93.13,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.57,
+    "abraham_pi2": 0.8,
+    "dipole_moment_debye": 1.96
+  },
+  "PHENYLAMINE": {
+    "name": "PHENYLAMINE",
+    "aliases": [
+      "ANILINE"
+    ],
+    "dielectric_constant": 6.89,
+    "refractive_index": 1.586,
+    "density_g_cm3": 1.022,
+    "surface_tension_mn_m": 43.4,
+    "solvent_class": "aromatic",
+    "molecular_weight": 93.13,
+    "abraham_alpha": 0.26,
+    "abraham_beta": 0.5,
+    "abraham_pi2": 0.96,
+    "dipole_moment_debye": 1.53
+  },
+  "CARBON DISULFIDE": {
+    "name": "CARBON DISULFIDE",
+    "aliases": [
+      "CS2"
+    ],
+    "dielectric_constant": 2.64,
+    "refractive_index": 1.632,
+    "density_g_cm3": 1.263,
+    "surface_tension_mn_m": 32.3,
+    "solvent_class": "chlorinated",
+    "molecular_weight": 76.14,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.06,
+    "abraham_pi2": 0.35,
+    "dipole_moment_debye": 0.0
+  },
+  "TRIBUTYL PHOSPHATE": {
+    "name": "TRIBUTYL PHOSPHATE",
+    "aliases": [
+      "TBP"
+    ],
+    "dielectric_constant": 8.0,
+    "refractive_index": 1.425,
+    "density_g_cm3": 0.976,
+    "surface_tension_mn_m": 27.8,
+    "solvent_class": "polar_aprotic",
+    "molecular_weight": 266.32,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.77,
+    "abraham_pi2": 0.6,
+    "dipole_moment_debye": 3.07
+  }
+}

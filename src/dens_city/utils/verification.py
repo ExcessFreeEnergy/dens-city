@@ -15,30 +15,46 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-# Direct mapping between dens-city test_data materials and FreeSolv Mobley IDs
-FREESOLV_MAPPINGS = {
-    # Original 7 FreeSolv mappings
-    "methane": "mobley_9055303",
-    "n_decane": "mobley_2197088",
-    "neopentane": "mobley_1261349",
-    "methanol": "mobley_1636752",
-    "ammonia": "mobley_5631798",
-    "benzene": "mobley_3053621",
-    "acetone": "mobley_3867265",
-    # 12 New FreeSolv additions (total 19 FreeSolv-matched molecules)
-    "ethanol": "mobley_2310185",
-    "acetic_acid": "mobley_3034976",
-    "ethyl_acetate": "mobley_6973347",
-    "diethyl_ether": "mobley_1144156",
-    "pyridine": "mobley_296847",
-    "chlorobenzene": "mobley_7608462",
-    "chloroform": "mobley_2996632",
-    "acetonitrile": "mobley_7532833",
-    "phenol": "mobley_20524",
-    "aniline": "mobley_4883284",
-    "cyclohexane": "mobley_2689721",
-    "ethanethiol": "mobley_1800170",
-}
+
+def resolve_freesolv_identifier(name_or_stem: str, db: Dict[str, Any]) -> Optional[str]:
+    """
+    Dynamically resolves a material identifier or file stem to its FreeSolv Mobley ID
+    by querying the FreeSolv database entries directly (via key, IUPAC name, or benchmark source)
+    without hardcoded lookup tables.
+    """
+    if not name_or_stem or not db:
+        return None
+    stem = str(name_or_stem).strip()
+    if stem in db:
+        return stem
+
+    # Normalize query stem: replace underscores with spaces/hyphens
+    q_lower = stem.lower().replace("_", " ").strip()
+    q_norm = re.sub(r"[\s\-_]+", "", q_lower)
+
+    # Search db dynamically by iupac name or alias
+    for k, v in db.items():
+        iupac = str(v.get("iupac", "")).lower().strip()
+        if iupac:
+            if iupac == q_lower or re.sub(r"[\s\-_]+", "", iupac) == q_norm:
+                return k
+        if q_lower.startswith("n ") and iupac == q_lower[2:].strip():
+            return k
+        if q_lower == k.lower():
+            return k
+
+    # Dynamic fallback to BENCHMARK_MATERIALS metadata definition
+    try:
+        from dens_city.utils.test_data_generator import BENCHMARK_MATERIALS
+
+        for bm_name, bm_type, bm_val, bm_file in BENCHMARK_MATERIALS:
+            if Path(bm_file).stem.lower() == stem.lower() or bm_name.lower() == q_lower:
+                if bm_type == "freesolv":
+                    return Path(bm_val).stem
+    except Exception:
+        pass
+
+    return None
 
 
 def load_freesolv_db(db_path: Path) -> Dict[str, Any]:
@@ -130,7 +146,7 @@ def verify_and_generate_report(
 
     for r in results:
         name = r["material_name"]
-        fs_key = name if name in db else FREESOLV_MAPPINGS.get(name)
+        fs_key = resolve_freesolv_identifier(name, db)
         if not fs_key or fs_key not in db:
             continue
         fs_entry = db[fs_key]

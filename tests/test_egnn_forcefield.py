@@ -423,6 +423,7 @@ def test_egnn_solvation_readouts_dual_head():
     assert delta_coop.shape == (2,)
     assert graph_feat.shape == (2, 384)
     np.testing.assert_allclose(delta_coop.numpy(), [0.0, 0.0], atol=1e-6)
+    assert ff.max_delta_global == 25.0
 
 
 def test_egnn_ensembled_solvation_readouts():

@@ -131,3 +131,36 @@ def test_rotatable_bond_detection():
         assert glucose.num_rotatable_bonds == 1, f"Expected 1 for glucose, got {glucose.num_rotatable_bonds}"
     except Exception:
         pass
+
+
+def test_lorentz_lorenz_dispersion_scaling():
+    """
+    Verifies that Material.compute_solvation_in_solvent dynamically scales
+    the dispersion well depth with the solvent refractive index via Lorentz-Lorenz.
+    Higher optical refractive index (benzene n_D=1.501 vs water n_D=1.333) produces
+    deeper dispersion attraction and a more negative dispersion contribution.
+    """
+    from dens_city.utils.materials import MaterialLoader
+
+    loader = MaterialLoader()
+    methane = loader.load_material("methane")
+
+    # Methane in water-like polarizability (n_D = 1.333) vs benzene-like (n_D = 1.501)
+    # Keeping solvent radius and density fixed to isolate dispersion scaling
+    dg_water_disp = methane.compute_solvation_in_solvent(
+        solvent_sigma=3.0,
+        solvent_rho=0.03,
+        refractive_index=1.333,
+    )
+
+    dg_aromatic_disp = methane.compute_solvation_in_solvent(
+        solvent_sigma=3.0,
+        solvent_rho=0.03,
+        refractive_index=1.501,
+    )
+
+    # Higher refractive index gives deeper well depth, yielding more negative total free energy
+    assert dg_aromatic_disp < dg_water_disp, (
+        f"Expected aromatic solvent to have more negative solvation free energy than water: "
+        f"got {dg_aromatic_disp} vs {dg_water_disp}"
+    )

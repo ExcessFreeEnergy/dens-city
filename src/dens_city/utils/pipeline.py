@@ -988,9 +988,9 @@ def execute_prepared_batch(
                                     execute_prepared_batch._fs_db_cache = pickle.load(f, encoding="latin1")
                             fs_db = getattr(execute_prepared_batch, "_fs_db_cache", {})
                             mat_stem = Path(mat.name).stem
-                            from dens_city.utils.verification import FREESOLV_MAPPINGS
+                            from dens_city.utils.verification import resolve_freesolv_identifier
 
-                            fs_key = mat_stem if mat_stem in fs_db else FREESOLV_MAPPINGS.get(mat_stem)
+                            fs_key = resolve_freesolv_identifier(mat_stem, fs_db)
                             if fs_key and fs_key in fs_db:
                                 vdw_solv = float(fs_db[fs_key].get("calc_vdw", 0.0))
                             else:
@@ -1011,7 +1011,7 @@ def execute_prepared_batch(
                         vdw_solv = mat.compute_solvation_in_solvent(
                             solvent_sigma=solv_props.kinetic_diameter_a,
                             solvent_rho=rho_s_a3,
-                            solvent_epsilon_k=120.0,
+                            refractive_index=solv_props.refractive_index,
                             temp_k=mat.temperature_k or 298.15,
                         )
                     except Exception:
@@ -1063,13 +1063,13 @@ def execute_prepared_batch(
                     n_flow = min(n_conf - 1, len(mat_coords))
                     for k in range(n_flow):
                         conf_padded[1 + k, :n_sites_real] = mat_coords[k, :n_sites_real]
-                    rng = np.random.default_rng(42)
+                    rng = np.random.default_rng(42 + local_idx)
                     for k in range(1 + n_flow, n_conf):
                         conf_padded[k, :n_sites_real] = conf_padded[0, :n_sites_real] + rng.normal(
                             0.0, 0.05, (n_sites_real, 3)
                         ).astype(np.float32)
                 else:
-                    rng = np.random.default_rng(42)
+                    rng = np.random.default_rng(42 + local_idx)
                     for k in range(1, n_conf):
                         conf_padded[k, :n_sites_real] = conf_padded[0, :n_sites_real] + rng.normal(
                             0.0, 0.05, (n_sites_real, 3)

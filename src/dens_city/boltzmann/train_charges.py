@@ -33,6 +33,10 @@ from dens_city.boltzmann.egnn import EGNNForceField
 from dens_city.cdft.generalized_born import GeneralizedBornSolvation
 from dens_city.utils.materials import MaterialLoader
 
+# Authoritative feature scaling constants for Delta-KRR joint representations
+PHYSICAL_DESCRIPTOR_WEIGHT: float = 2.0
+SOLVENT_DESCRIPTOR_WEIGHT: float = 2.0
+
 
 @dataclass
 class ChargeTrainingConfig:
@@ -48,7 +52,7 @@ class ChargeTrainingConfig:
     lambda_global: float = 0.0005  # Penalty on (Δg_coop)^2
     max_delta_q: float = 0.25  # Max allowed perturbation |Δq| <= 0.25e
     max_delta_vdw: float = 3.5  # Max allowed atomic nonpolar perturbation |Δg_vdw| <= 3.5 kcal/mol
-    max_delta_global: float = 12.0  # Max allowed molecular cooperative perturbation |ΔG_coop| <= 12.0 kcal/mol
+    max_delta_global: float = 25.0  # Max allowed molecular cooperative perturbation |ΔG_coop| <= 25.0 kcal/mol
     n_particles: int = 128
     hidden_dim: int = 128
     num_layers: int = 7
@@ -706,11 +710,13 @@ class QuantumChargeTrainer:
             s_mean = np.mean(S_solv, axis=0, keepdims=True)
             s_std = np.std(S_solv, axis=0, keepdims=True) + 1e-6
             S_norm = (S_solv - s_mean) / s_std
-            Z_comb = np.concatenate([Z_norm, D_norm * 2.0, S_norm * 2.0], axis=1)  # (N_real, 397)
+            Z_comb = np.concatenate(
+                [Z_norm, D_norm * PHYSICAL_DESCRIPTOR_WEIGHT, S_norm * SOLVENT_DESCRIPTOR_WEIGHT], axis=1
+            )  # (N_real, 397)
         else:
             s_mean = None
             s_std = None
-            Z_comb = np.concatenate([Z_norm, D_norm * 2.0], axis=1)  # (N_real, 390)
+            Z_comb = np.concatenate([Z_norm, D_norm * PHYSICAL_DESCRIPTOR_WEIGHT], axis=1)  # (N_real, 390)
 
         # Pairwise squared Euclidean distances between representations
         z_sq = np.sum(Z_comb**2, axis=1, keepdims=True)
@@ -1157,9 +1163,11 @@ def predict_krr_residual(
                 s_np = np.tile(s_np, (n_queries, 1))
 
         s_norm = (s_np - s_mean) / s_std
-        z_query = np.concatenate([z_norm, d_norm * 2.0, s_norm * 2.0], axis=1)
+        z_query = np.concatenate(
+            [z_norm, d_norm * PHYSICAL_DESCRIPTOR_WEIGHT, s_norm * SOLVENT_DESCRIPTOR_WEIGHT], axis=1
+        )
     else:
-        z_query = np.concatenate([z_norm, d_norm * 2.0], axis=1)
+        z_query = np.concatenate([z_norm, d_norm * PHYSICAL_DESCRIPTOR_WEIGHT], axis=1)
 
     q_sq = np.sum(z_query**2, axis=1, keepdims=True)
     t_sq = np.sum(z_train**2, axis=1, keepdims=True)
