@@ -264,6 +264,7 @@ uv run ruff format --check src/ tests/
 - R. Roth, "Fundamental measure theory for hard-sphere mixtures: a review", *Journal of Physics: Condensed Matter* **22**, 063102 (2010). [doi:10.1088/0953-8984/22/6/063102](https://doi.org/10.1088/0953-8984/22/6/063102)
 - F. Noé, S. Olsson, J. Köhler, H. Wu, "Boltzmann Generators – Sampling Equilibrium States of Many-Body Systems with Deep Learning", *arXiv:1812.01729* (2018). [doi:10.48550/arxiv.1812.01729](https://doi.org/10.48550/arxiv.1812.01729)
 - V. G. Satorras, E. Hoogeboom, M. Welling, "E(n) Equivariant Graph Neural Networks", *ICML* (2021). [doi:10.48550/arXiv.2102.09844](https://doi.org/10.48550/arXiv.2102.09844)
+- J. Weinreich, N. J. Browning, O. A. von Lilienfeld, "Machine learning of free energies in chemical compound space using ensemble representations: Reaching experimental uncertainty for solvation", *J. Chem. Phys.* **154**, 134113 (2021). [doi:10.1063/5.0041548](https://doi.org/10.1063/5.0041548)
 
 ---
 
