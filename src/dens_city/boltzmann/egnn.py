@@ -538,8 +538,18 @@ class EGNNForceField:
                 e_int = internal_energies.reshape(B, s)
             else:
                 e_int = internal_energies.reshape(B, s)
-            e_min = e_int.min(axis=1, keepdim=True)
-            delta_e = (e_int - e_min).maximum(0.0).minimum(50.0)
+
+            # In polar solution (dielectric > 2.5), weight conformers by solution-phase potential of mean force:
+            # G_eff(k) = E_int(k) + (Delta G_born(k) - Delta G_born(0))
+            if dielectric_constant > 2.5:
+                gb_2d = gb_tensor.reshape(B, s)
+                gb_diff = gb_2d - gb_2d[:, :1]
+                e_eff = e_int + gb_diff
+            else:
+                e_eff = e_int
+
+            e_min = e_eff.min(axis=1, keepdim=True)
+            delta_e = (e_eff - e_min).maximum(0.0).minimum(50.0)
             w_unnorm = (-delta_e / kb_t).exp()
             w = w_unnorm / w_unnorm.sum(axis=1, keepdim=True).maximum(1e-8)
         else:

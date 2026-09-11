@@ -1043,42 +1043,53 @@ def execute_prepared_batch(
 
                 # Adaptive Boltzmann conformational ensemble (Weinreich FML principle):
                 # Depth s depends on molecular flexibility (rotatable bonds):
-                # s=32 for flexible (N_rot >= 5), s=16 for medium (2 <= N_rot < 5), s=8 for rigid.
+                # s=48 for very flexible long chains (N_rot >= 10) to sample coiled globules,
+                # s=32 for flexible (5 <= N_rot < 10), s=16 for medium (2 <= N_rot < 5), s=8 for rigid.
                 n_sites_real = mat.num_sites
                 n_pad = max(128, ((n_sites_real + 127) // 128) * 128)
                 n_rot = getattr(mat, "num_rotatable_bonds", 0)
-                if n_rot >= 5:
+                if n_rot >= 10:
+                    n_conf = 48
+                elif n_rot >= 5:
                     n_conf = 32
                 elif n_rot >= 2:
                     n_conf = 16
                 else:
                     n_conf = 8
 
-                conf_padded = np.zeros((n_conf, n_pad, 3), dtype=np.float32)
-                for s_idx, site in enumerate(mat.sites):
-                    conf_padded[0, s_idx] = [site.x, site.y, site.z]
+                from dens_city.utils.materials import (
+                    compute_neat_liquid_self_association_correction,
+                    generate_conformer_rotamer_diversity,
+                )
 
-                # Populate remaining ensemble configurations
+                # Ground state coordinates (n_sites_real, 3)
+                x_ground = np.array([[s.x, s.y, s.z] for s in mat.sites], dtype=np.float32)
+                z_list = [getattr(s, "atomic_number", 6) for s in mat.sites] if mat.sites else [6] * n_sites_real
+                bonds = getattr(mat, "bonds", [])
+
+                # Generate diverse conformer ensemble with open-rotamer & Rg-contracted coiled states
+                div_conf = generate_conformer_rotamer_diversity(
+                    coords=x_ground,
+                    atomic_numbers=z_list,
+                    bonds=bonds,
+                    n_rot=n_rot,
+                    n_conf=n_conf,
+                    seed=42 + local_idx,
+                )
+
+                conf_padded = np.zeros((n_conf, n_pad, 3), dtype=np.float32)
+                conf_padded[:, :n_sites_real] = div_conf
+
+                # If flow coordinates exist and are physically bounded, blend into later conformer slots
                 if mat_coords is not None and len(mat_coords) > 0 and np.max(np.abs(mat_coords)) < 50.0:
-                    n_flow = min(n_conf - 1, len(mat_coords))
+                    n_flow = min(n_conf // 4, len(mat_coords))
                     for k in range(n_flow):
-                        conf_padded[1 + k, :n_sites_real] = mat_coords[k, :n_sites_real]
-                    rng = np.random.default_rng(42 + local_idx)
-                    for k in range(1 + n_flow, n_conf):
-                        conf_padded[k, :n_sites_real] = conf_padded[0, :n_sites_real] + rng.normal(
-                            0.0, 0.05, (n_sites_real, 3)
-                        ).astype(np.float32)
-                else:
-                    rng = np.random.default_rng(42 + local_idx)
-                    for k in range(1, n_conf):
-                        conf_padded[k, :n_sites_real] = conf_padded[0, :n_sites_real] + rng.normal(
-                            0.0, 0.05, (n_sites_real, 3)
-                        ).astype(np.float32)
+                        slot = n_conf - 1 - k
+                        conf_padded[slot, :n_sites_real] = mat_coords[k, :n_sites_real]
 
                 # Compute intramolecular energy differences for Boltzmann weighting
                 delta_e = compute_conformer_internal_energy_diffs(conf_padded[:, :n_sites_real], mat)
 
-                z_list = [getattr(s, "atomic_number", 6) for s in mat.sites] if mat.sites else [6] * n_sites_real
                 z_padded = np.zeros((n_conf, n_pad), dtype=np.float32)
                 z_padded[:, :n_sites_real] = z_list
 
@@ -1152,7 +1163,24 @@ def execute_prepared_batch(
                     phys_desc = np.array([[n_heavy, n_o, n_n, n_hal, delta_g_born_val, vdw_solv]], dtype=np.float32)
                     krr_res = float(predict_krr_residual(h_mol_mean.numpy()[0], phys_desc[0], s_solv=s_name))
 
-                    solv_free_energy = vdw_solv + delta_vdw_val + delta_g_born_val + krr_res
+                    # First-principles neat protic liquid self-association correction
+                    eta_solv = (
+                        (np.pi / 6.0)
+                        * solv_props.density_g_cm3
+                        * 6.02214076e23
+                        / (solv_props.molecular_weight * 1e24)
+                        * (solv_props.kinetic_diameter_a**3)
+                    )
+                    dg_self_assoc = compute_neat_liquid_self_association_correction(
+                        solute_name=mat.name,
+                        solvent_name=s_name,
+                        alpha_s=solv_props.abraham_alpha,
+                        beta_s=solv_props.abraham_beta,
+                        packing_fraction=float(eta_solv),
+                        temp_k=temp_k,
+                    )
+
+                    solv_free_energy = vdw_solv + delta_vdw_val + delta_g_born_val + krr_res + dg_self_assoc
                 else:
                     q_pred_tensor = bq_t
                     gb_tensor = gb_solver.compute_solvation_free_energy(
