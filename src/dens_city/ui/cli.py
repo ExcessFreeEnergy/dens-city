@@ -379,6 +379,53 @@ Execution Modes & Examples:
         default=False,
         help="Train the EGNN dynamic quantum charge readout head directly against FreeSolv hydration free energies via end-to-end autograd",
     )
+    mode_group.add_argument(
+        "--serve-api",
+        action="store_true",
+        default=False,
+        help="Launch the FastAPI REST server for autonomous LLM harness integration",
+    )
+    mode_group.add_argument(
+        "--serve-mcp",
+        action="store_true",
+        default=False,
+        help="Launch the Model Context Protocol (MCP) server for direct LLM tool calling",
+    )
+    mode_group.add_argument(
+        "--cleanup-pools",
+        action="store_true",
+        default=False,
+        help="Clean up intermediate artifact pools to prevent disk space creep",
+    )
+
+    # -------------------------------------------------------------------------
+    # Server & MCP Options
+    # -------------------------------------------------------------------------
+    server_group = parser.add_argument_group("Server & MCP Options")
+    server_group.add_argument(
+        "--host",
+        type=str,
+        default="0.0.0.0",
+        help="Host interface to bind server (default: 0.0.0.0)",
+    )
+    server_group.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port to bind server (default: 8000)",
+    )
+    server_group.add_argument(
+        "--transport",
+        choices=["stdio", "sse", "streamable-http"],
+        default="stdio",
+        help="MCP transport protocol (default: stdio)",
+    )
+    server_group.add_argument(
+        "--cleanup-mode",
+        choices=["keep_pareto_only", "failed", "age", "all"],
+        default="keep_pareto_only",
+        help="Cleanup mode for --cleanup-pools (default: keep_pareto_only)",
+    )
 
     # -------------------------------------------------------------------------
     # Material & Input Selection
@@ -1020,6 +1067,35 @@ def main(argv: Optional[List[str]] = None) -> int:
             max_delta_vdw=args.charge_max_vdw,
             weights_out=args.charge_weights_out,
         )
+        return 0
+
+    # =========================================================================
+    # MODE: FastAPI Server & MCP Modes for Autonomous LLM Harness
+    # =========================================================================
+    if args.serve_api:
+        from dens_city.server.app import start_server
+
+        print(colored(f"Starting dens-city FastAPI Server on http://{args.host}:{args.port}...", "cyan"))
+        start_server(host=args.host, port=args.port)
+        return 0
+
+    if args.serve_mcp:
+        from dens_city.server.mcp_server import mcp
+
+        print(
+            colored(f"Starting dens-city Model Context Protocol (MCP) Server (transport={args.transport})...", "cyan"),
+            file=sys.stderr,
+        )
+        mcp.run(transport=args.transport)
+        return 0
+
+    if args.cleanup_pools:
+        from dens_city.server.pools import ArtifactPoolStore
+
+        store = ArtifactPoolStore()
+        keep_pareto = args.cleanup_mode == "keep_pareto_only"
+        deleted, freed = store.prune_intermediate_pools(keep_pareto=keep_pareto)
+        print(colored(f"Cleaned up {len(deleted)} pool(s) ({freed / (1024 * 1024):.2f} MB freed).", "green"))
         return 0
 
     # =========================================================================

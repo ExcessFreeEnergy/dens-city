@@ -52,6 +52,7 @@ runs/
 !.agents/wikiskill/raw/.gitkeep
 
 # Documentation builds and monographs
-docs/
+docs/*
+!docs/HARNESS_MCP_SPEC.md
 
 

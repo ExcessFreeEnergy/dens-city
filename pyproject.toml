@@ -26,11 +26,17 @@ dependencies = [
     "pyzmq>=25.0.0",
     "rdkit>=2023.9.1",
     "torch>=2.0.0",
+    "fastapi>=0.141.1",
+    "uvicorn>=0.52.4",
+    "pydantic>=2.13.5",
+    "mcp>=2.2.0",
 ]
 
 [project.scripts]
 dens-city = "dens_city.ui.cli:main"
 "dens--city" = "dens_city.ui.cli:main"
+dens-city-server = "dens_city.server.app:start_server"
+dens-city-mcp = "dens_city.server.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
