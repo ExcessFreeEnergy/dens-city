@@ -223,7 +223,7 @@ class GPUBackgroundWorker:
             spec_file = tmp_spec_dir / f"spec_{int(time.time() * 1000)}.yaml"
             import yaml
 
-            spec_file.write_text(yaml.safe_dump(target_spec))
+            spec_file.write_text(yaml.safe_dump(target_spec), encoding="utf-8")
             return spec_file, target_spec
 
         spec_p = resolve_spec_path(str(target_spec))
@@ -350,10 +350,12 @@ class GPUBackgroundWorker:
 
             for s_idx, smi in enumerate(params["smiles_list"]):
                 m = Chem.MolFromSmiles(smi)
+                if m is None:
+                    continue
                 m = Chem.AddHs(m)
                 AllChem.EmbedMolecule(m, randomSeed=42)
                 AllChem.UFFOptimizeMolecule(m)
-                mol2_str = Chem.MolToMol2Block(m) if hasattr(Chem, "MolToMol2Block") else ""
+                mol2_str = Chem.MolToMolBlock(m) if hasattr(Chem, "MolToMolBlock") else ""
                 candidate_meta.append(
                     {
                         "index": s_idx,
@@ -374,7 +376,7 @@ class GPUBackgroundWorker:
                         "name": f.stem,
                         "smiles": "",
                         "num_atoms": 0,
-                        "mol2": f.read_text(),
+                        "mol2": f.read_text(encoding="utf-8", errors="replace"),
                     }
                 )
 

@@ -53,6 +53,6 @@ runs/
 
 # Documentation builds and monographs
 docs/*
-!docs/*.md
+!docs/HARNESS_MCP_SPEC.md
 
 

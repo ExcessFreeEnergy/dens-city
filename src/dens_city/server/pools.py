@@ -49,10 +49,10 @@ class ArtifactPoolStore:
             "count": len(candidate_metadata),
             "spec_data": spec_data or {},
         }
-        (pool_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+        (pool_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
         csv_path = pool_dir / "molecules.csv"
-        with open(csv_path, "w", newline="") as f:
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(["index", "name", "smiles", "num_atoms", "mw", "sa_score", "rl_reward"])
             for m in candidate_metadata:
@@ -70,7 +70,7 @@ class ArtifactPoolStore:
                 mol2_str = m.get("mol2", "")
                 if mol2_str:
                     cand_file = mol2_dir / f"{m.get('name', 'cand')}.mol2"
-                    cand_file.write_text(mol2_str)
+                    cand_file.write_text(mol2_str, encoding="utf-8")
 
         return pool_id
 
@@ -96,10 +96,10 @@ class ArtifactPoolStore:
             "created_at": time.time(),
             "count": len(pipeline_results),
         }
-        (pool_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+        (pool_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
         results_file = pool_dir / "thermo_results.jsonl"
-        with open(results_file, "w") as f:
+        with open(results_file, "w", encoding="utf-8") as f:
             for r, meta in zip(pipeline_results, candidate_metadata):
                 rec = {
                     "material_name": r.material_name,
@@ -137,10 +137,10 @@ class ArtifactPoolStore:
             "created_at": time.time(),
             "count": len(pipeline_results),
         }
-        (pool_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+        (pool_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
         results_file = pool_dir / "scored_results.jsonl"
-        with open(results_file, "w") as f:
+        with open(results_file, "w", encoding="utf-8") as f:
             for r, meta in zip(pipeline_results, candidate_metadata):
                 rec = {
                     "material_name": r.material_name,
@@ -164,7 +164,7 @@ class ArtifactPoolStore:
         manifest_path = self.root_dir / pool_id / "manifest.json"
         if not manifest_path.exists():
             raise FileNotFoundError(f"Pool not found: {pool_id}")
-        return json.loads(manifest_path.read_text())
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
 
     def load_pool_candidates(self, pool_id: str) -> Tuple[List[Dict[str, Any]], Optional[List[Any]]]:
         """
@@ -184,12 +184,12 @@ class ArtifactPoolStore:
             csv_path = pool_dir / "molecules.csv"
             mol2_dir = pool_dir / "mol2"
             if csv_path.exists():
-                with open(csv_path, newline="") as f:
+                with open(csv_path, newline="", encoding="utf-8") as f:
                     reader = csv.DictReader(f)
                     for row in reader:
                         name = row.get("name", "")
                         mol2_file = mol2_dir / f"{name}.mol2"
-                        mol2_content = mol2_file.read_text() if mol2_file.exists() else ""
+                        mol2_content = mol2_file.read_text(encoding="utf-8") if mol2_file.exists() else ""
                         metadata.append(
                             {
                                 "index": int(row.get("index", 0)),
@@ -211,7 +211,7 @@ class ArtifactPoolStore:
 
             pipeline_results = []
             if jsonl_file.exists():
-                with open(jsonl_file) as f:
+                with open(jsonl_file, encoding="utf-8") as f:
                     for line in f:
                         if not line.strip():
                             continue
@@ -272,7 +272,7 @@ class ArtifactPoolStore:
             manifest_path = p / "manifest.json"
             if manifest_path.exists():
                 try:
-                    m = json.loads(manifest_path.read_text())
+                    m = json.loads(manifest_path.read_text(encoding="utf-8"))
                     p_type = m.get("pool_type", "")
                     if keep_pareto and p_type in ("candidate_pool", "thermo_pool", "egnn_scored_pool"):
                         freed += self.cleanup_pool(p.name)
@@ -294,7 +294,7 @@ class ArtifactPoolStore:
             manifest_path = p / "manifest.json"
             if manifest_path.exists():
                 try:
-                    m = json.loads(manifest_path.read_text())
+                    m = json.loads(manifest_path.read_text(encoding="utf-8"))
                     if m.get("created_at", 0) < cutoff:
                         freed += self.cleanup_pool(p.name)
                         deleted.append(p.name)
@@ -317,7 +317,7 @@ class ArtifactPoolStore:
                 m_path = p / "manifest.json"
                 if m_path.exists():
                     try:
-                        m_type = json.loads(m_path.read_text()).get("pool_type", "unknown")
+                        m_type = json.loads(m_path.read_text(encoding="utf-8")).get("pool_type", "unknown")
                     except Exception:
                         pass
                 pools.append({"pool_id": p.name, "pool_type": m_type, "size_mb": p_size / (1024 * 1024)})
