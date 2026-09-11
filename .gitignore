@@ -52,6 +52,7 @@ runs/
 !.agents/wikiskill/raw/.gitkeep
 
 # Documentation builds and monographs
-docs/
+docs/*
+!docs/*.md
 
 
