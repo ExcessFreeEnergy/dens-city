@@ -129,7 +129,7 @@ def test_dataset_static_shapes():
 
 def test_static_dataset_and_sequential_jit_eval():
     """
-    Verifies that StaticFreeSolvDataset packs all molecules contiguously into GPU memory
+    Verifies that ContiguousPackedDataset packs all molecules contiguously into GPU memory
     and sequential JIT evaluation covers 100% of the dataset deterministically without shape errors.
     """
     trainer = QuantumChargeTrainer()

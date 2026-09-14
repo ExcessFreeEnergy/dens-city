@@ -42,17 +42,12 @@ def resolve_freesolv_identifier(name_or_stem: str, db: Dict[str, Any]) -> Option
             return k
         if q_lower == k.lower():
             return k
-
-    # Dynamic fallback to BENCHMARK_MATERIALS metadata definition
-    try:
-        from dens_city.utils.test_data_generator import BENCHMARK_MATERIALS
-
-        for bm_name, bm_type, bm_val, bm_file in BENCHMARK_MATERIALS:
-            if Path(bm_file).stem.lower() == stem.lower() or bm_name.lower() == q_lower:
-                if bm_type == "freesolv":
-                    return Path(bm_val).stem
-    except Exception:
-        pass
+        smiles = str(v.get("smiles", "")).strip().lower()
+        if smiles and smiles == q_lower:
+            return k
+        formula = str(v.get("formula", "")).strip().lower()
+        if formula and formula == q_lower:
+            return k
 
     return None
 

@@ -612,7 +612,7 @@ class MaterialLoader:
                 try:
                     from dens_city.utils.test_data_generator import generate_test_data
 
-                    generate_test_data(populate_entire_freesolv=True)
+                    generate_test_data(populate_entire_freesolv=False)
                 except Exception:
                     pass
             if not FF_JSON_PATH.exists():
@@ -950,7 +950,7 @@ class MaterialLoader:
             try:
                 from dens_city.utils.test_data_generator import generate_test_data
 
-                generate_test_data(populate_entire_freesolv=True)
+                generate_test_data(populate_entire_freesolv=False)
             except Exception:
                 pass
         return sorted([p.stem for p in TEST_DATA_DIR.glob("*.mol2")])

@@ -966,57 +966,25 @@ def execute_prepared_batch(
                 np_dict=np_weights,
             )
 
-        # Determine nonpolar hydration free energy ΔG_nonpolar (from FreeSolv calc_vdw, task attribute, or default)
+        # Determine nonpolar solvation free energy ΔG_nonpolar from physical first principles
         vdw_solv = 0.0
         if hasattr(task, "vdw_energy") and task.vdw_energy is not None:
             vdw_solv = float(task.vdw_energy)
         else:
-            use_synthetic_targets = getattr(task, "use_synthetic_targets", False)
-            database_path = getattr(task, "database_path", None)
             s_name = getattr(task, "solvent_name", "water") or "water"
-            if not use_synthetic_targets:
-                if s_name == "water":
-                    db_p = Path(database_path or "FreeSolv/database.pickle")
-                    if not db_p.exists():
-                        db_p = Path("data/database.pickle")
-                    if db_p.exists():
-                        try:
-                            import pickle
+            try:
+                from dens_city.utils.solvents import get_solvent_properties
 
-                            if not hasattr(execute_prepared_batch, "_fs_db_cache"):
-                                with open(db_p, "rb") as f:
-                                    execute_prepared_batch._fs_db_cache = pickle.load(f, encoding="latin1")
-                            fs_db = getattr(execute_prepared_batch, "_fs_db_cache", {})
-                            mat_stem = Path(mat.name).stem
-                            from dens_city.utils.verification import resolve_freesolv_identifier
-
-                            fs_key = resolve_freesolv_identifier(mat_stem, fs_db)
-                            if fs_key and fs_key in fs_db:
-                                vdw_solv = float(fs_db[fs_key].get("calc_vdw", 0.0))
-                            else:
-                                # Generic universal nonpolar fallback for non-FreeSolv materials:
-                                # Use cDFT excess grand potential / chemical potential
-                                vdw_solv = float(getattr(mat, "solvation_free_energy_kcal_mol", 0.0))
-                        except Exception:
-                            pass
-                else:
-                    # Dynamic BMCSL cavitation and WCA dispersion in non-aqueous solvent:
-                    try:
-                        from dens_city.utils.solvents import get_solvent_properties
-
-                        solv_props = get_solvent_properties(s_name)
-                        rho_s_a3 = (solv_props.density_g_cm3 * 6.02214076e23) / (
-                            max(1.0, solv_props.molecular_weight) * 1e24
-                        )
-                        vdw_solv = mat.compute_solvation_in_solvent(
-                            solvent_sigma=solv_props.kinetic_diameter_a,
-                            solvent_rho=rho_s_a3,
-                            refractive_index=solv_props.refractive_index,
-                            temp_k=mat.temperature_k or 298.15,
-                        )
-                    except Exception:
-                        vdw_solv = float(getattr(mat, "solvation_free_energy_kcal_mol", 0.0))
-                        pass
+                solv_props = get_solvent_properties(s_name)
+                rho_s_a3 = (solv_props.density_g_cm3 * 6.02214076e23) / (max(1.0, solv_props.molecular_weight) * 1e24)
+                vdw_solv = mat.compute_solvation_in_solvent(
+                    solvent_sigma=solv_props.kinetic_diameter_a,
+                    solvent_rho=rho_s_a3,
+                    refractive_index=solv_props.refractive_index,
+                    temp_k=mat.temperature_k or 298.15,
+                )
+            except Exception:
+                vdw_solv = float(getattr(mat, "solvation_free_energy_kcal_mol", 0.0))
 
         solv_free_energy = vdw_solv
         delta_g_born_val = None

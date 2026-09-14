@@ -23,7 +23,7 @@ import pickle
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from tinygrad import GlobalCounters, Tensor, TinyJit, dtypes, nn
@@ -79,7 +79,7 @@ class PreprocessedBatch:
 
 
 @dataclass
-class StaticFreeSolvDataset:
+class ContiguousPackedDataset:
     coords: Tensor  # (TOTAL_PADDED, N, 3)
     atomic_numbers: Tensor  # (TOTAL_PADDED, N)
     atom_mask: Tensor  # (TOTAL_PADDED, N, 1)
@@ -138,38 +138,56 @@ class QuantumChargeTrainer:
 
         # Static index buffer for sequential deterministic evaluation
         self.static_eval_idx = Tensor(np.arange(self.config.batch_size, dtype=np.int32)).realize()
-        self.dataset: Optional[StaticFreeSolvDataset] = None
+        self.dataset: Optional[ContiguousPackedDataset] = None
 
-    def load_static_dataset(self) -> StaticFreeSolvDataset:
-        """Loads and packs the entire FreeSolv dataset into static contiguous device tensors."""
-        db_path = Path(self.config.database_path)
-        mol2_dir = Path(self.config.mol2_dir)
-
-        if not db_path.exists():
-            raise FileNotFoundError(f"FreeSolv database not found at: {db_path}")
-
-        with open(db_path, "rb") as f:
-            fs_db: Dict[str, Dict] = pickle.load(f, encoding="latin1")
-
-        mol2_files = sorted(list(mol2_dir.glob("*.mol2")))
+    def load_static_dataset(self, dataset_provider: Optional[Any] = None) -> ContiguousPackedDataset:
+        """Loads and packs molecular dataset into static contiguous device tensors."""
         records = []
-
-        for p in mol2_files:
-            stem = p.stem
-            if stem not in fs_db:
-                continue
-            entry = fs_db[stem]
-            expt = float(entry.get("expt", 0.0))
-            vdw = float(entry.get("calc_vdw", 0.0))
-
-            try:
-                mat = self.loader.load_material(str(p))
-                if mat.num_sites == 0:
+        if dataset_provider is not None:
+            entries = dataset_provider.load_entries()
+            for entry in entries:
+                try:
+                    mat = dataset_provider.get_material(entry.solute_id) or self.loader.load_material(entry.solute_id)
+                    if mat is None or mat.num_sites == 0:
+                        continue
+                    mat.compute_topological_base_charges(kappa=0.10, q_max=0.50)
+                    vdw = float(
+                        entry.calc_dG_solv
+                        if entry.calc_dG_solv is not None
+                        else getattr(mat, "solvation_free_energy_kcal_mol", 0.0)
+                    )
+                    expt = float(entry.expt_dG_solv)
+                    records.append((mat, vdw, expt))
+                except Exception:
                     continue
-                mat.compute_topological_base_charges(kappa=0.10, q_max=0.50)
-                records.append((mat, vdw, expt))
-            except Exception:
-                continue
+        else:
+            db_path = Path(self.config.database_path)
+            mol2_dir = Path(self.config.mol2_dir)
+
+            if not db_path.exists():
+                raise FileNotFoundError(f"Database not found at: {db_path}")
+
+            with open(db_path, "rb") as f:
+                fs_db: Dict[str, Dict] = pickle.load(f, encoding="latin1")
+
+            mol2_files = sorted(list(mol2_dir.glob("*.mol2")))
+
+            for p in mol2_files:
+                stem = p.stem
+                if stem not in fs_db:
+                    continue
+                entry = fs_db[stem]
+                expt = float(entry.get("expt", 0.0))
+                vdw = float(entry.get("calc_vdw", 0.0))
+
+                try:
+                    mat = self.loader.load_material(str(p))
+                    if mat.num_sites == 0:
+                        continue
+                    mat.compute_topological_base_charges(kappa=0.10, q_max=0.50)
+                    records.append((mat, vdw, expt))
+                except Exception:
+                    continue
 
         # Add pure water anchor if not present
         if not any(mat.name == "water" for mat, _, _ in records):
@@ -261,7 +279,7 @@ class QuantumChargeTrainer:
             coords_ens_np[:, k] = coords_np + rng.normal(0.0, 0.05, (total_padded, N, 3)).astype(np.float32) * mask_np
         coords_ens_t = Tensor(coords_ens_np).contiguous().realize()
 
-        ds = StaticFreeSolvDataset(
+        ds = ContiguousPackedDataset(
             coords=coords_t,
             atomic_numbers=z_t,
             atom_mask=mask_t,
