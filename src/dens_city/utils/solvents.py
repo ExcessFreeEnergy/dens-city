@@ -317,11 +317,30 @@ def derive_solvent_properties_from_structure(
     return props
 
 
+VACUUM_PROPERTIES = SolventProperties(
+    name="vacuum",
+    aliases=("vacuum", "gas", "vapor", "none", ""),
+    dielectric_constant=1.0,
+    refractive_index=1.0,
+    density_g_cm3=0.0,
+    surface_tension_mn_m=0.0,
+    solvent_class="vacuum",
+    molecular_weight=0.0,
+    abraham_alpha=0.0,
+    abraham_beta=0.0,
+    abraham_pi2=0.0,
+    dipole_moment_debye=0.0,
+)
+
+
 def get_solvent_properties(name: str) -> SolventProperties:
     """
     Retrieves full physical properties for a solvent by canonical name or alias.
     Falls back to first-principles QSPR derivation if not in the external database.
     """
+    if not name or str(name).strip().lower() in ("vacuum", "gas", "vapor", "none", ""):
+        return VACUUM_PROPERTIES
+
     db = SolventDatabase.get_default()
     props = db.get(name)
     if props is not None:
@@ -331,15 +350,34 @@ def get_solvent_properties(name: str) -> SolventProperties:
     return derive_solvent_properties_from_structure(name)
 
 
-def get_solvent_dielectric(name: str, default: float = 78.4) -> float:
-    """Returns static relative permittivity epsilon_r for a solvent."""
-    if not name or str(name).lower() in ("water", "aqueous", "h2o"):
-        return 78.4
-    try:
-        props = get_solvent_properties(name)
-        return float(props.dielectric_constant)
-    except Exception:
-        return default
+def get_solvent_dielectric(
+    name: str,
+    default: Optional[float] = None,
+    temp_k: Optional[float] = None,
+) -> float:
+    """
+    Returns relative permittivity epsilon_r for a solvent, with dynamic property lookup
+    and optional temperature adjustment. Raises KeyError if solvent is unregistered and no default is provided.
+    """
+    props = None
+    if not name or str(name).strip().lower() in ("vacuum", "gas", "vapor", "none", ""):
+        props = VACUUM_PROPERTIES
+    else:
+        db = SolventDatabase.get_default()
+        props = db.get(name)
+
+    if props is None:
+        if default is not None:
+            return float(default)
+        raise KeyError(f"Solvent '{name}' not found in SolventDatabase and no default dielectric provided.")
+
+    eps_298 = float(props.dielectric_constant)
+    if temp_k is not None and temp_k > 0:
+        # Temperature adjustment: eps(T) = eps_0 * exp(-b * (T - 298.15))
+        temp_diff = temp_k - 298.15
+        b_coef = 0.0046 if props.solvent_class == "polar_protic" else 0.0020
+        return float(max(1.0, eps_298 * math.exp(-b_coef * temp_diff)))
+    return eps_298
 
 
 def get_solvent_descriptors_vector(name: str) -> np.ndarray:
@@ -347,23 +385,23 @@ def get_solvent_descriptors_vector(name: str) -> np.ndarray:
     Returns a standardized 7-dimensional physical descriptor vector for the solvent:
     0: Onsager dielectric factor f_eps = (eps - 1) / (2*eps + 1) in [0, 0.5]
     1: Lorentz-Lorenz polarizability factor f_n = (n^2 - 1) / (n^2 + 2) in [0.15, 0.4]
-    2: Cavitation surface tension ratio gamma / 72.8 in [0.2, 1.0]
-    3: Molar volume ratio V_m / 100.0 in [0.18, 3.0]
-    4: Abraham hydrogen-bond acidity alpha in [0.0, 1.2]
-    5: Abraham hydrogen-bond basicity beta in [0.0, 1.0]
-    6: Normalized dipole moment mu / 4.0 in [0.0, 1.2]
+    2: Continuous cavitation surface tension scale gamma / (gamma + 25.0) in [0, 1)
+    3: Log-scaled molar volume ln(1 + V_m / 50.0)
+    4: Abraham hydrogen-bond acidity alpha in [0.0, 1.5]
+    5: Abraham hydrogen-bond basicity beta in [0.0, 1.5]
+    6: Bounded dipole moment tanh(mu / 3.0) in [0, 1)
     """
     props = get_solvent_properties(name)
     eps = max(1.0, props.dielectric_constant)
     f_eps = (eps - 1.0) / (2.0 * eps + 1.0)
     n = max(1.0, props.refractive_index)
     f_n = (n**2 - 1.0) / (n**2 + 2.0)
-    gamma_ratio = props.surface_tension_mn_m / 72.8
-    v_m_ratio = props.molar_volume_cm3_mol / 100.0
+    gamma_scale = props.surface_tension_mn_m / max(1.0, props.surface_tension_mn_m + 25.0)
+    v_m_scale = math.log1p(max(0.0, props.molar_volume_cm3_mol) / 50.0)
     alpha = props.abraham_alpha
     beta = props.abraham_beta
-    dipole_norm = props.dipole_moment_debye / 4.0
-    return np.array([f_eps, f_n, gamma_ratio, v_m_ratio, alpha, beta, dipole_norm], dtype=np.float32)
+    dipole_norm = math.tanh(max(0.0, props.dipole_moment_debye) / 3.0)
+    return np.array([f_eps, f_n, gamma_scale, v_m_scale, alpha, beta, dipole_norm], dtype=np.float32)
 
 
 def list_registered_solvents() -> Tuple[str, ...]:

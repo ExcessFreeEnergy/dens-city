@@ -42,7 +42,7 @@ def get_global_egnn_model() -> Any:
     return _GLOBAL_EGNN_MODEL
 
 
-def get_global_gb_solver(dielectric_constant: float = 78.4) -> Any:
+def get_global_gb_solver(dielectric_constant: float) -> Any:
     """Returns a module-level cached singleton GeneralizedBornSolvation instance."""
     global _GLOBAL_GB_SOLVERS
     if dielectric_constant not in _GLOBAL_GB_SOLVERS:
@@ -91,8 +91,8 @@ class MaterialPipelineTask:
     energy_engine: str = "classical"  # "classical", "electronegativity", "egnn", "auto"
     force_egnn: bool = False
     material_obj: Optional[Material] = None
-    solvent_name: str = "water"
-    dielectric_constant: float = 78.4
+    solvent_name: str = "vacuum"
+    dielectric_constant: Optional[float] = None
     formal_charge: Optional[float] = None
 
 
@@ -288,6 +288,9 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
     # If skip_bg is set, return early with cDFT observables
     if task.skip_bg:
         t_tot = time.perf_counter() - t_start
+        s_name_val = getattr(task, "solvent_name", "vacuum") or "vacuum"
+        is_vac_val = s_name_val.lower() in ("vacuum", "gas", "vapor", "none", "")
+        eps_solv_val = 1.0 if is_vac_val else getattr(task, "dielectric_constant", None)
         return MaterialPipelineResult(
             material_name=mat_basename,
             status=PipelineStatus.SUCCESS_CDFT_ONLY.value,
@@ -302,6 +305,10 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
             contact_ratio=contact_ratio,
             excess_adsorption_a2=gamma_ex,
             cdft_final_loss=cdft_loss,
+            solvation_free_energy_kcal_mol=0.0 if is_vac_val else None,
+            born_solvation_kcal_mol=0.0 if is_vac_val else None,
+            solvent_name=s_name_val,
+            solvent_dielectric=eps_solv_val,
             artifact_dir=mat_out_dir,
             artifacts=artifacts_created,
         )
@@ -455,6 +462,16 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
         excess_adsorption_a2=gamma_ex,
         cdft_final_loss=cdft_loss,
         bg_final_loss=bg_loss,
+        solvation_free_energy_kcal_mol=0.0
+        if (getattr(task, "solvent_name", "vacuum") or "vacuum").lower() in ("vacuum", "gas", "vapor", "none", "")
+        else None,
+        born_solvation_kcal_mol=0.0
+        if (getattr(task, "solvent_name", "vacuum") or "vacuum").lower() in ("vacuum", "gas", "vapor", "none", "")
+        else None,
+        solvent_name=getattr(task, "solvent_name", "vacuum") or "vacuum",
+        solvent_dielectric=1.0
+        if (getattr(task, "solvent_name", "vacuum") or "vacuum").lower() in ("vacuum", "gas", "vapor", "none", "")
+        else getattr(task, "dielectric_constant", None),
         artifact_dir=mat_out_dir,
         artifacts=artifacts_created,
     )
@@ -971,20 +988,29 @@ def execute_prepared_batch(
         if hasattr(task, "vdw_energy") and task.vdw_energy is not None:
             vdw_solv = float(task.vdw_energy)
         else:
-            s_name = getattr(task, "solvent_name", "water") or "water"
-            try:
-                from dens_city.utils.solvents import get_solvent_properties
+            s_name = getattr(task, "solvent_name", None) or "vacuum"
+            is_vacuum = s_name.lower() in ("vacuum", "gas", "vapor", "none", "")
+            if is_vacuum:
+                vdw_solv = 0.0
+            else:
+                try:
+                    from dens_city.utils.solvents import get_solvent_properties
 
-                solv_props = get_solvent_properties(s_name)
-                rho_s_a3 = (solv_props.density_g_cm3 * 6.02214076e23) / (max(1.0, solv_props.molecular_weight) * 1e24)
-                vdw_solv = mat.compute_solvation_in_solvent(
-                    solvent_sigma=solv_props.kinetic_diameter_a,
-                    solvent_rho=rho_s_a3,
-                    refractive_index=solv_props.refractive_index,
-                    temp_k=mat.temperature_k or 298.15,
-                )
-            except Exception:
-                vdw_solv = float(getattr(mat, "solvation_free_energy_kcal_mol", 0.0))
+                    solv_props = get_solvent_properties(s_name)
+                    rho_s_a3 = (solv_props.density_g_cm3 * 6.02214076e23) / (
+                        max(1.0, solv_props.molecular_weight) * 1e24
+                    )
+                    temp_k = float(
+                        mat.temperature_k if mat.temperature_k is not None else getattr(task, "temperature_k", 298.15)
+                    )
+                    vdw_solv = mat.compute_solvation_in_solvent(
+                        solvent_sigma=solv_props.kinetic_diameter_a,
+                        solvent_rho=rho_s_a3,
+                        refractive_index=solv_props.refractive_index,
+                        temp_k=temp_k,
+                    )
+                except Exception:
+                    vdw_solv = float(getattr(mat, "solvation_free_energy_kcal_mol", 0.0))
 
         solv_free_energy = vdw_solv
         delta_g_born_val = None
@@ -1000,13 +1026,19 @@ def execute_prepared_batch(
 
         if mat_engine in ("egnn", "electronegativity") and mat.num_sites > 0:
             try:
-                s_name = getattr(task, "solvent_name", "water") or "water"
-                if hasattr(task, "dielectric_constant") and task.dielectric_constant != 78.4:
+                s_name = getattr(task, "solvent_name", None) or "vacuum"
+                is_vacuum = s_name.lower() in ("vacuum", "gas", "vapor", "none", "")
+                if is_vacuum:
+                    eps_solvent = 1.0
+                elif hasattr(task, "dielectric_constant") and task.dielectric_constant is not None:
                     eps_solvent = float(task.dielectric_constant)
                 else:
                     from dens_city.utils.solvents import get_solvent_dielectric
 
-                    eps_solvent = get_solvent_dielectric(s_name, default=getattr(task, "dielectric_constant", 78.4))
+                    temp_k_val = float(
+                        mat.temperature_k if mat.temperature_k is not None else getattr(task, "temperature_k", 298.15)
+                    )
+                    eps_solvent = get_solvent_dielectric(s_name, temp_k=temp_k_val)
                 gb_solver = get_global_gb_solver(dielectric_constant=eps_solvent)
 
                 # Adaptive Boltzmann conformational ensemble (Weinreich FML principle):
@@ -1188,8 +1220,8 @@ def execute_prepared_batch(
             solvation_free_energy_kcal_mol=solv_free_energy,
             born_solvation_kcal_mol=delta_g_born_val,
             quantum_charges=quantum_q_list,
-            solvent_name=getattr(task, "solvent_name", "water") if task else "water",
-            solvent_dielectric=eps_solvent if "eps_solvent" in locals() else 78.4,
+            solvent_name=getattr(task, "solvent_name", "vacuum") if task else "vacuum",
+            solvent_dielectric=eps_solvent if "eps_solvent" in locals() and eps_solvent is not None else 1.0,
             artifact_dir=mat_out_dir,
         )
 

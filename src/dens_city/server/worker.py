@@ -423,7 +423,7 @@ class GPUBackgroundWorker:
         pool_id = self.pool_store.create_thermo_pool(
             pipeline_results=pipeline_results,
             candidate_metadata=candidate_meta,
-            solvent_id=params.get("solvent_id", "water"),
+            solvent_id=params.get("solvent_id", "vacuum"),
             parent_pool_id=parent_pool,
         )
 

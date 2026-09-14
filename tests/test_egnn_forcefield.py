@@ -442,6 +442,7 @@ def test_egnn_ensembled_solvation_readouts():
         atomic_numbers=z,
         atom_mask=atom_mask,
         dielectric_constant=78.4,
+        temperature_k=298.15,
     )
 
     assert q_mean.shape == (B, N)
@@ -455,6 +456,7 @@ def test_egnn_ensembled_solvation_readouts():
         atomic_numbers=z,
         atom_mask=atom_mask,
         dielectric_constant=78.4,
+        temperature_k=298.15,
         internal_energies=internal_e,
         return_global=True,
     )

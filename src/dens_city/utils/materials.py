@@ -12,7 +12,7 @@ import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -62,9 +62,9 @@ def compute_bulk_pressure(
 
 def compute_bmcsl_cavity_free_energy(
     sigma_solute: float,
-    solvent_sigma: float = 2.8,
-    solvent_rho: float = 0.0333,
-    temp_k: float = 298.15,
+    solvent_sigma: float,
+    solvent_rho: float,
+    temp_k: float,
 ) -> float:
     r"""
     Computes the reversible cavitation free energy \Delta G_cav (in kcal/mol) for inserting a hard-sphere
@@ -77,6 +77,11 @@ def compute_bmcsl_cavity_free_energy(
     \Delta G_cav / (k_B T) = -\ln(1 - \eta_S) + [3\eta_S / (1 - \eta_S)] y
                             + [3\eta_S / (1 - \eta_S) + 4.5 * (\eta_S / (1 - \eta_S))^2] y^2
     """
+    if solvent_sigma <= 0.0 or solvent_rho <= 0.0 or temp_k <= 0.0:
+        raise ValueError(
+            f"solvent_sigma, solvent_rho, and temp_k must be positive floats, got "
+            f"sigma={solvent_sigma}, rho={solvent_rho}, temp={temp_k}"
+        )
     eta = (math.pi / 6.0) * solvent_rho * (solvent_sigma**3)
     eta = max(0.01, min(0.65, eta))  # Physical bounds for dense liquid
     one_minus_eta = max(1e-12, 1.0 - eta)
@@ -542,11 +547,12 @@ class Material:
 
     def compute_solvation_in_solvent(
         self,
-        solvent_sigma: float = 2.8,
-        solvent_rho: float = 0.0333,
+        solvent_sigma: Optional[float] = None,
+        solvent_rho: Optional[float] = None,
         solvent_epsilon_k: Optional[float] = None,
         refractive_index: Optional[float] = None,
         temp_k: Optional[float] = None,
+        solvent: Optional[Union[str, Any]] = None,
     ) -> float:
         """
         Computes nonpolar solvation free energy (cavitation + WCA dispersion) in kcal/mol
@@ -555,7 +561,32 @@ class Material:
         it is derived dynamically from the solvent's refractive index via the Lorentz-Lorenz
         optical polarizability factor: eps_S = 120.0 * (f(n_D) / 0.205).
         """
+        if solvent is not None:
+            if isinstance(solvent, str):
+                from dens_city.utils.solvents import get_solvent_properties
+
+                solv_props = get_solvent_properties(solvent)
+            else:
+                solv_props = solvent
+
+            if solvent_sigma is None:
+                solvent_sigma = float(solv_props.kinetic_diameter_a)
+            if solvent_rho is None:
+                solvent_rho = float(
+                    (solv_props.density_g_cm3 * 6.02214076e23) / (max(1.0, solv_props.molecular_weight) * 1e24)
+                )
+            if refractive_index is None:
+                refractive_index = float(solv_props.refractive_index)
+
+        if solvent_sigma is None or solvent_rho is None:
+            raise ValueError(
+                "Explicit solvent parameters (solvent_sigma, solvent_rho) or a solvent object must be provided."
+            )
+
         temp = temp_k if temp_k is not None else self.temperature_k
+        if temp is None or temp <= 0.0:
+            raise ValueError(f"Thermodynamic temperature temp_k must be positive, got {temp}")
+
         sig_solute = self.effective_sigma
         eps_solute = self.effective_epsilon_k
 
@@ -1133,11 +1164,13 @@ def compute_neat_liquid_self_association_correction(
     beta_s: float,
     packing_fraction: float,
     temp_k: float = 298.15,
+    solute: Optional[Any] = None,
 ) -> float:
     """
     Computes first-principles self-association free energy correction for neat protic liquids
-    (solute == solvent) based on Statistical Associating Fluid Theory (SAFT) and Abraham associative product.
-    For neat protic fluids, cooperative 3D hydrogen bonding forms oligomers in the pure liquid phase.
+    (solute == solvent) based on Wertheim Statistical Associating Fluid Theory (SAFT-TPT1).
+    For neat protic fluids, cooperative hydrogen bonding forms oligomers in the pure liquid phase.
+    Scales with active donor-acceptor site count when solute Material is provided.
     Returns:
         float: delta_G_self_assoc in kcal/mol (negative stabilization bonus).
     """
@@ -1162,11 +1195,27 @@ def compute_neat_liquid_self_association_correction(
     if hbond_assoc <= 0.01:
         return 0.0
 
+    # Stoichiometric site count
+    n_assoc_pairs = 1
+    if solute is not None and hasattr(solute, "sites") and solute.sites:
+        n_donors = sum(
+            1 for s in solute.sites if getattr(s, "atomic_number", 0) in (7, 8) and getattr(s, "charge", 0.0) > 0.1
+        )
+        n_acceptors = sum(
+            1 for s in solute.sites if getattr(s, "atomic_number", 0) in (7, 8) and getattr(s, "charge", 0.0) < -0.1
+        )
+        if n_donors > 0 and n_acceptors > 0:
+            n_assoc_pairs = min(n_donors, n_acceptors)
+
     eta = max(0.01, min(0.65, float(packing_fraction)))
-    # Associative free energy from Wertheim/SAFT first-order thermodynamic perturbation:
-    # A_assoc ~ -2.85 * tanh(alpha * beta / 0.35) * ln(1 + 3 * eta)
-    assoc_factor = math.tanh(hbond_assoc / 0.35)
-    dg_assoc = -2.85 * assoc_factor * math.log(1.0 + 3.0 * eta)
+    kbt_kcal = 1.987204e-3 * max(10.0, float(temp_k))
+    eps_assoc_kcal = 5.6 * math.sqrt(hbond_assoc)
+    eps = eps_assoc_kcal / max(0.1, kbt_kcal)
+    g_hs = (1.0 - 0.5 * eta) / max(1e-6, (1.0 - eta) ** 3)
+    delta_ab = max(0.0, g_hs * 0.03 * (math.exp(min(12.0, eps)) - 1.0))
+    x_unbonded = 2.0 / (1.0 + math.sqrt(1.0 + 4.0 * eta * delta_ab))
+    a_site_kbt = math.log(max(1e-12, x_unbonded)) - (x_unbonded / 2.0) + 0.5
+    dg_assoc = 2.0 * n_assoc_pairs * a_site_kbt * kbt_kcal
     return float(dg_assoc)
 
 

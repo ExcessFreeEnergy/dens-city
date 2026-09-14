@@ -408,6 +408,7 @@ class EGNNMicroscopicEnergy:
         wall_sigma: float = 3.405,
         wall_epsilon_k: float = 119.8,
         wall_type: str = "stele93",
+        wall_fluid_density: Optional[float] = None,
         e_high: Optional[float] = 1e4,
         e_max: float = 1e20,
     ):
@@ -480,7 +481,28 @@ class EGNNMicroscopicEnergy:
         # Wall potential parameters
         self.sigma_wf = wall_sigma
         self.eps_wf_k = wall_epsilon_k
-        self.wall_prefactor = 2.0 * math.pi * (self.sigma_wf**2) * 0.0333 * self.eps_wf_k
+        if wall_fluid_density is not None and wall_fluid_density > 0:
+            rho_w = float(wall_fluid_density)
+        elif material is not None and getattr(material, "bulk_density_a3", None) is not None:
+            bd = material.bulk_density_a3
+            if hasattr(bd, "numpy"):
+                rho_w = float(bd.numpy().flatten()[0])
+            elif hasattr(bd, "item"):
+                rho_w = float(bd.item())
+            else:
+                rho_w = float(bd)
+        elif material is not None and getattr(material, "density_a3", None) is not None:
+            d_val = material.density_a3
+            if hasattr(d_val, "numpy"):
+                rho_w = float(d_val.numpy().flatten()[0])
+            elif hasattr(d_val, "item"):
+                rho_w = float(d_val.item())
+            else:
+                rho_w = float(d_val)
+        else:
+            rho_w = 1.0 / (self.sigma_wf**3)  # Dimensionless dense fluid scaling
+        self.wall_fluid_density = rho_w
+        self.wall_prefactor = 2.0 * math.pi * (self.sigma_wf**2) * self.wall_fluid_density * self.eps_wf_k
         self.steric_radius = 0.2 * self.sigma_wf
         self.v_wall_inf = 1e6
 

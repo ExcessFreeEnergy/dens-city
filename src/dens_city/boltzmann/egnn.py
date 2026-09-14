@@ -416,11 +416,11 @@ class EGNNForceField:
         base_charges: Optional[Tensor] = None,
         solvent_features: Optional[Tensor] = None,
         solvent_hbond_capacity: Optional[Union[float, Tensor]] = None,
-        dielectric_constant: float = 78.4,
+        dielectric_constant: Optional[float] = None,
         gb_solver=None,
         detach_trunk: bool = False,
         internal_energies: Optional[Tensor] = None,
-        temperature_k: float = 298.15,
+        temperature_k: Optional[float] = None,
         return_global: bool = False,
     ) -> Tuple[Tensor, ...]:
         r"""
@@ -436,6 +436,15 @@ class EGNNForceField:
             (optional) h_mol_mean: Tensor of shape (B, 384) if return_global is True
             (optional) coop_mean: Tensor of shape (B,) if return_global is True
         """
+        if dielectric_constant is None or dielectric_constant <= 0.0:
+            raise ValueError(
+                f"dielectric_constant must be explicitly provided as a positive float, got {dielectric_constant}"
+            )
+        if temperature_k is None or temperature_k <= 0.0:
+            raise ValueError(
+                f"temperature_k must be explicitly provided as a positive float in Kelvin, got {temperature_k}"
+            )
+
         if len(x_ensemble.shape) == 3:
             # (s, N, 3) -> treat as single molecule with B=1, s=s
             x_ensemble = x_ensemble.reshape(1, x_ensemble.shape[0], x_ensemble.shape[1], 3)

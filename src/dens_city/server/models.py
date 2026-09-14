@@ -82,7 +82,7 @@ class RunFullPipelineRequest(BaseModel):
     checkpoint: Optional[str] = Field(
         None, description="Optional path to existing trained_policy.pt to skip Stage 1 training"
     )
-    solvent_id: str = Field("water", description="Solvent environment (e.g. 'water', 'ethanol', 'vacuum')")
+    solvent_id: str = Field("vacuum", description="Solvent environment (e.g. 'vacuum', 'water', 'ethanol')")
     temperature_k: float = Field(300.0, gt=0.0, description="Thermodynamic temperature in Kelvin")
     batch_size: Optional[int] = Field(
         None, description="Optional static GPU power-of-2 batch size (auto-detected if omitted)"
@@ -133,7 +133,7 @@ class CDFTThermoRequest(BaseModel):
     target_spec: Optional[Dict[str, Any] | str] = Field(
         None, description="Target specification constraints dictionary or YAML path"
     )
-    solvent_id: str = Field("water", description="Solvent environment (e.g. 'water', 'ethanol', 'vacuum')")
+    solvent_id: str = Field("vacuum", description="Solvent environment (e.g. 'vacuum', 'water', 'ethanol')")
     temperature_k: float = Field(300.0, gt=0.0, description="Temperature in Kelvin (default: 300.0)")
     cdft_steps: int = Field(50, ge=10, le=500, description="cDFT Euler-Lagrange variational steps")
     bg_steps: int = Field(30, ge=0, le=200, description="Boltzmann Generator normalizing flow steps")

@@ -67,13 +67,15 @@ class GeneralizedBornSolvation:
 
     def __init__(
         self,
-        dielectric_constant: float = 78.4,
+        dielectric_constant: Optional[float] = None,
         solute_dielectric: float = 1.0,
         radius_offset_a: float = 0.09,
     ):
-        self.dielectric_constant = dielectric_constant
-        self.solute_dielectric = solute_dielectric
-        self.radius_offset_a = radius_offset_a
+        if dielectric_constant is not None and dielectric_constant <= 0.0:
+            raise ValueError(f"dielectric_constant must be positive, got {dielectric_constant}")
+        self.dielectric_constant = float(dielectric_constant) if dielectric_constant is not None else None
+        self.solute_dielectric = float(solute_dielectric)
+        self.radius_offset_a = float(radius_offset_a)
 
     def compute_born_radii(
         self,
@@ -215,6 +217,10 @@ class GeneralizedBornSolvation:
             atom_mask = atom_mask.reshape(B, N, 1)
 
         eps_solv = dielectric_constant if dielectric_constant is not None else self.dielectric_constant
+        if eps_solv is None:
+            raise ValueError(
+                "Solvent dielectric constant must be explicitly provided (e.g. from SolventProperties or target environment)."
+            )
         eps_solv = max(1.0, float(eps_solv))
 
         # Dielectric screening prefactor: -0.5 * (1/eps_in - 1/eps_out)
