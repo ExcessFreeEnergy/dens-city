@@ -993,11 +993,10 @@ def execute_prepared_batch(
         bg_losses = generator.train(steps=bg_steps, batch_size=batch_size, verbose=False)
         bg_loss = bg_losses[-1] if bg_losses else 0.0
 
-        conformer_stats = generator.evaluate_conformer_ensemble(n_samples=bg_samples)
-        stacked_samples = conformer_stats["coords"]
-        mean_energies = np.atleast_1d(conformer_stats["mean_energy"])
-        var_energies = np.atleast_1d(conformer_stats["var_energy"])
-        mean_log_pxs = np.atleast_1d(conformer_stats["mean_log_px"])
+        stacked_samples = generator.sample_coords(n_samples=bg_samples)
+        mean_energies = np.zeros(len(loaded_materials), dtype=np.float32)
+        var_energies = np.zeros(len(loaded_materials), dtype=np.float32)
+        mean_log_pxs = np.zeros(len(loaded_materials), dtype=np.float32)
         t_bg = time.perf_counter() - t_bg_start
 
         # 3. Extract Per-Material Trajectories and Dispatch Async Writes
@@ -1099,13 +1098,13 @@ def execute_prepared_batch(
 
                 # Adaptive Boltzmann conformational ensemble (Weinreich FML principle):
                 # Depth s depends on molecular flexibility (rotatable bonds):
-                # s=48 for very flexible long chains (N_rot >= 10) to sample coiled globules,
+                # s=64 for very flexible long chains (N_rot >= 10) to sample coiled globules (power of 2),
                 # s=32 for flexible (5 <= N_rot < 10), s=16 for medium (2 <= N_rot < 5), s=8 for rigid.
                 n_sites_real = mat.num_sites
                 n_pad = max(128, ((n_sites_real + 127) // 128) * 128)
                 n_rot = getattr(mat, "num_rotatable_bonds", 0)
                 if n_rot >= 10:
-                    n_conf = 48
+                    n_conf = 64
                 elif n_rot >= 5:
                     n_conf = 32
                 elif n_rot >= 2:

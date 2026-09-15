@@ -6,6 +6,7 @@ via variational Reverse Kullback-Leibler (KL) divergence minimization in pure ti
 import math
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+import numpy as np
 from tinygrad import Tensor, TinyJit, dtypes, nn
 from tinygrad.helpers import getenv, trange
 
@@ -90,8 +91,7 @@ class BoltzmannGenerator:
             self.origin_pool = None
 
         # Realize all flow weights and biases on device
-        for param in nn.state.get_parameters(self.flow):
-            param.realize()
+        Tensor.realize(*nn.state.get_parameters(self.flow))
 
         # Optimizer over all flow parameters
         opt_type = nn.optim.Muon if getenv("MUON") else nn.optim.SGD if getenv("SGD") else nn.optim.Adam
@@ -528,6 +528,15 @@ class BoltzmannGenerator:
         ):
             out = out[:, :n_real, :]
         return (out if n_samples > 1 else out.squeeze(0)).realize()
+
+    def sample_coords(self, n_samples: int = 1) -> np.ndarray:
+        """
+        Fast single-pass conformer coordinate sampling directly from flow without evaluating energy.
+        Returns:
+            np.ndarray of shape (n_samples, N, 3) containing 3D coordinates.
+        """
+        Tensor.training = False
+        return self._sample_batch(n_samples).realize().numpy()
 
     def log_prob(self, x: Tensor) -> Tensor:
         """

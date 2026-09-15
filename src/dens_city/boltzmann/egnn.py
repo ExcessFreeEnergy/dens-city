@@ -358,7 +358,7 @@ class EGNNForceField:
 
         # Halt gradient traversal into the 7-layer message-passing trunk per tinyspec.tex \op{Detach}
         if detach_trunk:
-            h = h.detach()
+            h = h.detach().realize()
 
         # Augment with 4-channel continuous 3D solvent descriptors (alpha, beta=alpha/rho, bq, chi)
         if solvent_features is not None:
@@ -367,6 +367,8 @@ class EGNNForceField:
             sf = self.gb_solver.compute_solvent_descriptors(x, atomic_numbers, atom_mask, base_charges=base_charges)
 
         node_inputs = Tensor.cat(h, sf, dim=-1)
+        if detach_trunk:
+            node_inputs = node_inputs.realize()
 
         # Head 1: Neural Charge Readout: delta_q_i(x) with physical tanh squashing
         delta_q_raw = self.charge_mlp[0](node_inputs)
@@ -412,6 +414,8 @@ class EGNNForceField:
         std_pool = (var_pool + 1e-6).sqrt()  # (B, F)
 
         graph_features = Tensor.cat(mean_pool, max_pool, std_pool, dim=-1)  # (B, 384)
+        if detach_trunk:
+            graph_features = graph_features.realize()
         delta_coop_raw = self.global_mlp[0](graph_features)
         delta_coop_raw = self.global_mlp[1](delta_coop_raw)
         delta_coop_raw = self.global_mlp[2](delta_coop_raw).reshape(B)
@@ -552,6 +556,8 @@ class EGNNForceField:
             detach_trunk=detach_trunk,
             return_global=True,
         )
+        if detach_trunk:
+            Tensor.realize(q_pred, delta_vdw_mol, delta_g_coop, graph_features)
 
         if gb_solver is None:
             gb_solver = self.gb_solver
@@ -563,6 +569,8 @@ class EGNNForceField:
             atom_mask=m_flat,
             dielectric_constant=dielectric_constant,
         )
+        if detach_trunk:
+            gb_tensor = gb_tensor.realize()
 
         # Normalized Boltzmann weights: w_k \propto exp(-\Delta E_k / k_B T)
         kb = 0.001987204  # kcal / (mol * K)
@@ -674,11 +682,12 @@ class EGNNForceField:
 
         _, _, a_mask, _, _ = self._prepare_inputs(x_in, atomic_numbers, atom_mask, molecule_mask)
         grad = x_in.grad if x_in.grad is not None else Tensor.zeros_like(x_in)
-        forces = (-grad * a_mask).realize()
+        forces = -grad * a_mask
+        Tensor.realize(u_total, forces)
         for p in nn.state.get_parameters(self):
             p.grad = None
         x_in.grad = None
-        return u_total.realize(), forces
+        return u_total, forces
 
     def compute_energy_forces_and_charges(
         self,
@@ -765,11 +774,12 @@ class EGNNForceField:
         loss.backward()
 
         grad = x_in.grad if x_in.grad is not None else Tensor.zeros_like(x_in)
-        forces = (-grad * atom_mask).realize()
+        forces = -grad * atom_mask
+        Tensor.realize(u_total, forces, q_final)
         for p in nn.state.get_parameters(self):
             p.grad = None
         x_in.grad = None
-        return u_total.realize(), forces, q_final
+        return u_total, forces, q_final
 
     def get_jit_evaluator(self) -> Callable[[Tensor, Tensor, Tensor, Tensor], Tuple[Tensor, Tensor]]:
         """
