@@ -398,6 +398,36 @@ Execution Modes & Examples:
         default=False,
         help="Clean up intermediate artifact pools to prevent disk space creep",
     )
+    mode_group.add_argument(
+        "--recalibrate-krr",
+        action="store_true",
+        default=False,
+        help="Recalibrate the analytical Delta-KRR residual model using exact Cholesky decomposition across FreeSolv and Solvatum datasets",
+    )
+    mode_group.add_argument(
+        "--krr-sigma",
+        type=float,
+        default=25.0,
+        help="Gaussian RBF kernel lengthscale parameter for Delta-KRR (default: 25.0)",
+    )
+    mode_group.add_argument(
+        "--krr-lambda",
+        type=float,
+        default=1e-3,
+        help="L2 ridge regularization penalty for Delta-KRR matrix inversion (default: 1e-3)",
+    )
+    mode_group.add_argument(
+        "--krr-out",
+        type=str,
+        default="data/checkpoints/krr_residual_weights.npz",
+        help="Output filepath for recalibrated Delta-KRR checkpoint archive",
+    )
+    mode_group.add_argument(
+        "--krr-deduplicate",
+        action="store_true",
+        default=True,
+        help="Enforce canonical SMILES and feature-space deduplication to prevent Gram singularity and LOOCV data leakage",
+    )
 
     # -------------------------------------------------------------------------
     # Server & MCP Options
@@ -1332,6 +1362,24 @@ def main(argv: Optional[List[str]] = None) -> int:
             force_egnn=args.force_egnn,
             batch_size=args.batch_size if ("-b" in argv or "--batch-size" in argv) else None,
         )
+
+    # =========================================================================
+    # MODE 9.5: Analytical Delta-KRR Universal Recalibration
+    # =========================================================================
+    if args.recalibrate_krr:
+        from dens_city.boltzmann.train_charges import recalibrate_universal_krr
+
+        print(colored("=" * 88, "magenta"))
+        print(colored("  MODE 9.5: Universal Analytical Delta-KRR Recalibration", "magenta"))
+        print(colored("=" * 88, "magenta"))
+        recalibrate_universal_krr(
+            sigma=args.krr_sigma,
+            reg_lambda=args.krr_lambda,
+            save_path=args.krr_out,
+            deduplicate=args.krr_deduplicate,
+            verbose=True,
+        )
+        return 0
 
     # =========================================================================
     # MODE 10: Standard Coupled cDFT Screening Mode (Default)

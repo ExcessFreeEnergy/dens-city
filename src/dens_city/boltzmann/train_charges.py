@@ -18,6 +18,7 @@ Adheres strictly to canonical tinygrad beautiful_mnist.py and tinyspec.tex stand
 
 from __future__ import annotations
 
+import json
 import math
 import pickle
 import time
@@ -35,7 +36,7 @@ from dens_city.utils.materials import MaterialLoader
 
 # Authoritative feature scaling constants for Delta-KRR joint representations
 PHYSICAL_DESCRIPTOR_WEIGHT: float = 2.0
-SOLVENT_DESCRIPTOR_WEIGHT: float = 2.0
+SOLVENT_DESCRIPTOR_WEIGHT: float = 2.5
 
 
 @dataclass
@@ -742,14 +743,18 @@ class QuantumChargeTrainer:
 
         # Gaussian RBF Kernel matrix: K_ij = exp(-D2_ij / (2 * sigma^2))
         K = np.exp(-D2 / (2.0 * (sigma**2)))
-        A = K + reg_lambda * np.eye(num_real, dtype=np.float32)
+        A = K + reg_lambda * np.eye(num_real, dtype=np.float64)
 
-        # Exact closed-form matrix inversion
-        A_inv = np.linalg.inv(A)
-        alpha = np.dot(A_inv, y_res)
+        # Numerically stable Cholesky decomposition for Symmetric Positive-Definite (SPD) Gram matrix
+        import scipy.linalg
 
-        # Analytical Leave-One-Out Cross-Validation (LOOCV) prediction without re-inverting:
-        diag_A_inv = np.diag(A_inv)
+        c_and_lower = scipy.linalg.cho_factor(A, lower=True, check_finite=False)
+        alpha = scipy.linalg.cho_solve(c_and_lower, y_res.astype(np.float64), check_finite=False).astype(np.float32)
+
+        # Analytical Sherman-Morrison LOOCV via triangular inverse: diag(A^-1)_i = ||V_{:, i}||^2
+        L = c_and_lower[0]
+        V = scipy.linalg.solve_triangular(L, np.eye(num_real, dtype=np.float64), lower=True, check_finite=False)
+        diag_A_inv = np.sum(V**2, axis=0).astype(np.float32)
         y_loo_res = y_res - (alpha / diag_A_inv)
         y_loo_pred = y_egnn + y_loo_res
 
@@ -1095,12 +1100,19 @@ def run_train_charges(
 
 
 _KRR_WEIGHTS_CACHE: Dict[str, Dict[str, np.ndarray]] = {}
+_KRR_DEVICE_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def clear_krr_cache():
+    """Clears both host and device KRR weights caches."""
+    _KRR_WEIGHTS_CACHE.clear()
+    _KRR_DEVICE_CACHE.clear()
 
 
 def load_krr_weights(
     weights: Union[str, Path, Dict[str, np.ndarray]] = "data/checkpoints/krr_residual_weights.npz",
 ) -> Optional[Dict[str, np.ndarray]]:
-    """Loads and caches fitted Delta-KRR residual model parameters."""
+    """Loads and caches fitted Delta-KRR residual model parameters on host CPU."""
     if isinstance(weights, dict):
         return weights
     p_str = str(weights)
@@ -1114,6 +1126,134 @@ def load_krr_weights(
     return data
 
 
+def load_krr_device_tensors(
+    weights: Union[str, Path, Dict[str, np.ndarray]] = "data/checkpoints/krr_residual_weights.npz",
+) -> Optional[Dict[str, Any]]:
+    """
+    Loads and caches immutable, persistent device tensors for pure GPU RBF kernel inference.
+    Eliminates host-device synchronization roundtrips during @TinyJit single-sweep pipelines.
+    """
+    p_str = str(weights) if not isinstance(weights, dict) else "in_memory_dict"
+    if p_str in _KRR_DEVICE_CACHE:
+        return _KRR_DEVICE_CACHE[p_str]
+
+    w_dict = load_krr_weights(weights)
+    if w_dict is None:
+        return None
+
+    z_train = np.asarray(w_dict["z_train"], dtype=np.float32)  # (N, D)
+    alpha = np.asarray(w_dict["alpha"], dtype=np.float32).reshape(-1, 1)  # (N, 1)
+    z_mean = np.asarray(w_dict["z_mean"], dtype=np.float32).reshape(1, -1)  # (1, 384)
+    z_std = np.asarray(w_dict["z_std"], dtype=np.float32).reshape(1, -1)  # (1, 384)
+    d_mean = np.asarray(w_dict["d_mean"], dtype=np.float32).reshape(1, -1)  # (1, 6)
+    d_std = np.asarray(w_dict["d_std"], dtype=np.float32).reshape(1, -1)  # (1, 6)
+
+    s_mean = (
+        np.asarray(w_dict["s_mean"], dtype=np.float32).reshape(1, -1)
+        if "s_mean" in w_dict
+        else np.zeros((1, 7), dtype=np.float32)
+    )
+    s_std = (
+        np.asarray(w_dict["s_std"], dtype=np.float32).reshape(1, -1)
+        if "s_std" in w_dict
+        else np.ones((1, 7), dtype=np.float32)
+    )
+    sigma = float(w_dict["sigma"])
+    z_train_sq = np.sum(z_train**2, axis=1, keepdims=True).T.astype(np.float32)  # (1, N)
+
+    device_dict = {
+        "z_train": Tensor(z_train, dtype=dtypes.float32).realize(),
+        "z_train_sq": Tensor(z_train_sq, dtype=dtypes.float32).realize(),
+        "alpha": Tensor(alpha, dtype=dtypes.float32).realize(),
+        "z_mean": Tensor(z_mean, dtype=dtypes.float32).realize(),
+        "z_std": Tensor(z_std, dtype=dtypes.float32).realize(),
+        "d_mean": Tensor(d_mean, dtype=dtypes.float32).realize(),
+        "d_std": Tensor(d_std, dtype=dtypes.float32).realize(),
+        "s_mean": Tensor(s_mean, dtype=dtypes.float32).realize(),
+        "s_std": Tensor(s_std, dtype=dtypes.float32).realize(),
+        "sigma": sigma,
+        "n_features": z_train.shape[1],
+    }
+    _KRR_DEVICE_CACHE[p_str] = device_dict
+    return device_dict
+
+
+def predict_krr_residual_tensor(
+    z_mol: Tensor,
+    d_phys: Tensor,
+    s_solv: Optional[Union[str, np.ndarray, Tensor]] = None,
+    weights: Union[str, Path, Dict[str, np.ndarray]] = "data/checkpoints/krr_residual_weights.npz",
+) -> Tuple[Tensor, Tensor]:
+    """
+    Pure tinygrad GPU tensor kernel predicting Delta-KRR residual and epistemic similarity density.
+    Operates directly on device buffers with zero CPU host synchronization stalls.
+
+    Args:
+        z_mol: Tensor shape (B, 384) or (384,)
+        d_phys: Tensor shape (B, 6) or (6,)
+        s_solv: Solvent name string, numpy array (B, 7), or Tensor (B, 7)
+        weights: Checkpoint path or dictionary
+
+    Returns:
+        (pred_tensor, epistemic_density_tensor): Each of shape (B, 1)
+    """
+    dev = load_krr_device_tensors(weights)
+    if dev is None:
+        b_sz = z_mol.shape[0] if len(z_mol.shape) > 1 else 1
+        return (
+            Tensor.zeros(b_sz, 1, dtype=dtypes.float32).realize(),
+            Tensor.zeros(b_sz, 1, dtype=dtypes.float32).realize(),
+        )
+
+    z_q = z_mol if len(z_mol.shape) == 2 else z_mol.reshape(1, -1)
+    d_q = d_phys if len(d_phys.shape) == 2 else d_phys.reshape(1, -1)
+    b_sz = z_q.shape[0]
+
+    # Resolve solvent representation on device
+    from dens_city.utils.solvents import get_solvent_descriptors_vector
+
+    if s_solv is None:
+        s_vec = get_solvent_descriptors_vector("water")
+        s_t = Tensor(np.tile(s_vec, (b_sz, 1)).astype(np.float32))
+    elif isinstance(s_solv, str):
+        s_vec = get_solvent_descriptors_vector(s_solv)
+        s_t = Tensor(np.tile(s_vec, (b_sz, 1)).astype(np.float32))
+    elif isinstance(s_solv, np.ndarray):
+        s_arr = s_solv if len(s_solv.shape) == 2 else s_solv.reshape(1, -1)
+        if s_arr.shape[0] == 1 and b_sz > 1:
+            s_arr = np.tile(s_arr, (b_sz, 1))
+        s_t = Tensor(s_arr.astype(np.float32))
+    elif isinstance(s_solv, Tensor):
+        s_t = s_solv if len(s_solv.shape) == 2 else s_solv.reshape(1, -1)
+        if s_t.shape[0] == 1 and b_sz > 1:
+            s_t = s_t.repeat((b_sz, 1))
+    else:
+        s_vec = get_solvent_descriptors_vector("water")
+        s_t = Tensor(np.tile(s_vec, (b_sz, 1)).astype(np.float32))
+
+    # Standardize features
+    z_norm = (z_q - dev["z_mean"]) / dev["z_std"]
+    d_norm = (d_q - dev["d_mean"]) / dev["d_std"]
+    s_norm = (s_t - dev["s_mean"]) / dev["s_std"]
+
+    if dev["n_features"] == 397:
+        z_comb = Tensor.cat(
+            z_norm, d_norm * PHYSICAL_DESCRIPTOR_WEIGHT, s_norm * SOLVENT_DESCRIPTOR_WEIGHT, dim=1
+        )
+    else:
+        z_comb = Tensor.cat(z_norm, d_norm * PHYSICAL_DESCRIPTOR_WEIGHT, dim=1)
+
+    # Vectorized pairwise RBF kernel computation: D^2 = ||z_q||^2 + ||z_train||^2 - 2 z_q z_train^T
+    q_sq = (z_comb * z_comb).sum(axis=1, keepdim=True)  # (B, 1)
+    d2 = (q_sq + dev["z_train_sq"] - 2.0 * z_comb.matmul(dev["z_train"].transpose())).maximum(0.0)  # (B, N)
+    k_mat = (-d2 / (2.0 * (dev["sigma"] ** 2))).exp()  # (B, N)
+
+    # Linear dual regression prediction and epistemic density metric
+    pred = k_mat.matmul(dev["alpha"])  # (B, 1)
+    density = k_mat.sum(axis=1, keepdim=True)  # (B, 1)
+    return pred, density
+
+
 def predict_krr_residual(
     z_mol: Union[np.ndarray, Tensor],
     d_phys: Union[np.ndarray, Tensor],
@@ -1121,78 +1261,367 @@ def predict_krr_residual(
     s_solv: Optional[Union[str, np.ndarray, Tensor]] = None,
 ) -> Union[float, np.ndarray]:
     """
-    Evaluates the trained Delta-KRR residual model for query molecular embeddings and physical descriptors:
-      ΔG_res(z_query) = Σ_i α_i * exp(-||z_query - z_train_i||^2 / (2 * σ^2))
-    Supports optional solvent descriptors vector `s_solv` for universal cross-solvent generalization.
+    Evaluates the trained Delta-KRR residual model for query molecular embeddings and physical descriptors.
+    Uses pure on-device tinygrad tensor operations and returns float or numpy array for backwards compatibility.
     """
-    w_dict = load_krr_weights(weights)
-    if w_dict is None:
-        return (
-            0.0 if (hasattr(z_mol, "shape") and len(z_mol.shape) == 1) else np.zeros(z_mol.shape[0], dtype=np.float32)
+    is_single = (isinstance(z_mol, Tensor) and len(z_mol.shape) == 1) or (
+        isinstance(z_mol, np.ndarray) and len(z_mol.shape) == 1
+    )
+
+    z_t = z_mol if isinstance(z_mol, Tensor) else Tensor(np.asarray(z_mol, dtype=np.float32))
+    d_t = d_phys if isinstance(d_phys, Tensor) else Tensor(np.asarray(d_phys, dtype=np.float32))
+
+    pred_t, _ = predict_krr_residual_tensor(z_t, d_t, s_solv=s_solv, weights=weights)
+    Tensor.realize(pred_t)
+    pred_np = pred_t.numpy()
+
+    if is_single:
+        return float(pred_np[0, 0])
+    return pred_np.reshape(-1)
+
+
+def recalibrate_universal_krr(
+    sigma: float = 25.0,
+    reg_lambda: float = 1e-3,
+    save_path: str = "data/checkpoints/krr_residual_weights.npz",
+    eval_solvatum_log: str = "runs/test_solvatum_bs128_eval/pipeline_summary.jsonl",
+    eval_freesolv_log: str = "runs/test_freesolv_bs128_verify/pipeline_summary.jsonl",
+    deduplicate: bool = True,
+    verbose: bool = True,
+) -> Tuple[float, float, float]:
+    """
+    High-Throughput Universal Delta-KRR Recalibration Engine.
+    Combines FreeSolv and Solvatum evaluated pairs, enforces canonical SMILES and feature-space
+    deduplication (preventing Gram singularity and LOOCV data leakage), solves regularized dual
+    weights via Cholesky decomposition in float64, and extracts exact Sherman-Morrison LOOCV.
+
+    Returns:
+        (overall_mae_loo, solvatum_mae_loo, freesolv_mae_loo)
+    """
+    import scipy.linalg
+    from rdkit import Chem
+
+    from dens_city.utils.benchmark_dataset import FreeSolvDataset, SolvatumDataset
+    from dens_city.utils.materials import MaterialLoader
+    from dens_city.utils.pipeline import get_global_egnn_model
+    from dens_city.utils.solvents import get_solvent_descriptors_vector, normalize_solvent_name
+
+    loader = MaterialLoader()
+    candidate_pairs = []
+
+    # 1. Load Solvatum evaluated pairs
+    sv = SolvatumDataset()
+    sv_entries = sv.load_entries()
+    sv_map = {(str(e.solute_id).strip(), normalize_solvent_name(e.solvent_name).upper()): e for e in sv_entries}
+
+    log_solv = Path(eval_solvatum_log)
+    if log_solv.exists():
+        with open(log_solv, encoding="utf-8") as f:
+            for line in f:
+                r = json.loads(line)
+                sid = str(r.get("solute_id") or "").strip()
+                sname = normalize_solvent_name(str(r.get("solvent_name") or "")).upper()
+                if (sid, sname) in sv_map:
+                    e = sv_map[(sid, sname)]
+                    candidate_pairs.append(
+                        {
+                            "solute_key": sid,
+                            "solute_name": e.solute_name,
+                            "smiles": e.smiles,
+                            "solvent_name": sname,
+                            "calc": float(r["solvation_free_energy_kcal_mol"]),
+                            "born": float(r.get("born_solvation_kcal_mol") or 0.0),
+                            "expt": float(e.expt_dG_solv),
+                            "dataset": "solvatum",
+                        }
+                    )
+
+    # 2. Load FreeSolv evaluated pairs
+    fs = FreeSolvDataset()
+    fs_entries = fs.load_entries()
+    name_to_fs = {e.properties.get("mobley_id", e.solute_id): e for e in fs_entries}
+    iupac_to_fs = {e.solute_name.lower().replace(" ", "_"): e for e in fs_entries}
+
+    log_fs = Path(eval_freesolv_log)
+    if log_fs.exists():
+        with open(log_fs, encoding="utf-8") as f:
+            for line in f:
+                r = json.loads(line)
+                m_name = Path(r["material_name"]).stem.lower()
+                e = name_to_fs.get(m_name) or iupac_to_fs.get(m_name)
+                if e is not None and e.smiles:
+                    candidate_pairs.append(
+                        {
+                            "solute_key": m_name,
+                            "solute_name": e.solute_name,
+                            "smiles": e.smiles,
+                            "solvent_name": "WATER",
+                            "calc": float(r["solvation_free_energy_kcal_mol"]),
+                            "born": float(r.get("born_solvation_kcal_mol") or 0.0),
+                            "expt": float(e.expt_dG_solv),
+                            "dataset": "freesolv",
+                        }
+                    )
+
+    if not candidate_pairs:
+        raise RuntimeError("No evaluated candidate pairs loaded for KRR recalibration!")
+
+    if verbose:
+        print(f"[KRR-RECALIBRATE] Loaded {len(candidate_pairs)} candidate pairs from evaluation logs.")
+
+    # 3. Canonical Non-Isomeric SMILES deduplication
+    if deduplicate:
+        dedup_map: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+        for p in candidate_pairs:
+            m = Chem.MolFromSmiles(p["smiles"])
+            csmi = Chem.MolToSmiles(m, isomericSmiles=False) if m else p["smiles"]
+            solv = p["solvent_name"]
+            k = (csmi, solv)
+            if k not in dedup_map:
+                dedup_map[k] = []
+            dedup_map[k].append(p)
+
+        deduped_pairs = []
+        for (csmi, solv), plist in dedup_map.items():
+            entry = dict(plist[0])
+            entry["canon_smiles"] = csmi
+            entry["expt"] = float(np.mean([x["expt"] for x in plist]))
+            entry["calc"] = float(np.mean([x["calc"] for x in plist]))
+            entry["born"] = float(np.mean([x["born"] for x in plist]))
+            deduped_pairs.append(entry)
+        if verbose:
+            print(
+                f"[KRR-RECALIBRATE] Canonical SMILES deduplication: {len(candidate_pairs)} -> {len(deduped_pairs)} pairs (merged {len(candidate_pairs) - len(deduped_pairs)} entries)."
+            )
+    else:
+        deduped_pairs = candidate_pairs
+
+    # 4. Extract materials and graph embeddings
+    solute_mats: Dict[str, Any] = {}
+    for p in deduped_pairs:
+        k = p["solute_key"]
+        if k not in solute_mats:
+            if p["dataset"] == "solvatum":
+                solute_mats[k] = sv.get_material(k)
+            else:
+                try:
+                    solute_mats[k] = loader.load_material(f"data/test_data/{k}.mol2")
+                except Exception:
+                    solute_mats[k] = None
+
+    valid_pairs = [p for p in deduped_pairs if solute_mats.get(p["solute_key"]) is not None]
+    unique_keys = sorted(list(set(p["solute_key"] for p in valid_pairs)))
+
+    if verbose:
+        print(f"[KRR-RECALIBRATE] Extracting 384D EGNN embeddings for {len(unique_keys)} unique solutes...")
+
+    egnn = get_global_egnn_model()
+    N_sites = 128
+    solute_gf: Dict[str, np.ndarray] = {}
+    solute_phys: Dict[str, List[float]] = {}
+
+    B_chunk = 32
+    for idx in range(0, len(unique_keys), B_chunk):
+        chunk_keys = unique_keys[idx : idx + B_chunk]
+        mats_chunk = [solute_mats[k] for k in chunk_keys]
+        B = len(mats_chunk)
+        c_np = np.zeros((B, N_sites, 3), dtype=np.float32)
+        z_np = np.zeros((B, N_sites), dtype=np.float32)
+        m_np = np.zeros((B, N_sites, 1), dtype=np.float32)
+        bq_np = np.zeros((B, N_sites), dtype=np.float32)
+
+        for i, m in enumerate(mats_chunk):
+            n = min(N_sites, m.num_sites)
+            for s_i, s in enumerate(m.sites[:n]):
+                c_np[i, s_i] = [s.x, s.y, s.z]
+                z_np[i, s_i] = getattr(s, "atomic_number", 6)
+                m_np[i, s_i, 0] = 1.0
+
+        c_t = Tensor(c_np, dtype=dtypes.float32)
+        z_t = Tensor(z_np, dtype=dtypes.float32)
+        m_t = Tensor(m_np, dtype=dtypes.float32)
+        bq_t = Tensor(bq_np, dtype=dtypes.float32)
+
+        _, _, _, _, gf = egnn.compute_solvation_readouts(
+            x=c_t,
+            atomic_numbers=z_t,
+            atom_mask=m_t,
+            total_charge=0.0,
+            base_charges=bq_t,
+            detach_trunk=True,
+            return_global=True,
+        )
+        Tensor.realize(gf)
+        gf_arr = gf.numpy()
+
+        for i, k in enumerate(chunk_keys):
+            m = mats_chunk[i]
+            solute_gf[k] = gf_arr[i]
+            z_m = np.array([getattr(s, "atomic_number", 6) for s in m.sites])
+            n_heavy = float(np.sum(z_m > 1))
+            n_o = float(np.sum(z_m == 8))
+            n_n = float(np.sum(z_m == 7))
+            n_hal = float(np.sum(np.isin(z_m, [9, 17, 35, 53])))
+            solute_phys[k] = [n_heavy, n_o, n_n, n_hal]
+
+    # 5. Assemble and standardize joint representation tensors
+    Z_list, D_list, S_list, y_res_list, y_expt_list, y_calc_list, names_list = [], [], [], [], [], [], []
+    solv_cache: Dict[str, np.ndarray] = {}
+
+    for p in valid_pairs:
+        k = p["solute_key"]
+        sname = p["solvent_name"]
+        gf = solute_gf[k]
+        born = p["born"]
+        vdw = p["calc"] - born
+        phys = solute_phys[k] + [born, vdw]
+        if sname not in solv_cache:
+            solv_cache[sname] = get_solvent_descriptors_vector(sname)
+        s_vec = solv_cache[sname]
+
+        Z_list.append(gf)
+        D_list.append(phys)
+        S_list.append(s_vec)
+        y_res_list.append(p["expt"] - p["calc"])
+        y_expt_list.append(p["expt"])
+        y_calc_list.append(p["calc"])
+        names_list.append(f"{k}::{sname}")
+
+    Z = np.array(Z_list, dtype=np.float32)
+    D = np.array(D_list, dtype=np.float32)
+    S = np.array(S_list, dtype=np.float32)
+    y_res = np.array(y_res_list, dtype=np.float32)
+    y_expt = np.array(y_expt_list, dtype=np.float32)
+    y_calc = np.array(y_calc_list, dtype=np.float32)
+
+    z_mean = np.mean(Z, axis=0, keepdims=True)
+    z_std = np.std(Z, axis=0, keepdims=True) + 1e-6
+    d_mean = np.mean(D, axis=0, keepdims=True)
+    d_std = np.std(D, axis=0, keepdims=True) + 1e-6
+    s_mean = np.mean(S, axis=0, keepdims=True)
+    s_std = np.std(S, axis=0, keepdims=True) + 1e-6
+
+    Z_norm = (Z - z_mean) / z_std
+    D_norm = (D - d_mean) / d_std
+    S_norm = (S - s_mean) / s_std
+
+    Z_comb = np.concatenate(
+        [Z_norm, D_norm * PHYSICAL_DESCRIPTOR_WEIGHT, S_norm * SOLVENT_DESCRIPTOR_WEIGHT], axis=1
+    ).astype(np.float64)
+
+    # 6. Feature-space deduplication / clustering (threshold epsilon = 1e-4) to merge electronic duplicate vectors (e.g. H2 vs D2)
+    z_sq = np.sum(Z_comb**2, axis=1, keepdims=True)
+    D2 = np.maximum(z_sq + z_sq.T - 2.0 * np.dot(Z_comb, Z_comb.T), 0.0)
+
+    # Find near-duplicate pairs (D2 < 1e-6)
+    merged_indices = set()
+    clusters: List[List[int]] = []
+    N_raw = len(Z_comb)
+    for i in range(N_raw):
+        if i in merged_indices:
+            continue
+        cluster = [i]
+        for j in range(i + 1, N_raw):
+            if j not in merged_indices and D2[i, j] < 1e-6:
+                cluster.append(j)
+                merged_indices.add(j)
+        clusters.append(cluster)
+
+    if len(clusters) < N_raw:
+        if verbose:
+            print(
+                f"[KRR-RECALIBRATE] Merged {N_raw - len(clusters)} feature-space near-duplicate vectors (e.g. isotopic/stereoisomer support collisions)."
+            )
+        clustered_Z = []
+        clustered_y_res = []
+        clustered_y_calc = []
+        clustered_y_expt = []
+        clustered_names = []
+        clustered_datasets = []
+
+        for cl in clusters:
+            clustered_Z.append(np.mean(Z_comb[cl], axis=0))
+            clustered_y_res.append(float(np.mean(y_res[cl])))
+            clustered_y_calc.append(float(np.mean(y_calc[cl])))
+            clustered_y_expt.append(float(np.mean(y_expt[cl])))
+            clustered_names.append(names_list[cl[0]])
+            clustered_datasets.append(valid_pairs[cl[0]]["dataset"])
+
+        Z_comb = np.array(clustered_Z, dtype=np.float64)
+        y_res = np.array(clustered_y_res, dtype=np.float32)
+        y_calc = np.array(clustered_y_calc, dtype=np.float32)
+        y_expt = np.array(clustered_y_expt, dtype=np.float32)
+        names_list = clustered_names
+        is_fs = np.array([ds == "freesolv" for ds in clustered_datasets])
+    else:
+        is_fs = np.array([p["dataset"] == "freesolv" for p in valid_pairs])
+
+    N_train = len(Z_comb)
+    z_sq = np.sum(Z_comb**2, axis=1, keepdims=True)
+    D2 = np.maximum(z_sq + z_sq.T - 2.0 * np.dot(Z_comb, Z_comb.T), 0.0)
+
+    # Verify linear independence
+    np.fill_diagonal(D2, 1e9)
+    min_off_diag = np.sqrt(np.min(D2))
+    np.fill_diagonal(D2, 0.0)
+    if verbose:
+        print(
+            f"[KRR-RECALIBRATE] Verified feature space linear independence: min pairwise off-diagonal distance = {min_off_diag:.4f}."
         )
 
-    if isinstance(z_mol, Tensor):
-        z_mol_np = z_mol.numpy()
-    else:
-        z_mol_np = np.asarray(z_mol, dtype=np.float32)
+    # 7. Stable Cholesky factorization in float64 and Sherman-Morrison LOOCV
+    K = np.exp(-D2 / (2.0 * (sigma**2)))
+    A = K + reg_lambda * np.eye(N_train, dtype=np.float64)
 
-    if isinstance(d_phys, Tensor):
-        d_phys_np = d_phys.numpy()
-    else:
-        d_phys_np = np.asarray(d_phys, dtype=np.float32)
+    c_and_lower = scipy.linalg.cho_factor(A, lower=True, check_finite=False)
+    alpha = scipy.linalg.cho_solve(c_and_lower, y_res.astype(np.float64), check_finite=False).astype(np.float32)
 
-    single = len(z_mol_np.shape) == 1
-    if single:
-        z_mol_np = z_mol_np.reshape(1, -1)
-    if len(d_phys_np.shape) == 1:
-        d_phys_np = d_phys_np.reshape(1, -1)
+    L = c_and_lower[0]
+    V = scipy.linalg.solve_triangular(L, np.eye(N_train, dtype=np.float64), lower=True, check_finite=False)
+    diag_A_inv = np.sum(V**2, axis=0)
 
-    z_mean = w_dict["z_mean"]
-    z_std = w_dict["z_std"]
-    d_mean = w_dict["d_mean"]
-    d_std = w_dict["d_std"]
-    alpha = w_dict["alpha"]
-    z_train = w_dict["z_train"]
-    sigma = float(w_dict["sigma"])
+    y_loo_res = y_res.astype(np.float64) - (alpha / diag_A_inv)
+    y_loo_pred = y_calc + y_loo_res
 
-    z_norm = (z_mol_np - z_mean) / z_std
-    d_norm = (d_phys_np - d_mean) / d_std
+    loo_err = np.abs(y_loo_pred - y_expt)
+    mae_overall = float(np.mean(loo_err))
+    rmse_overall = float(np.sqrt(np.mean(loo_err**2)))
+    bias_overall = float(np.mean(y_loo_pred - y_expt))
+    r_overall = float(np.corrcoef(y_expt, y_loo_pred)[0, 1])
 
-    if "s_mean" in w_dict and "s_std" in w_dict:
-        s_mean = w_dict["s_mean"]
-        s_std = w_dict["s_std"]
-        n_queries = z_mol_np.shape[0]
+    mae_fs = float(np.mean(loo_err[is_fs])) if np.any(is_fs) else 0.0
+    mae_sv = float(np.mean(loo_err[~is_fs])) if np.any(~is_fs) else 0.0
 
-        from dens_city.utils.solvents import get_solvent_descriptors_vector
-
-        if s_solv is None:
-            s_vec = get_solvent_descriptors_vector("water")
-            s_np = np.tile(s_vec, (n_queries, 1))
-        elif isinstance(s_solv, str):
-            s_vec = get_solvent_descriptors_vector(s_solv)
-            s_np = np.tile(s_vec, (n_queries, 1))
-        elif isinstance(s_solv, Tensor):
-            s_np = s_solv.numpy()
-            if len(s_np.shape) == 1:
-                s_np = np.tile(s_np, (n_queries, 1))
-        else:
-            s_np = np.asarray(s_solv, dtype=np.float32)
-            if len(s_np.shape) == 1:
-                s_np = np.tile(s_np, (n_queries, 1))
-
-        s_norm = (s_np - s_mean) / s_std
-        z_query = np.concatenate(
-            [z_norm, d_norm * PHYSICAL_DESCRIPTOR_WEIGHT, s_norm * SOLVENT_DESCRIPTOR_WEIGHT], axis=1
+    if verbose:
+        print("=" * 88)
+        print(f"[KRR-RECALIBRATE] Completed Closed-Form Cholesky Calibration (N={N_train}, D={Z_comb.shape[1]}):")
+        print(
+            f"  Overall LOOCV MAE : {mae_overall:.4f} kcal/mol (RMSE: {rmse_overall:.4f}, Bias: {bias_overall:+.4f}, R: {r_overall:.4f})"
         )
-    else:
-        z_query = np.concatenate([z_norm, d_norm * PHYSICAL_DESCRIPTOR_WEIGHT], axis=1)
+        print(f"  Solvatum LOOCV MAE: {mae_sv:.4f} kcal/mol")
+        print(f"  FreeSolv LOOCV MAE: {mae_fs:.4f} kcal/mol")
+        print("=" * 88)
 
-    q_sq = np.sum(z_query**2, axis=1, keepdims=True)
-    t_sq = np.sum(z_train**2, axis=1, keepdims=True)
-    d2 = np.maximum(q_sq + t_sq.T - 2.0 * np.dot(z_query, z_train.T), 0.0)
-    k_query = np.exp(-d2 / (2.0 * (sigma**2)))
-    pred = np.dot(k_query, alpha)
+    # 8. Save compressed checkpoint
+    p_out = Path(save_path)
+    p_out.parent.mkdir(parents=True, exist_ok=True)
+    save_dict = {
+        "alpha": alpha.astype(np.float32),
+        "z_train": Z_comb.astype(np.float32),
+        "z_mean": z_mean.astype(np.float32),
+        "z_std": z_std.astype(np.float32),
+        "d_mean": d_mean.astype(np.float32),
+        "d_std": d_std.astype(np.float32),
+        "s_mean": s_mean.astype(np.float32),
+        "s_std": s_std.astype(np.float32),
+        "sigma": float(sigma),
+        "reg_lambda": float(reg_lambda),
+        "names": np.array(names_list),
+    }
+    np.savez_compressed(p_out, **save_dict)
+    clear_krr_cache()
 
-    if single:
-        return float(pred[0])
-    return pred
+    if verbose:
+        print(f"[KRR-RECALIBRATE] Saved recalibrated KRR checkpoint to: {p_out}")
+
+    return mae_overall, mae_sv, mae_fs

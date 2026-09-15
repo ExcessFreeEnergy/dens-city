@@ -158,6 +158,8 @@ class MaterialPipelineResult:
     solvent_dielectric: Optional[float] = None
     egnn_energy: Optional[float] = None
     egnn_force_rms: Optional[float] = None
+    krr_residual_kcal_mol: Optional[float] = None
+    krr_epistemic_density: Optional[float] = None
     artifact_dir: Optional[str] = None
     artifacts: List[str] = field(default_factory=list)
 
@@ -1063,6 +1065,8 @@ def execute_prepared_batch(
         solv_free_energy = vdw_solv
         delta_g_born_val = None
         quantum_q_list = None
+        krr_res_val = None
+        krr_density_val = None
 
         # Determine effective per-material tier: classical, electronegativity, egnn
         mat_engine = engine_type
@@ -1200,16 +1204,29 @@ def execute_prepared_batch(
                     q_mean = q_mean_tensor.numpy()[0, :n_sites_real].tolist()
                     quantum_q_list = [float(q) for q in q_mean]
 
-                    # Delta-KRR residual stacking correction
-                    from dens_city.boltzmann.train_charges import predict_krr_residual
+                    # Delta-KRR residual stacking correction (Pure on-device tinygrad tensor execution)
+                    from dens_city.boltzmann.train_charges import predict_krr_residual_tensor
 
                     z_np_arr = np.array(z_list, dtype=np.int32)
                     n_heavy = float(np.sum(z_np_arr > 1))
                     n_o = float(np.sum(z_np_arr == 8))
                     n_n = float(np.sum(z_np_arr == 7))
                     n_hal = float(np.sum(np.isin(z_np_arr, [9, 17, 35, 53])))
-                    phys_desc = np.array([[n_heavy, n_o, n_n, n_hal, delta_g_born_val, vdw_solv]], dtype=np.float32)
-                    krr_res = float(predict_krr_residual(h_mol_mean.numpy()[0], phys_desc[0], s_solv=s_name))
+                    phys_desc_np = np.array(
+                        [[n_heavy, n_o, n_n, n_hal, delta_g_born_val, vdw_solv]], dtype=np.float32
+                    )
+                    phys_desc_t = Tensor(phys_desc_np, dtype=dtypes.float32)
+
+                    krr_res_t, krr_density_t = predict_krr_residual_tensor(
+                        z_mol=h_mol_mean,
+                        d_phys=phys_desc_t,
+                        s_solv=s_name,
+                    )
+                    Tensor.realize(krr_res_t, krr_density_t)
+                    krr_res = float(krr_res_t.numpy()[0, 0])
+                    krr_density = float(krr_density_t.numpy()[0, 0])
+                    krr_res_val = krr_res
+                    krr_density_val = krr_density
 
                     # First-principles neat protic liquid self-association correction
                     eta_solv = (
@@ -1284,6 +1301,8 @@ def execute_prepared_batch(
             solvation_free_energy_kcal_mol=solv_free_energy,
             born_solvation_kcal_mol=delta_g_born_val,
             quantum_charges=quantum_q_list,
+            krr_residual_kcal_mol=krr_res_val,
+            krr_epistemic_density=krr_density_val,
             solvent_name=getattr(task, "solvent_name", "vacuum") if task else "vacuum",
             solvent_dielectric=eps_solvent if "eps_solvent" in locals() and eps_solvent is not None else 1.0,
             artifact_dir=mat_out_dir,
