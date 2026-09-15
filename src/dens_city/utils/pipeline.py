@@ -920,7 +920,8 @@ def execute_prepared_batch(
         dz_val = batched_cdft.dz_vals[local_idx]
         slit_w = batched_cdft.slit_widths[local_idx]
 
-        m_name = getattr(batch_tasks[orig_idx], "material_path_or_name", None) or mat.name
+        m_raw = getattr(batch_tasks[orig_idx], "material_path_or_name", None) or mat.name
+        m_name = Path(m_raw).stem if (os.path.exists(str(m_raw)) or "/" in str(m_raw)) else mat.name
         mat_out_dir = os.path.join(batch_tasks[orig_idx].out_dir, m_name)
         if async_writer:
             async_writer.write_npy(os.path.join(mat_out_dir, "density_profile.npy"), rho)
@@ -1006,7 +1007,8 @@ def execute_prepared_batch(
     for local_idx, orig_idx in enumerate(task_indices):
         mat = loaded_materials[local_idx]
         task = batch_tasks[orig_idx]
-        m_name = getattr(task, "material_path_or_name", None) or mat.name
+        m_raw = getattr(task, "material_path_or_name", None) or mat.name
+        m_name = Path(m_raw).stem if (os.path.exists(str(m_raw)) or "/" in str(m_raw)) else mat.name
         mat_out_dir = os.path.join(task.out_dir, m_name)
         site_names = [s.site_name for s in mat.sites] if mat.sites else [m_name]
 
@@ -1212,9 +1214,7 @@ def execute_prepared_batch(
                     n_o = float(np.sum(z_np_arr == 8))
                     n_n = float(np.sum(z_np_arr == 7))
                     n_hal = float(np.sum(np.isin(z_np_arr, [9, 17, 35, 53])))
-                    phys_desc_np = np.array(
-                        [[n_heavy, n_o, n_n, n_hal, delta_g_born_val, vdw_solv]], dtype=np.float32
-                    )
+                    phys_desc_np = np.array([[n_heavy, n_o, n_n, n_hal, delta_g_born_val, vdw_solv]], dtype=np.float32)
                     phys_desc_t = Tensor(phys_desc_np, dtype=dtypes.float32)
 
                     krr_res_t, krr_density_t = predict_krr_residual_tensor(

@@ -1237,9 +1237,7 @@ def predict_krr_residual_tensor(
     s_norm = (s_t - dev["s_mean"]) / dev["s_std"]
 
     if dev["n_features"] == 397:
-        z_comb = Tensor.cat(
-            z_norm, d_norm * PHYSICAL_DESCRIPTOR_WEIGHT, s_norm * SOLVENT_DESCRIPTOR_WEIGHT, dim=1
-        )
+        z_comb = Tensor.cat(z_norm, d_norm * PHYSICAL_DESCRIPTOR_WEIGHT, s_norm * SOLVENT_DESCRIPTOR_WEIGHT, dim=1)
     else:
         z_comb = Tensor.cat(z_norm, d_norm * PHYSICAL_DESCRIPTOR_WEIGHT, dim=1)
 
