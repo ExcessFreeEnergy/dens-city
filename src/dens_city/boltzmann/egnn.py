@@ -51,6 +51,9 @@ class EGNNLayer:
         d_sq: Tensor,
         edge_mask: Tensor,
         atom_mask: Tensor,
+        d_proj: Optional[Tensor] = None,
+        effective_edge_mask: Optional[Tensor] = None,
+        deg_i: Optional[Tensor] = None,
     ) -> Tensor:
         """
         Forward pass for a single message-passing step.
@@ -58,29 +61,33 @@ class EGNNLayer:
         d_sq: (B, N, N, 1) pairwise squared distances ||x_i - x_j||^2
         edge_mask: (B, N, N, 1) edge validity mask
         atom_mask: (B, N, 1) atom validity mask
+        d_proj: Optional precomputed distance projection
+        effective_edge_mask: Optional precomputed smooth cutoff mask
+        deg_i: Optional precomputed active neighbor degree normalization
         """
         B, N, F = h.shape
 
         # 1. Project node features directly on (B, N, F) before spatial broadcast
         h_i_proj = self.edge_hi(h).reshape(B, N, 1, F)
         h_j_proj = self.edge_hj(h).reshape(B, 1, N, F)
-        d_proj = self.edge_d(d_sq)
+        d_p = d_proj if d_proj is not None else self.edge_d(d_sq)
         a_proj = self.edge_a(edge_mask)
 
         # 2. Sum linear projections and apply SiLU
-        e_hidden = (h_i_proj + h_j_proj + d_proj + a_proj).silu()
+        e_hidden = (h_i_proj + h_j_proj + d_p + a_proj).silu()
 
-        # 3. Smooth cosine radial distance cutoff envelope: f_cut(r_ij) = 0.5 * (cos(pi * r / r_cut) + 1)
-        r_ij = (d_sq + 1e-8).sqrt()
-        cutoff_mask = (r_ij < self.r_cut).cast(dtypes.float32)
-        f_cut = cutoff_mask * 0.5 * ((r_ij * (math.pi / self.r_cut)).cos() + 1.0)
-        effective_edge_mask = edge_mask * f_cut
+        # 3. Dynamic radial cutoff envelope & degree normalization (use precomputed if provided)
+        if effective_edge_mask is None or deg_i is None:
+            r_ij = (d_sq + 1e-8).sqrt()
+            cutoff_mask = (r_ij < self.r_cut).cast(dtypes.float32)
+            f_cut = cutoff_mask * 0.5 * ((r_ij * (math.pi / self.r_cut)).cos() + 1.0)
+            effective_edge_mask = edge_mask * f_cut
+            deg_i = (edge_mask * cutoff_mask).sum(axis=2).maximum(1.0)
 
         # 4. Message generation via second linear layer & smooth cutoff masking
         m_ij = self.edge_l2(e_hidden).silu() * effective_edge_mask
 
-        # 5. Message aggregation normalized by active neighbor degree to guarantee extensive O(N) energy scaling
-        deg_i = (edge_mask * cutoff_mask).sum(axis=2).maximum(1.0)  # (B, N, 1)
+        # 5. Message aggregation normalized by active neighbor degree
         m_i = m_ij.sum(axis=2) / deg_i  # (B, N, F)
 
         # 6. Node update with residual connection
@@ -170,11 +177,27 @@ class EGNNForceField:
         self.global_mlp[2].weight = Tensor.zeros(1, hidden_dim, dtype=dtypes.float32)
         self.global_mlp[2].bias = Tensor.zeros(1, dtype=dtypes.float32)
 
+        # Persistent realized off-diagonal mask to eliminate dynamic Tensor.eye(N) allocations
+        self.diag_zero = (
+            (1.0 - Tensor.eye(n_particles, dtype=dtypes.float32)).reshape(1, n_particles, n_particles, 1).realize()
+        )
+
+        # Persistent GeneralizedBornSolvation solver
+        from dens_city.cdft.generalized_born import GeneralizedBornSolvation
+
+        self.gb_solver = GeneralizedBornSolvation()
+
         # Load weights if specified or present at default location
         if weights_path is not None:
             self.load_weights(weights_path)
         elif load_default_weights and self.DEFAULT_CHECKPOINT.exists():
             self.load_weights(self.DEFAULT_CHECKPOINT)
+
+    def _get_diag_zero(self, N: int) -> Tensor:
+        """Returns persistent static off-diagonal mask without dynamic memory allocations."""
+        if N <= self.n_particles:
+            return self.diag_zero[:, :N, :N, :]
+        return (1.0 - Tensor.eye(N, dtype=dtypes.float32)).reshape(1, N, N, 1)
 
     def load_weights(self, filepath: str | Path) -> None:
         """Loads model state from a .npz checkpoint if layer shapes match the instance architecture."""
@@ -224,15 +247,15 @@ class EGNNForceField:
             atom_mask = atom_mask.reshape(B, N, 1)
 
         if molecule_mask is None:
-            molecule_mask = Tensor.ones(B, dtype=dtypes.float32)
+            molecule_mask = atom_mask[:, 0, 0].ones_like()
         elif len(molecule_mask.shape) == 2:
             molecule_mask = molecule_mask.reshape(B)
 
         # Edge mask a_ij = mask_i * mask_j * (1 - delta_ij)
         mask_i = atom_mask.reshape(B, N, 1, 1)
         mask_j = atom_mask.reshape(B, 1, N, 1)
-        diag_zero = (1.0 - Tensor.eye(N, dtype=dtypes.float32)).reshape(1, N, N, 1)
-        edge_mask = (mask_i * mask_j * diag_zero).realize()
+        diag_zero = self._get_diag_zero(N)
+        edge_mask = mask_i * mask_j * diag_zero
 
         return x, atomic_numbers, atom_mask, molecule_mask, edge_mask
 
@@ -263,11 +286,18 @@ class EGNNForceField:
         diff = x_i - x_j
         d_sq = (diff * diff).sum(axis=-1, keepdim=True)  # (B, N, N, 1)
 
-        # 3. Pass through L=7 message-passing layers
-        for layer in self.layers:
-            h = layer(h, d_sq, edge_mask, atom_mask)
+        # 3. Precompute dynamic geometric edge cutoff envelope and degree normalization once for all 7 layers
+        r_ij = (d_sq + 1e-8).sqrt()
+        cutoff_mask = (r_ij < self.r_cut).cast(dtypes.float32)
+        f_cut = cutoff_mask * 0.5 * ((r_ij * (math.pi / self.r_cut)).cos() + 1.0)
+        effective_edge_mask = edge_mask * f_cut
+        deg_i = (edge_mask * cutoff_mask).sum(axis=2).maximum(1.0)
 
-        # 4. Readout: Map node embeddings to atomic energies eps_i -> sum over atoms
+        # 4. Pass through L=7 message-passing layers
+        for layer in self.layers:
+            h = layer(h, d_sq, edge_mask, atom_mask, effective_edge_mask=effective_edge_mask, deg_i=deg_i)
+
+        # 5. Readout: Map node embeddings to atomic energies eps_i -> sum over atoms
         eps_i = self.readout_mlp[0](h)
         eps_i = self.readout_mlp[1](eps_i)
         eps_i = self.readout_mlp[2](eps_i) * atom_mask  # (B, N, 1)
@@ -315,9 +345,16 @@ class EGNNForceField:
         diff = x_i - x_j
         d_sq = (diff * diff).sum(axis=-1, keepdim=True)  # (B, N, N, 1)
 
-        # 3. Pass through L=7 message-passing layers
+        # 3. Dynamic radial cutoff envelope & degree normalization precomputed once for all 7 layers
+        r_ij = (d_sq + 1e-8).sqrt()
+        cutoff_mask = (r_ij < self.r_cut).cast(dtypes.float32)
+        f_cut = cutoff_mask * 0.5 * ((r_ij * (math.pi / self.r_cut)).cos() + 1.0)
+        effective_edge_mask = edge_mask * f_cut
+        deg_i = (edge_mask * cutoff_mask).sum(axis=2).maximum(1.0)
+
+        # 4. Pass through L=7 message-passing layers
         for layer in self.layers:
-            h = layer(h, d_sq, edge_mask, atom_mask)
+            h = layer(h, d_sq, edge_mask, atom_mask, effective_edge_mask=effective_edge_mask, deg_i=deg_i)
 
         # Halt gradient traversal into the 7-layer message-passing trunk per tinyspec.tex \op{Detach}
         if detach_trunk:
@@ -327,10 +364,7 @@ class EGNNForceField:
         if solvent_features is not None:
             sf = solvent_features
         else:
-            from dens_city.cdft.generalized_born import GeneralizedBornSolvation
-
-            gb = GeneralizedBornSolvation()
-            sf = gb.compute_solvent_descriptors(x, atomic_numbers, atom_mask, base_charges=base_charges)
+            sf = self.gb_solver.compute_solvent_descriptors(x, atomic_numbers, atom_mask, base_charges=base_charges)
 
         node_inputs = Tensor.cat(h, sf, dim=-1)
 
@@ -352,11 +386,11 @@ class EGNNForceField:
         q_sum = q_raw.sum(axis=1, keepdim=True)  # (B, 1, 1)
         if total_charge is not None:
             if isinstance(total_charge, (int, float)):
-                q_target = Tensor.full((B, 1, 1), float(total_charge), dtype=dtypes.float32)
+                q_target = num_real.zeros_like() + float(total_charge)
             else:
                 q_target = total_charge.reshape(B, 1, 1).cast(dtypes.float32)
         else:
-            q_target = Tensor.zeros(B, 1, 1, dtype=dtypes.float32)
+            q_target = num_real.zeros_like()
 
         q_shift = (q_sum - q_target) / num_real
         q_final = ((q_raw - q_shift) * atom_mask).reshape(B, N)
@@ -372,8 +406,7 @@ class EGNNForceField:
         # Head 3: Multi-Scale Molecular Graph Pooling & Cooperative Readout delta_g_coop
         num_real_nodes = atom_mask.sum(axis=1).maximum(1.0)  # (B, 1)
         mean_pool = (h * atom_mask).sum(axis=1) / num_real_nodes  # (B, F)
-        h_masked = h * atom_mask - (1.0 - atom_mask) * 1e4
-        max_pool = h_masked.max(axis=1)  # (B, F)
+        max_pool = (atom_mask > 0.0).where(h, -1e4).max(axis=1)  # (B, F)
         h_diff = (h - mean_pool.reshape(B, 1, self.hidden_dim)) * atom_mask
         var_pool = (h_diff * h_diff).sum(axis=1) / num_real_nodes
         std_pool = (var_pool + 1e-6).sqrt()  # (B, F)
@@ -395,12 +428,6 @@ class EGNNForceField:
 
         # Total molecular nonpolar + cooperative free energy modulation
         delta_vdw_mol = delta_vdw_mol_atomic + delta_g_coop
-        if not Tensor.training:
-            q_masked = q_masked.realize()
-            delta_vdw_mol = delta_vdw_mol.realize()
-            delta_vdw_atomic = delta_vdw_atomic.realize()
-            delta_g_coop = delta_g_coop.realize()
-            graph_features = graph_features.realize()
 
         if return_global:
             return q_masked, delta_vdw_mol, delta_vdw_atomic, delta_g_coop, graph_features
@@ -467,7 +494,7 @@ class EGNNForceField:
 
         # Broadcast molecule mask: (B,) -> (B * s,)
         if molecule_mask is None:
-            molecule_mask = Tensor.ones(B, dtype=dtypes.float32)
+            molecule_mask = atom_mask[:, 0, 0].ones_like()
         elif len(molecule_mask.shape) == 2:
             molecule_mask = molecule_mask.reshape(B)
         mol_flat = molecule_mask.reshape(B, 1).expand(B, s).reshape(B * s)
@@ -483,7 +510,7 @@ class EGNNForceField:
         # Broadcast total charge: (B, 1, 1) -> (B * s, 1, 1)
         if total_charge is not None:
             if isinstance(total_charge, (int, float)):
-                tq_flat = Tensor.full((B * s, 1, 1), float(total_charge), dtype=dtypes.float32)
+                tq_flat = m_flat[:, 0, 0].zeros_like().reshape(B * s, 1, 1) + float(total_charge)
             else:
                 tq_flat = total_charge.reshape(B, 1, 1, 1).expand(B, s, 1, 1).reshape(B * s, 1, 1).cast(dtypes.float32)
         else:
@@ -527,9 +554,7 @@ class EGNNForceField:
         )
 
         if gb_solver is None:
-            from dens_city.cdft.generalized_born import GeneralizedBornSolvation
-
-            gb_solver = GeneralizedBornSolvation(dielectric_constant=dielectric_constant)
+            gb_solver = self.gb_solver
 
         gb_tensor = gb_solver.compute_solvation_free_energy(
             x=x_flat,
@@ -562,7 +587,7 @@ class EGNNForceField:
             w_unnorm = (-delta_e / kb_t).exp()
             w = w_unnorm / w_unnorm.sum(axis=1, keepdim=True).maximum(1e-8)
         else:
-            w = Tensor.full((B, s), 1.0 / float(s), dtype=dtypes.float32)
+            w = x_ensemble[:, :, 0, 0].ones_like() * (1.0 / float(s))
 
         total_solv_flat = delta_vdw_mol + gb_tensor  # (B * s,)
         total_solv_mean = (total_solv_flat.reshape(B, s) * w).sum(axis=1)  # (B,)
@@ -572,9 +597,6 @@ class EGNNForceField:
         if return_global:
             h_mol_mean = (graph_features.reshape(B, s, -1) * w.reshape(B, s, 1)).sum(axis=1)
             coop_mean = (delta_g_coop.reshape(B, s) * w).sum(axis=1)
-            if not Tensor.training:
-                h_mol_mean = h_mol_mean.realize()
-                coop_mean = coop_mean.realize()
             return q_mean, total_solv_mean, gb_mean, h_mol_mean, coop_mean
 
         return q_mean, total_solv_mean, gb_mean
@@ -681,13 +703,21 @@ class EGNNForceField:
         z_one_hot = Tensor.one_hot(z_clamped, num_classes=self.max_atomic_number)
         h = self.embedding(z_one_hot) * atom_mask
 
+        # 2. Evaluate Pairwise Relative Squared Distances d_ij^2 = ||x_i - x_j||^2
         x_i = x_prep.reshape(B, N, 1, 3)
         x_j = x_prep.reshape(B, 1, N, 3)
         diff = x_i - x_j
         d_sq = (diff * diff).sum(axis=-1, keepdim=True)
 
+        # 3. Dynamic radial cutoff envelope & degree normalization precomputed once for all 7 layers
+        r_ij = (d_sq + 1e-8).sqrt()
+        cutoff_mask = (r_ij < self.r_cut).cast(dtypes.float32)
+        f_cut = cutoff_mask * 0.5 * ((r_ij * (math.pi / self.r_cut)).cos() + 1.0)
+        effective_edge_mask = edge_mask * f_cut
+        deg_i = (edge_mask * cutoff_mask).sum(axis=2).maximum(1.0)
+
         for layer in self.layers:
-            h = layer(h, d_sq, edge_mask, atom_mask)
+            h = layer(h, d_sq, edge_mask, atom_mask, effective_edge_mask=effective_edge_mask, deg_i=deg_i)
 
         # 1. Energy readout
         eps_i = self.readout_mlp[0](h)
@@ -696,10 +726,7 @@ class EGNNForceField:
         u_total = eps_i.sum(axis=(1, 2)) * molecule_mask
 
         # 2. Charge readout with residual electronegativity superposition & formal charge conservation
-        from dens_city.cdft.generalized_born import GeneralizedBornSolvation
-
-        gb = GeneralizedBornSolvation()
-        sf = gb.compute_solvent_descriptors(x_prep, atomic_numbers, atom_mask, base_charges=base_charges)
+        sf = self.gb_solver.compute_solvent_descriptors(x_prep, atomic_numbers, atom_mask, base_charges=base_charges)
         node_inputs = Tensor.cat(h, sf, dim=-1)
 
         delta_q_raw = self.charge_mlp[0](node_inputs)
@@ -720,11 +747,11 @@ class EGNNForceField:
         q_sum = q_raw.sum(axis=1, keepdim=True)
         if total_charge is not None:
             if isinstance(total_charge, (int, float)):
-                q_target = Tensor.full((B, 1, 1), float(total_charge), dtype=dtypes.float32)
+                q_target = num_real.zeros_like() + float(total_charge)
             else:
                 q_target = total_charge.reshape(B, 1, 1).cast(dtypes.float32)
         else:
-            q_target = Tensor.zeros(B, 1, 1, dtype=dtypes.float32)
+            q_target = num_real.zeros_like()
 
         q_shift = (q_sum - q_target) / num_real
         q_masked = ((q_raw - q_shift) * atom_mask).reshape(B, N) * molecule_mask.reshape(B, 1)

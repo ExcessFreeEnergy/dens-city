@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-import numpy as np
 from tinygrad import Tensor, dtypes
 
 
@@ -44,6 +43,7 @@ def _build_bondi_radii_table() -> list[float]:
 
 
 _BONDI_RADII_TENSOR: Optional[Tensor] = None
+_PAULING_CHI_TENSOR: Optional[Tensor] = None
 
 
 def get_bondi_radii_tensor() -> Tensor:
@@ -52,6 +52,20 @@ def get_bondi_radii_tensor() -> Tensor:
     if _BONDI_RADII_TENSOR is None:
         _BONDI_RADII_TENSOR = Tensor(_build_bondi_radii_table(), dtype=dtypes.float32).realize()
     return _BONDI_RADII_TENSOR
+
+
+def get_pauling_chi_tensor() -> Tensor:
+    """Lazily allocates and realizes the static Pauling electronegativity tensor on GPU device."""
+    global _PAULING_CHI_TENSOR
+    if _PAULING_CHI_TENSOR is None:
+        from dens_city.utils.materials import PAULING_ELECTRONEGATIVITIES
+
+        chi_table = [0.0] * 119
+        for z_val, chi_val in PAULING_ELECTRONEGATIVITIES.items():
+            if 0 <= z_val <= 118:
+                chi_table[z_val] = float(chi_val)
+        _PAULING_CHI_TENSOR = Tensor(chi_table, dtype=dtypes.float32).realize()
+    return _PAULING_CHI_TENSOR
 
 
 # Coulomb electrostatic constant in kcal * Å / (e^2 * mol)
@@ -76,6 +90,12 @@ class GeneralizedBornSolvation:
         self.dielectric_constant = float(dielectric_constant) if dielectric_constant is not None else None
         self.solute_dielectric = float(solute_dielectric)
         self.radius_offset_a = float(radius_offset_a)
+        self.diag_zero_128 = (1.0 - Tensor.eye(128, dtype=dtypes.float32)).reshape(1, 128, 128, 1).realize()
+
+    def _get_diag_zero(self, N: int) -> Tensor:
+        if N <= 128:
+            return self.diag_zero_128[:, :N, :N, :]
+        return (1.0 - Tensor.eye(N, dtype=dtypes.float32)).reshape(1, N, N, 1)
 
     def compute_born_radii(
         self,
@@ -109,7 +129,7 @@ class GeneralizedBornSolvation:
         # 3. Off-diagonal pair validity mask
         mask_i = atom_mask.reshape(B, N, 1, 1)
         mask_j = atom_mask.reshape(B, 1, N, 1)
-        diag_zero = (1.0 - Tensor.eye(N, dtype=dtypes.float32)).reshape(1, N, N, 1)
+        diag_zero = self._get_diag_zero(N)
         pair_mask = mask_i * mask_j * diag_zero
 
         # 4. Grycuk smooth volume descreening: alpha_i = rho_i * (1 + sum_{j != i} 0.12 * sigma_j^3 / (r_ij^3 + rho_i^3))
@@ -166,16 +186,10 @@ class GeneralizedBornSolvation:
         if base_charges is not None:
             bq = base_charges.reshape(B, N, 1) * atom_mask
         else:
-            bq = Tensor.zeros(B, N, 1, dtype=dtypes.float32)
+            bq = atom_mask.zeros_like()
 
-        # 4. Pauling Electronegativity
-        from dens_city.utils.materials import PAULING_ELECTRONEGATIVITIES
-
-        chi_table = np.zeros(119, dtype=np.float32)
-        for z_val, chi_val in PAULING_ELECTRONEGATIVITIES.items():
-            if 0 <= z_val <= 118:
-                chi_table[z_val] = chi_val
-        chi_tensor = Tensor(chi_table, dtype=dtypes.float32)
+        # 4. Pauling Electronegativity (static device tensor)
+        chi_tensor = get_pauling_chi_tensor()
         chi_i = (chi_tensor[z_clamped].reshape(B, N, 1) * 0.25) * atom_mask  # normalized ~ [0, 1]
 
         # Stack into (B, N, 4)
@@ -221,10 +235,11 @@ class GeneralizedBornSolvation:
             raise ValueError(
                 "Solvent dielectric constant must be explicitly provided (e.g. from SolventProperties or target environment)."
             )
-        eps_solv = max(1.0, float(eps_solv))
-
-        # Dielectric screening prefactor: -0.5 * (1/eps_in - 1/eps_out)
-        eps_factor = 0.5 * ((1.0 / self.solute_dielectric) - (1.0 / eps_solv))
+        if isinstance(eps_solv, Tensor):
+            eps_factor = 0.5 * ((1.0 / self.solute_dielectric) - (1.0 / eps_solv.maximum(1.0).reshape(B)))
+        else:
+            eps_solv_val = max(1.0, float(eps_solv))
+            eps_factor = 0.5 * ((1.0 / self.solute_dielectric) - (1.0 / eps_solv_val))
 
         # 1. Evaluate Effective Born Radii alpha_i
         alpha = self.compute_born_radii(x, atomic_numbers, atom_mask)  # (B, N, 1)
@@ -253,7 +268,7 @@ class GeneralizedBornSolvation:
         # Pair mask (excluding diagonal)
         mask_i = atom_mask.reshape(B, N, 1, 1)
         mask_j = atom_mask.reshape(B, 1, N, 1)
-        diag_zero = (1.0 - Tensor.eye(N, dtype=dtypes.float32)).reshape(1, N, N, 1)
+        diag_zero = self._get_diag_zero(N)
         pair_mask = mask_i * mask_j * diag_zero
 
         pair_energy = ((q_prod / f_gb) * pair_mask).sum(axis=(1, 2, 3))  # (B,)

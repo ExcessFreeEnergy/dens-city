@@ -5,7 +5,7 @@
 [![PufferLib: >=0.4.0](https://img.shields.io/badge/PufferLib-4.0-red.svg)](https://github.com/PufferAI/PufferLib)
 [![PyTorch: >=2.0.0](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org)
 
-`dens-city` is a molecular design and simulation platform coupling a **Stage 1 Multi-Objective RL Swarm** (`PufferLib` 4.0 + parallel C-FFI physics) with **Stage 2 In-Memory Streaming**, **Stage 3 Batched Variational Classical Density Functional Theory (cDFT)** & **Boltzmann Generator Normalizing Flows**, and **Stage 4 JIT-Compiled Equivariant Graph Neural Network (EGNN) Quantum Surrogate Screening** in `tinygrad`.
+`dens-city` solves the fundamental computational bottleneck in chemical thermodynamics and computational materials science: predicting high-dimensional solvation free energies ($\Delta G_{\text{solv}}$), fluid-solid interfacial wetting, and multi-scale cooperative hydrogen-bonding networks across arbitrary aqueous and non-aqueous solvents without slow, computationally prohibitive atomistic molecular dynamics. By combining variational Classical Density Functional Theory (cDFT) and continuous dielectric Generalized Born electrostatics with state-of-the-art $E(n)$-equivariant Graph Neural Networks (EGNN) and Boltzmann generator normalizing flows in `tinygrad`, `dens-city` brings DFT-level quantum force-field accuracy and microsecond-per-molecule screening throughput directly to commodity consumer GPUs.
 
 ---
 
@@ -39,11 +39,25 @@
 [Stage 5: Multi-Objective Pareto Frontier Ranking & Export (.mol2, .csv, .md)]
 ```
 
+### Quickstart & Core Verification
+
+```bash
+# 1. Run Thermodynamic Validation on FreeSolv (642 aqueous molecules)
+uv run dens-city --verify-freesolv --run-e2e
+
+# 2. Run Multi-Solvent Validation on Solv@TUM / Solvatum (~5,952 solute-solvent pairs)
+uv run dens-city --verify-solvatum
+
+# 3. Run the 5-Stage Generative Molecular Funnel on an Example Spec (Conjugated OLEDs)
+uv run dens-city --funnel --spec tests/data/conjugated_oled_semiconductors.yaml \
+  --train-steps 25000 --num-candidates 512 --batch-size 512 --top-k 20
+```
+
 ---
 
 ## 2. CLI Reference & Parameter Guide (`uv run dens-city`)
 
-The `dens-city` command-line interface provides a single, unified entrypoint for all simulation, visualization, generative design, library generation, and benchmark modes.
+The `dens-city` command-line interface provides a single, unified entrypoint for simulation, visualization, generative design, library generation, MCP agent server, and benchmark modes.
 
 ```bash
 uv run dens-city [MODE_SELECTOR] [OPTIONS...]
@@ -59,11 +73,20 @@ uv run dens-city [MODE_SELECTOR] [OPTIONS...]
 | `--benchmark-specs`, `--all-specs` | **Cross-Spec Funnel Benchmark** | Run the 5-stage funnel across all 10 material classes in `tests/data/` |
 | `--train-swarm`, `--train-rl` | **Stage 1 RL Swarm Training** | Train PPO policy with curriculum learning and export `trained_policy.pt` |
 | `--sweep`, `--curriculum-sweep` | **Constellation Curriculum Sweeps** | Run multi-trial hyperparameter sweep for Constellation 3D viewer |
-| `--eval-swarm`, `--evaluate-specs`| **Spec Evaluation & Chemical Diagnostics** | Evaluate validity %, SA score, diversity (1-T), and unique SMILES % |
+| `--eval-swarm`, `--evaluate-specs`| **Spec Evaluation & Diagnostics** | Evaluate validity %, SA score, diversity (1-T), and unique SMILES % |
 | `--generate-library`, `--gen-library` | **Combinatorial Library Generator** | High-speed C / multi-core 2D/3D combinatorial molecular generation |
-| `--train-charges` | **Differentiable Charge Head Training** | Two-phase end-to-end fine-tuning on FreeSolv hydration free energies |
+| `--train-charges` | **Differentiable Charge Head Training** | Two-phase end-to-end autograd fine-tuning on FreeSolv hydration free energies |
 | `--populate-test-data` | **Dataset & Benchmark Population** | Populate `data/test_data/` with benchmark `.mol2` files & force fields |
-| `--verify-freesolv`, `--verify-e2e` | **FreeSolv Statistical Validation** | Compare predictions against FreeSolv hydration database & build report |
+| `--verify-freesolv`, `--verify-e2e` | **FreeSolv Statistical Validation** | Compare predictions against FreeSolv experimental hydration database |
+| `--verify-solvatum` | **Solvatum Statistical Validation** | Validate predictions against Solv@TUM non-aqueous multi-solvent benchmark |
+| `--verify-dataset` | **Dataset Validation Dispatcher** | Validate simulation results against specified dataset (`freesolv` or `solvatum`) |
+| `--recalibrate-krr` | **Delta-KRR Model Recalibration** | Recalibrate analytical Delta-KRR residual model via Cholesky decomposition |
+| `--serve-mcp` | **Model Context Protocol (MCP) Server** | Launch the MCP server for direct autonomous LLM agent tool calling |
+| `--serve-api` | **FastAPI REST Server** | Launch FastAPI REST server for web clients and asynchronous harnesses |
+| `--cleanup-pools` | **Artifact Pool Garbage Collection** | Prune scratch files and intermediate pools to prevent disk creep |
+| `--wikiskill-status` | **WikiSkill Knowledge Index** | Display persistent knowledge base patterns, anti-pattern ledger, and status |
+| `--wikiskill-consolidate` | **WikiSkill Trace Consolidation** | Analyze execution traces and consolidate verified root causes into patterns |
+| `--wikiskill-audit` | **WikiSkill Anti-Pattern Audit** | Audit proposed edits or skills against past rejection history and invariants |
 
 ---
 
@@ -96,17 +119,18 @@ uv run dens-city [MODE_SELECTOR] [OPTIONS...]
 - `--lbfgs-steps` : Batched GPU L-BFGS Quasi-Newton geometry relaxation steps (default: `50`).
 - `--lbfgs-tol` : RMS force convergence threshold for L-BFGS (default: `1e-3`).
 
-#### Quantum MLFF & EGNN Charge Training Options
+#### Quantum MLFF & EGNN Force Field Options
 - `--energy-engine` : Microscopic Hamiltonian physics engine: `'classical'` (GAFF LJ + Coulomb), `'electronegativity'` (deterministic Pauling prior + GB), `'egnn'` (trained 7-layer $E(n)$-equivariant MLFF + GB), or `'auto'` (adaptive heuristic).
 - `--force-egnn` : Force Stage 4 EGNN quantum surrogate evaluation across 100% of batch slots, overriding speed heuristics.
 - `--enable-egnn` / `--no-enable-egnn` : Enable/disable Stage 4 EGNN quantum surrogate screening (default: `True`).
+- `--egnn-batch-size` : GPU batch size for EGNN message-passing evaluation (default: `32`).
+- `--egnn-layers` : Number of message-passing layers in the EGNN architecture (default: `7`).
+- `--egnn-relax-steps` : Unrolled GPU quantum geometry relaxation steps (default: `50`).
+- `--egnn-weights` : Optional path to pretrained EGNN weights `.npz` archive.
 - `--charge-epochs` : Training epochs for end-to-end differentiable charge optimization (default: `60`).
 - `--charge-warmup-epochs` : Warmup epochs with frozen trunk and cached features (default: `15`).
 - `--charge-lr-head` : Learning rate for dynamic charge readout MLP head (default: `5e-4`).
 - `--charge-lr-trunk` : Learning rate for end-to-end EGNN message-passing trunk (default: `1e-5`).
-- `--egnn-batch-size` : GPU batch size for EGNN message-passing evaluation (default: `32`).
-- `--egnn-layers` : Number of message-passing layers in the EGNN architecture (default: `7`).
-- `--egnn-weights` : Optional path to pretrained EGNN weights `.npz` archive.
 
 #### RL Swarm & Generative Funnel Options
 - `--train-steps`, `--total-timesteps` : RL curriculum training timesteps (default: `5,000,000`).
@@ -137,12 +161,28 @@ uv run dens-city [MODE_SELECTOR] [OPTIONS...]
 - `--skip-write` : Skip writing `.mol2` files to disk (in-memory benchmark mode).
 - `--seed` : Random seed for deterministic sampling (default: `42`).
 
-#### FreeSolv & Dataset Options
-- `--all-freesolv`, `--all-data` : Populate entire FreeSolv database (642+ molecules) into `data/test_data/`.
-- `--run-e2e` : Run end-to-end simulation across materials before verifying against FreeSolv.
+#### Solvation Benchmark & Dataset Options
+- `--dataset` : Benchmark dataset target: `'freesolv'`, `'solvatum'`, or `'all'` (default: `freesolv`).
+- `--all-freesolv` : Extract and populate all 642+ FreeSolv molecules into `data/test_data/`.
+- `--all-solvatum` : Extract and populate all 658+ Solvatum solute molecules into `data/test_data/`.
+- `--solvent` : Target solvent fluid for solvation calculations (e.g. `'water'`, `'hexane'`, `'ethanol'`, `'vacuum'`).
+- `--database` : Path to benchmark database (`FreeSolv/database.pickle` or `Solvatum/solvatum/data/solvatum.sdf`).
+- `--report-out` : Destination path for verification markdown report.
+- `--run-e2e` : Run end-to-end simulation across materials before verifying against benchmark database.
 - `--results-dir` : Directory containing `pipeline_summary.jsonl` (defaults to latest in `runs/`).
-- `--database` : Path to FreeSolv `database.pickle` (default: `FreeSolv/database.pickle`).
-- `--report-out` : Destination path for FreeSolv verification report (default: `data/e2e_freesolv_verification_report.md`).
+
+#### Delta-KRR Model Recalibration Options
+- `--recalibrate-krr` : Recalibrate the analytical Delta-KRR residual model using exact Cholesky decomposition.
+- `--krr-sigma` : Gaussian RBF kernel lengthscale parameter for Delta-KRR (default: `25.0`).
+- `--krr-lambda` : L2 ridge regularization penalty for Delta-KRR matrix inversion (default: `1e-3`).
+- `--krr-out` : Output filepath for recalibrated Delta-KRR checkpoint archive (default: `data/checkpoints/krr_residual_weights.npz`).
+- `--krr-deduplicate` : Enforce canonical SMILES and feature-space deduplication to prevent Gram singularity.
+
+#### Server & MCP Options
+- `--host` : Host interface to bind server (default: `0.0.0.0`).
+- `--port` : Port to bind server (default: `8000`).
+- `--transport` : MCP transport protocol: `'stdio'`, `'sse'`, or `'streamable-http'` (default: `'stdio'`).
+- `--cleanup-mode` : Cleanup policy for `--cleanup-pools`: `'keep_pareto_only'`, `'failed'`, `'age'`, or `'all'`.
 
 #### Execution & Compiler Performance
 - `--batch-size`, `-b` : Molecule batch size for parallel tensor evaluation (default: `512`).
@@ -154,11 +194,65 @@ uv run dens-city [MODE_SELECTOR] [OPTIONS...]
 
 ---
 
-## 3. Practical Usage Examples
+## 3. Model Context Protocol (MCP) & Autonomous Agent Integration
+
+`dens-city` natively implements the **Model Context Protocol (MCP)**, empowering autonomous LLM agents (e.g., Claude, Cursor, Antigravity) to orchestrate inverse molecular design, multi-stage thermodynamic screening, and quantum property prediction through standard tool calling.
+
+### 3.1 Starting the MCP Server
+
+```bash
+# Standard Stdio transport (for Claude Desktop, Antigravity, or Cursor)
+uv run dens-city --serve-mcp --transport stdio
+
+# Server-Sent Events (SSE) transport for remote or multi-agent networks
+uv run dens-city --serve-mcp --transport sse --host 0.0.0.0 --port 8000
+
+# Standalone FastAPI REST API server
+uv run dens-city --serve-api --host 0.0.0.0 --port 8000
+```
+
+### 3.2 Agent Client Configuration (`claude_desktop_config.json` / `mcp.json`)
+
+```json
+{
+  "mcpServers": {
+    "dens-city": {
+      "command": "uv",
+      "args": [
+        "--directory", "/path/to/dens-city",
+        "run", "dens-city",
+        "--serve-mcp",
+        "--transport", "stdio"
+      ]
+    }
+  }
+}
+```
+
+### 3.3 Exposed MCP Tool Catalog
+
+The MCP server exposes 10 modular tools designed for context-window protection, asynchronous job polling, and stateless pipeline execution:
+
+| MCP Tool | Purpose | Key Parameters |
+| :--- | :--- | :--- |
+| `run_full_pipeline` | Complete 5-stage generative funnel from spec to Pareto `.mol2` export | `target_spec`, `train_steps`, `num_candidates`, `top_k`, `solvent_id` |
+| `train_swarm_agent` | Stage 1: Trains PPO molecular swarm policy on target spec | `target_spec`, `total_timesteps`, `num_envs`, `horizon`, `learning_rate` |
+| `sample_candidates` | Stage 2: Samples molecular graphs from policy into candidate pool | `model_weights_path`, `num_samples`, `temperature`, `continue_pipeline` |
+| `run_cdft_thermo` | Stage 3: Evaluates cDFT wall pressures, L-BFGS, and Boltzmann flows | `candidate_pool_id`, `smiles_list`, `solvent_id`, `cdft_steps`, `bg_steps` |
+| `run_egnn_quantum` | Stage 4: Evaluates 7-layer EGNN quantum energy and conservative forces | `thermo_pool_id`, `candidates_dir`, `relax_steps`, `egnn_layers` |
+| `rank_pareto_frontier` | Stage 5: Gating (SA Score), topological deduplication, and Pareto export | `scored_pool_id`, `candidates_dir`, `max_sa_score`, `top_k` |
+| `get_job_status` | Server-side long-polling status endpoint with native progress reporting | `job_id`, `wait_for_completion=True` (compresses turns into 1) |
+| `cancel_job` | Cooperatively cancels an active or queued background job | `job_id` |
+| `validate_spec` | Synchronously validates chemical SMILES and target constraints | `smiles_list`, `target_spec` (catches errors before running GPU jobs) |
+| `cleanup_artifacts` | Prunes intermediate scratch pools to prevent disk space creep | `mode` (`keep_pareto_only`, `failed`, `age`, `all`), `pool_id` |
+
+---
+
+## 4. Practical Usage Examples
 
 ### 1. High-Throughput Batch Screening
 ```bash
-# Screen 4 benchmark fluids with coupled cDFT + Boltzmann Generator (batch size 512)
+# Screen benchmark fluids with coupled cDFT + Boltzmann Generator (batch size 512)
 uv run dens-city --materials argon water methane 5cb --batch-size 512
 
 # Run full FreeSolv benchmark with BEAM=2 compiler optimization
@@ -222,19 +316,25 @@ uv run dens-city --generate-library --spec tests/data/conjugated_oled_semiconduc
 uv run dens-city --generate-library --spec fluorinated_battery_electrolytes --target-count 10000 --skip-3d --skip-write
 ```
 
-### 9. Test Data & FreeSolv Dataset Population
+### 9. Test Data & Benchmark Population
 ```bash
 # Populate 32 core benchmark fluids in data/test_data/
 uv run dens-city --populate-test-data
 
 # Extract and populate all 642+ FreeSolv molecules
 uv run dens-city --populate-test-data --all-freesolv
+
+# Extract and populate all 658+ Solvatum solutes
+uv run dens-city --populate-test-data --all-solvatum
 ```
 
-### 10. FreeSolv Statistical Verification & Validation Report
+### 10. Solvation Thermodynamics Statistical Validation
 ```bash
-# Run full simulation and verify against FreeSolv hydration free energies
+# Run full simulation and verify against FreeSolv aqueous hydration free energies
 uv run dens-city --verify-freesolv --run-e2e
+
+# Validate against Solv@TUM non-aqueous multi-solvent benchmark
+uv run dens-city --verify-solvatum
 
 # Verify existing simulation results in runs/ directory
 uv run dens-city --verify-freesolv --results-dir runs/batch_20260828
@@ -242,20 +342,23 @@ uv run dens-city --verify-freesolv --results-dir runs/batch_20260828
 
 ---
 
-## 4. Automated Tests & Quality Assurance
+## 5. Automated Tests & Quality Assurance
 
 ```bash
-# Run complete test suite
+# Run complete test suite (31+ tests across cDFT, EGNN, Generalized Born, Funnel, and Ingestion)
 uv run pytest tests/ -v
 
-# Run linting and code formatting
+# Run dedicated compiler remediation and ingestion verification test
+uv run pytest tests/test_audit_remediation_ingestion.py -v
+
+# Run linting and code formatting checks
 uv run ruff check src/ tests/
 uv run ruff format --check src/ tests/
 ```
 
 ---
 
-## 5. Citations
+## 6. Citations
 
 - A. T. Bui, S. J. Cox, "Dielectrocapillarity for exquisite control of fluids", *arXiv:2503.09855* (2025).
 - A. T. Bui, S. J. Cox, "Learning classical density functionals for ionic fluids", *Phys. Rev. Lett.* **134**, 148001 (2025). [doi:10.1103/PhysRevLett.134.148001](https://doi.org/10.1103/PhysRevLett.134.148001)
@@ -268,6 +371,6 @@ uv run ruff format --check src/ tests/
 
 ---
 
-## 6. License
+## 7. License
 
 GNU General Public License v3.0. See [LICENSE](LICENSE) for details.

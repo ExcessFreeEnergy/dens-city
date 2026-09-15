@@ -1007,6 +1007,34 @@ class MaterialLoader:
         return mat
 
     @classmethod
+    def from_mol2_file(
+        cls,
+        file_path: Union[str, Path],
+        identifier: Optional[str] = None,
+        temperature_k: Optional[float] = None,
+        bulk_density_a3: Optional[float] = None,
+        pressure_bar: Optional[float] = None,
+        chemical_potential_kbt: Optional[float] = None,
+    ) -> Material:
+        """
+        Ingests .mol2 from a file path, dynamically derives force field parameters,
+        and solves the bulk Equation of State.
+        """
+        mol2_path = Path(file_path)
+        if not mol2_path.exists():
+            raise FileNotFoundError(f"Mol2 file does not exist: {mol2_path}")
+
+        mol2_text = mol2_path.read_text(encoding="utf-8")
+        return cls.from_mol2_string(
+            mol2_text=mol2_text,
+            identifier=identifier or mol2_path.stem,
+            temperature_k=temperature_k,
+            bulk_density_a3=bulk_density_a3,
+            pressure_bar=pressure_bar,
+            chemical_potential_kbt=chemical_potential_kbt,
+        )
+
+    @classmethod
     def load_material(
         cls,
         material_name_or_path: str,
@@ -1025,9 +1053,8 @@ class MaterialLoader:
         if not mol2_path.exists():
             raise FileNotFoundError(f"Mol2 file does not exist: {mol2_path}")
 
-        mol2_text = mol2_path.read_text(encoding="utf-8")
-        return cls.from_mol2_string(
-            mol2_text=mol2_text,
+        return cls.from_mol2_file(
+            file_path=mol2_path,
             identifier=mol2_path.stem,
             temperature_k=temperature_k,
             bulk_density_a3=bulk_density_a3,
