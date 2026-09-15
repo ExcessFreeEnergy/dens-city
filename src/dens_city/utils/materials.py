@@ -219,8 +219,45 @@ ELEMENT_TO_ATOMIC_NUMBER: Dict[str, int] = {
     "ZN": 30,
     "BR": 35,
     "KR": 36,
+    "RB": 37,
+    "SR": 38,
     "I": 53,
     "XE": 54,
+    "CS": 55,
+    "BA": 56,
+    "RN": 86,
+}
+
+# Physical elemental defaults: (sigma_angstrom, epsilon_kelvin, mass_amu)
+# Derived from Bondi van der Waals radii and standard atomic weights
+ELEMENT_DEFAULTS: Dict[int, Tuple[float, float, float]] = {
+    1: (2.65, 15.0, 1.008),  # H
+    2: (2.55, 10.2, 4.003),  # He
+    3: (2.10, 5.0, 6.941),  # Li
+    4: (2.00, 10.0, 9.012),  # Be
+    5: (3.60, 45.0, 10.81),  # B
+    6: (3.40, 120.0, 12.011),  # C
+    7: (3.25, 85.0, 14.007),  # N
+    8: (3.00, 100.0, 15.999),  # O
+    9: (2.95, 55.0, 18.998),  # F
+    10: (2.82, 32.8, 20.180),  # Ne
+    11: (3.33, 5.0, 22.990),  # Na
+    12: (2.80, 20.0, 24.305),  # Mg
+    13: (4.00, 50.0, 26.982),  # Al
+    14: (3.80, 120.0, 28.085),  # Si
+    15: (3.74, 100.0, 30.974),  # P
+    16: (3.56, 125.0, 32.060),  # S
+    17: (3.50, 150.0, 35.453),  # Cl
+    18: (3.405, 120.0, 39.948),  # Ar
+    19: (3.80, 5.0, 39.098),  # K
+    20: (3.05, 50.0, 40.078),  # Ca
+    26: (2.90, 50.0, 55.845),  # Fe
+    30: (2.70, 50.0, 65.380),  # Zn
+    35: (3.70, 200.0, 79.904),  # Br
+    36: (3.65, 171.0, 83.798),  # Kr
+    53: (4.00, 250.0, 126.904),  # I
+    54: (4.10, 221.0, 131.293),  # Xe
+    86: (4.35, 300.0, 222.000),  # Rn
 }
 
 
@@ -234,7 +271,27 @@ def parse_atomic_number(atom_type: str, site_name: str = "", mass: float = 12.0)
         return 6
 
     # Check 2-letter element symbols
-    for sym in ["CL", "BR", "NA", "FE", "AR", "SI", "AL", "MG", "LI", "ZN", "HE", "NE", "KR", "XE"]:
+    for sym in [
+        "CL",
+        "BR",
+        "NA",
+        "FE",
+        "AR",
+        "SI",
+        "AL",
+        "MG",
+        "LI",
+        "ZN",
+        "HE",
+        "NE",
+        "KR",
+        "XE",
+        "RN",
+        "SE",
+        "AS",
+        "BA",
+        "SR",
+    ]:
         if s.startswith(sym) and (len(s) == len(sym) or s[len(sym) :].isdigit() or s[len(sym)] in "_-."):
             return ELEMENT_TO_ATOMIC_NUMBER[sym]
         if t == sym or (len(t) > 2 and t.startswith(sym)):
@@ -270,6 +327,8 @@ def parse_atomic_number(atom_type: str, site_name: str = "", mass: float = 12.0)
         return 35
     if mass < 130.0:
         return 53
+    if mass < 225.0:
+        return 86
     return 6
 
 
@@ -732,13 +791,15 @@ class MaterialLoader:
                     at_type = parts[5]
                     charge = float(parts[8]) if len(parts) >= 9 else 0.0
 
-                    ff_entry = ff_db.get(at_type, ff_db.get(at_type.lower(), {}))
-                    sigma = float(ff_entry.get("sigma_angstrom", 3.40))
-                    eps_kcal = float(ff_entry.get("epsilon_kcal_mol", 0.10))
-                    eps_k = float(ff_entry.get("epsilon_kelvin", 120.0))
-                    mass = float(ff_entry.get("mass_amu", 12.0))
+                    atomic_num = parse_atomic_number(at_type, s_name)
+                    def_sigma, def_eps_k, def_mass = ELEMENT_DEFAULTS.get(atomic_num, (3.40, 120.0, 12.011))
+                    def_eps_kcal = def_eps_k * 0.001987204
 
-                    atomic_num = parse_atomic_number(at_type, s_name, mass)
+                    ff_entry = ff_db.get(at_type, ff_db.get(at_type.lower(), {}))
+                    sigma = float(ff_entry.get("sigma_angstrom", def_sigma))
+                    eps_kcal = float(ff_entry.get("epsilon_kcal_mol", def_eps_kcal))
+                    eps_k = float(ff_entry.get("epsilon_kelvin", def_eps_k))
+                    mass = float(ff_entry.get("mass_amu", def_mass))
                     sites.append(
                         AtomSite(
                             site_name=s_name,

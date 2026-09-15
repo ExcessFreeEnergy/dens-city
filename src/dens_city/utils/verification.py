@@ -24,7 +24,10 @@ def resolve_freesolv_identifier(name_or_stem: str, db: Dict[str, Any]) -> Option
     """
     if not name_or_stem or not db:
         return None
-    stem = str(name_or_stem).strip()
+    raw = str(name_or_stem).strip()
+    if raw in db:
+        return raw
+    stem = Path(raw).stem.strip()
     if stem in db:
         return stem
 
@@ -52,11 +55,12 @@ def resolve_freesolv_identifier(name_or_stem: str, db: Dict[str, Any]) -> Option
     return None
 
 
-def load_freesolv_db(db_path: Path) -> Dict[str, Any]:
+def load_freesolv_db(db_path: Path | str) -> Dict[str, Any]:
     """Loads the FreeSolv database.pickle file."""
-    if not db_path.exists():
-        raise FileNotFoundError(f"FreeSolv database not found at {db_path}")
-    with open(db_path, "rb") as f:
+    p = Path(db_path)
+    if not p.exists():
+        raise FileNotFoundError(f"FreeSolv database not found at {p}")
+    with open(p, "rb") as f:
         return pickle.load(f)
 
 
@@ -746,6 +750,8 @@ def verify_pipeline_against_dataset(
             f"Executing dens-city end-to-end benchmark (dataset: {dataset_clean}, engine: {energy_engine}, force_egnn={force_egnn})..."
         )
         e2e_args = ["--materials", "all", "--benchmark", "--energy-engine", energy_engine]
+        if not is_solvatum:
+            e2e_args.extend(["--solvent", "water"])
         if force_egnn:
             e2e_args.append("--force-egnn")
         if batch_size is not None:

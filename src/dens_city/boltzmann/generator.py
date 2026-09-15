@@ -213,23 +213,32 @@ class BoltzmannGenerator:
         if self.is_base2_cartesian:
             z = Tensor.randn(self.batch_size, self.dim)
             if origin_pool is not None:
-                idx = Tensor.randint(self.batch_size, high=origin_pool.shape[0])
-                origin = origin_pool[idx].reshape(self.batch_size, 3)
+                if origin_pool.shape[0] > 1:
+                    idx = Tensor.randint(self.batch_size, high=origin_pool.shape[0])
+                    origin = origin_pool[idx].reshape(self.batch_size, 3)
+                else:
+                    origin = origin_pool.reshape(1, 3).expand(self.batch_size, 3)
             else:
                 origin = None
             loss = self.compute_loss(z, origin=origin)
         elif self.is_composite:
             z = Tensor.randn(self.batch_size, self.dim)
             if origin_pool is not None:
-                idx = Tensor.randint(self.batch_size, high=origin_pool.shape[0])
-                origin = origin_pool[idx].reshape(self.batch_size, 3)
+                if origin_pool.shape[0] > 1:
+                    idx = Tensor.randint(self.batch_size, high=origin_pool.shape[0])
+                    origin = origin_pool[idx].reshape(self.batch_size, 3)
+                else:
+                    origin = origin_pool.reshape(1, 3).expand(self.batch_size, 3)
             else:
                 origin = None
             loss = self.compute_loss(z, origin=origin)
         else:
             if origin_pool is not None:
-                idx = Tensor.randint(self.batch_size, high=origin_pool.shape[0])
-                z = origin_pool[idx].reshape(self.batch_size, self.dim)
+                if origin_pool.shape[0] > 1:
+                    idx = Tensor.randint(self.batch_size, high=origin_pool.shape[0])
+                    z = origin_pool[idx].reshape(self.batch_size, self.dim)
+                else:
+                    z = origin_pool.reshape(1, self.dim).expand(self.batch_size, self.dim)
             else:
                 z = Tensor.randn(self.batch_size, self.dim)
             loss = self.compute_loss(z)
@@ -271,6 +280,7 @@ class BoltzmannGenerator:
                 iterator.set_description(f"KL Loss: {loss_val:8.4f}")
 
         losses = [float(loss_t.item()) for loss_t in loss_tensors]
+        Tensor.training = False
         return losses
 
     def _sample_batch(self, n_samples: int) -> Tensor:

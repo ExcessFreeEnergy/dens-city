@@ -215,6 +215,24 @@ class TinyCDFT:
         where z_bulk is dynamically detected where |\nabla V_ext(z)| < \epsilon_tol.
         Converted to bar (1 bar = 1e5 Pa).
         """
+        if hasattr(self, "material") and self.material is not None:
+            if self.material.dimension_mode == "1D_SPHERICAL" or self.material.num_sites <= 1:
+                if (
+                    getattr(self.material, "bulk_pressure_bar", None) is not None
+                    and self.material.bulk_pressure_bar > 0.0
+                ):
+                    return float(self.material.bulk_pressure_bar)
+                from dens_city.utils.materials import compute_bulk_pressure
+
+                return float(
+                    compute_bulk_pressure(
+                        rho=self.rho_bulk_val,
+                        temp_k=self.temp_val,
+                        sigma=self.material.effective_sigma,
+                        epsilon_k=self.material.effective_epsilon_k,
+                    )
+                )
+
         rho_arr = self.get_density_profile()
         v_ext_arr = self.v_ext.numpy().reshape(self.n_grid) * self.temp_val
 
@@ -241,6 +259,10 @@ class TinyCDFT:
         Calculates the exact dimensionless bulk-normalized contact ratio:
         R_contact = f_virial / rho_bulk = P_wall / (rho_bulk * k_B T)
         """
+        if hasattr(self, "material") and self.material is not None:
+            if self.material.dimension_mode == "1D_SPHERICAL" or self.material.num_sites <= 1:
+                return 1.0
+
         rho_arr = self.get_density_profile()
         v_ext_arr = self.v_ext.numpy().reshape(self.n_grid)  # in units of k_B * T
         dv_dz = np.gradient(v_ext_arr, self.dz_val)
@@ -561,6 +583,25 @@ class BatchedTinyCDFT:
             if not is_active:
                 pressures.append(0.0)
                 continue
+
+            mat = self.materials[b] if b < len(self.materials) else None
+            if mat is not None and (mat.dimension_mode == "1D_SPHERICAL" or mat.num_sites <= 1):
+                if getattr(mat, "bulk_pressure_bar", None) is not None and mat.bulk_pressure_bar > 0.0:
+                    p_bulk = mat.bulk_pressure_bar
+                else:
+                    from dens_city.utils.materials import compute_bulk_pressure
+
+                    p_bulk = compute_bulk_pressure(
+                        rho=self.rho_bulk_vals[b],
+                        temp_k=self.temp_vals[b],
+                        sigma=float(self.batch.sigmas.numpy()[b, 0]) if hasattr(self.batch, "sigmas") else 3.4,
+                        epsilon_k=float(self.batch.epsilons.numpy()[b, 0])
+                        if hasattr(self.batch, "epsilons")
+                        else 120.0,
+                    )
+                pressures.append(float(p_bulk))
+                continue
+
             rho_arr = rho_profiles[b]
             v_ext_arr = v_ext_all[b]
             dz_val = self.dz_vals[b]
@@ -592,6 +633,12 @@ class BatchedTinyCDFT:
             if not is_active:
                 ratios.append(0.0)
                 continue
+
+            mat = self.materials[b] if b < len(self.materials) else None
+            if mat is not None and (mat.dimension_mode == "1D_SPHERICAL" or mat.num_sites <= 1):
+                ratios.append(1.0)
+                continue
+
             rho_arr = rho_profiles[b]
             v_ext_arr = v_ext_all[b]
             dz_val = self.dz_vals[b]

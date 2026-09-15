@@ -9,8 +9,11 @@ from pathlib import Path
 import numpy as np
 
 from dens_city.utils.pipeline import (
+    AsyncBatchPrefetcher,
     MaterialPipelineTask,
     PipelineStatus,
+    clean_device_memory,
+    execute_prepared_batch,
     process_material_task,
     write_xyz_trajectory,
 )
@@ -187,3 +190,68 @@ def test_concurrent_multiprocessing_batch(tmp_path):
         assert (mat_dir / "density_profile.npy").exists()
         assert (mat_dir / "trajectory.xyz").exists()
         assert (mat_dir / "flow_weights.npz").exists()
+
+
+def test_multi_batch_egnn_memory_cleaning(tmp_path):
+    """
+    Validates that consecutive batches executing EGNN clean out GPU memory properly
+    without accumulating buffers across batches.
+    """
+    from dens_city.utils.materials import MaterialLoader
+
+    mat = MaterialLoader.load_material("water")
+    tasks_batch1 = [
+        MaterialPipelineTask(
+            material_path_or_name="water",
+            material_obj=mat,
+            out_dir=str(tmp_path / "b1"),
+            temperature_k=300.0,
+            pressure_bar=1.0,
+            grid=32,
+            cdft_steps=5,
+            bg_steps=3,
+            bg_batch_size=4,
+            bg_samples=2,
+            skip_bg=False,
+            force_egnn=True,
+        )
+        for _ in range(4)
+    ]
+    tasks_batch2 = [
+        MaterialPipelineTask(
+            material_path_or_name="water",
+            material_obj=mat,
+            out_dir=str(tmp_path / "b2"),
+            temperature_k=300.0,
+            pressure_bar=1.0,
+            grid=32,
+            cdft_steps=5,
+            bg_steps=3,
+            bg_batch_size=4,
+            bg_samples=2,
+            skip_bg=False,
+            force_egnn=True,
+        )
+        for _ in range(4)
+    ]
+
+    prefetcher = AsyncBatchPrefetcher(
+        [tasks_batch1, tasks_batch2],
+        batch_size=4,
+        prefetch_depth=1,
+        energy_engine="egnn",
+    ).start()
+
+    p0 = next(prefetcher)
+    res0 = execute_prepared_batch(p0)
+    assert len(res0) == 4
+    del p0, res0
+    clean_device_memory()
+
+    p1 = next(prefetcher)
+    res1 = execute_prepared_batch(p1)
+    assert len(res1) == 4
+    del p1, res1
+    clean_device_memory()
+
+    prefetcher.close()

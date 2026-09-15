@@ -33,6 +33,7 @@ from dens_city.utils.pipeline import (
     MaterialPipelineResult,
     MaterialPipelineTask,
     PipelineStatus,
+    clean_device_memory,
     execute_prepared_batch,
     process_material_task,
 )
@@ -514,6 +515,12 @@ Execution Modes & Examples:
         type=float,
         default=0.02,
         help="cDFT solver learning rate (default: 0.02)",
+    )
+    cdft_group.add_argument(
+        "--solvent",
+        type=str,
+        default=None,
+        help="Target solvent fluid for solvation free energy calculations (e.g. 'water', 'HEXANE', or 'vacuum'). Defaults to 'water' when verifying FreeSolv, else 'vacuum'.",
     )
     cdft_group.add_argument(
         "--skip-bg",
@@ -1346,15 +1353,103 @@ def main(argv: Optional[List[str]] = None) -> int:
     elif effective_engine in ("egnn", "auto"):
         print(colored(f"[ENGINE] Routing to {effective_engine.upper()} engine (batch size: {args.batch_size})", "cyan"))
 
-    materials = discover_materials(args.data_dir, args.materials)
-    if not materials:
-        print(colored(f"Error: No materials found in data directory: {args.data_dir}", "red"))
-        return 1
-
     debug_log_dir = None
     if args.debug:
         debug_log_dir = Path("data") / f"logs_{ts}"
         debug_log_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.dataset == "solvatum":
+        from dens_city.utils.benchmark_dataset import SolvatumDataset
+
+        sdf_path = Path(args.database) if args.database else Path("Solvatum/solvatum/data/solvatum.sdf")
+        if not sdf_path.exists():
+            alt = Path("solvatum/data/solvatum.sdf")
+            if alt.exists():
+                sdf_path = alt
+        ds = SolvatumDataset(db_path=sdf_path)
+        entries = ds.load_entries()
+        if args.materials and args.materials != ["all"]:
+            req_set = {m.lower().replace("_", "").replace("-", "") for m in args.materials}
+            entries = [
+                e
+                for e in entries
+                if e.solute_id.lower() in req_set
+                or e.solute_name.lower().replace("_", "").replace("-", "") in req_set
+                or f"solvatum_{e.solute_id}".lower() in req_set
+            ]
+
+        unique_ids = list(set(e.solute_id for e in entries))
+        solute_mats = {sid: ds.get_material(sid) for sid in unique_ids}
+
+        def _resolve_task_name(sid: str) -> str:
+            m = solute_mats.get(sid)
+            if m is not None and m.name:
+                return m.name
+            return f"solvatum_{sid}"
+
+        tasks = [
+            MaterialPipelineTask(
+                material_path_or_name=_resolve_task_name(e.solute_id),
+                material_obj=solute_mats.get(e.solute_id),
+                out_dir=out_dir,
+                temperature_k=args.temp,
+                pressure_bar=args.pressure,
+                chemical_potential_kbt=args.mu,
+                grid=args.grid,
+                cdft_steps=args.cdft_steps,
+                cdft_lr=args.cdft_lr,
+                bg_steps=args.bg_steps,
+                bg_batch_size=args.batch_size,
+                bg_lr=args.bg_lr,
+                bg_samples=args.bg_samples,
+                bg_w_tor=args.bg_w_tor,
+                bg_mcmc_steps=args.bg_mcmc_steps,
+                bg_mcmc_step_size=args.bg_mcmc_step_size,
+                skip_bg=args.skip_bg,
+                debug=args.debug,
+                energy_engine=args.energy_engine,
+                force_egnn=args.force_egnn,
+                solvent_name=e.solvent_name,
+                dielectric_constant=e.solvent_dielectric,
+                solute_id=e.solute_id,
+                solute_name=e.solute_name,
+            )
+            for e in entries
+        ]
+        materials = [t.material_path_or_name for t in tasks]
+    else:
+        materials = discover_materials(args.data_dir, args.materials)
+        if not materials:
+            print(colored(f"Error: No materials found in data directory: {args.data_dir}", "red"))
+            return 1
+
+        target_solvent = args.solvent or ("water" if (args.verify_freesolv or args.dataset == "freesolv") else "vacuum")
+        tasks = [
+            MaterialPipelineTask(
+                material_path_or_name=m,
+                out_dir=out_dir,
+                temperature_k=args.temp,
+                pressure_bar=args.pressure,
+                chemical_potential_kbt=args.mu,
+                grid=args.grid,
+                cdft_steps=args.cdft_steps,
+                cdft_lr=args.cdft_lr,
+                bg_steps=args.bg_steps,
+                bg_batch_size=args.batch_size,
+                bg_lr=args.bg_lr,
+                bg_samples=args.bg_samples,
+                bg_w_tor=args.bg_w_tor,
+                bg_mcmc_steps=args.bg_mcmc_steps,
+                bg_mcmc_step_size=args.bg_mcmc_step_size,
+                skip_bg=args.skip_bg,
+                debug=args.debug,
+                debug_log_path=str(debug_log_dir / f"{Path(m).stem}.log") if debug_log_dir else None,
+                energy_engine=args.energy_engine,
+                force_egnn=args.force_egnn,
+                solvent_name=target_solvent,
+            )
+            for m in materials
+        ]
 
     print_banner(
         out_dir=out_dir,
@@ -1368,32 +1463,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         benchmark=args.benchmark,
         energy_engine=args.energy_engine,
     )
-
-    tasks = [
-        MaterialPipelineTask(
-            material_path_or_name=m,
-            out_dir=out_dir,
-            temperature_k=args.temp,
-            pressure_bar=args.pressure,
-            chemical_potential_kbt=args.mu,
-            grid=args.grid,
-            cdft_steps=args.cdft_steps,
-            cdft_lr=args.cdft_lr,
-            bg_steps=args.bg_steps,
-            bg_batch_size=args.batch_size,
-            bg_lr=args.bg_lr,
-            bg_samples=args.bg_samples,
-            bg_w_tor=args.bg_w_tor,
-            bg_mcmc_steps=args.bg_mcmc_steps,
-            bg_mcmc_step_size=args.bg_mcmc_step_size,
-            skip_bg=args.skip_bg,
-            debug=args.debug,
-            debug_log_path=str(debug_log_dir / f"{Path(m).stem}.log") if debug_log_dir else None,
-            energy_engine=args.energy_engine,
-            force_egnn=args.force_egnn,
-        )
-        for m in materials
-    ]
 
     results: List[MaterialPipelineResult] = []
     t_batch_start = time.perf_counter()
@@ -1419,6 +1488,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                     print_result_row(res)
                     jsonl_file.write(json.dumps(res.to_dict()) + "\n")
                     jsonl_file.flush()
+
+                # Clean out GPU memory before advancing to next batch
+                del chunk_results, prepared_batch
+                clean_device_memory()
     finally:
         prefetcher.close()
         async_writer.flush()

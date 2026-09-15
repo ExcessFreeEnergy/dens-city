@@ -52,6 +52,32 @@ def get_global_gb_solver(dielectric_constant: float) -> Any:
     return _GLOBAL_GB_SOLVERS[dielectric_constant]
 
 
+def clean_device_memory() -> None:
+    """Safe host-side garbage collection, parameter gradient detachment, and allocator cache flushing between batches."""
+    global _GLOBAL_EGNN_MODEL
+    if _GLOBAL_EGNN_MODEL is not None:
+        try:
+            for p in nn.state.get_parameters(_GLOBAL_EGNN_MODEL):
+                p.grad = None
+        except Exception:
+            pass
+
+    import gc
+
+    gc.collect()
+
+    try:
+        from tinygrad.device import Device
+
+        dev = Device[Device.DEFAULT]
+        dev.synchronize()
+        allocator = getattr(dev, "allocator", None)
+        if allocator is not None and hasattr(allocator, "free_cache"):
+            allocator.free_cache()
+    except Exception:
+        pass
+
+
 class PipelineStatus(str, Enum):
     SUCCESS = "SUCCESS"
     SUCCESS_CDFT_ONLY = "SUCCESS_CDFT_ONLY"
@@ -94,6 +120,8 @@ class MaterialPipelineTask:
     solvent_name: str = "vacuum"
     dielectric_constant: Optional[float] = None
     formal_charge: Optional[float] = None
+    solute_id: Optional[str] = None
+    solute_name: Optional[str] = None
 
 
 @dataclass
@@ -104,6 +132,8 @@ class MaterialPipelineResult:
 
     material_name: str
     status: str
+    solute_id: Optional[str] = None
+    solute_name: Optional[str] = None
     error_message: Optional[str] = None
     runtime_seconds: float = 0.0
     cdft_runtime_seconds: float = 0.0
@@ -888,7 +918,8 @@ def execute_prepared_batch(
         dz_val = batched_cdft.dz_vals[local_idx]
         slit_w = batched_cdft.slit_widths[local_idx]
 
-        mat_out_dir = os.path.join(batch_tasks[orig_idx].out_dir, mat.name)
+        m_name = getattr(batch_tasks[orig_idx], "material_path_or_name", None) or mat.name
+        mat_out_dir = os.path.join(batch_tasks[orig_idx].out_dir, m_name)
         if async_writer:
             async_writer.write_npy(os.path.join(mat_out_dir, "density_profile.npy"), rho)
             z_grid = np.linspace(0.5 * dz_val, slit_w - 0.5 * dz_val, batched_cdft.n_grid)
@@ -898,7 +929,7 @@ def execute_prepared_batch(
                 np.column_stack([z_grid, rho]),
             )
             summary_txt = (
-                f"Material: {mat.name}\nDimension Mode: {mat.dimension_mode}\n"
+                f"Material: {m_name}\nDimension Mode: {mat.dimension_mode}\n"
                 f"Num Sites: {mat.num_sites}\nTemperature: {mat.temperature_k:.2f} K\n"
                 f"Bulk Density: {mat.bulk_density_a3:.6f} Å^-3\nBulk Pressure: {mat.bulk_pressure_bar:.4f} bar\n"
                 f"Chemical Potential: {mat.bulk_mu:.4f} k_B T\nWall Contact Pressure: {p_w:.4f} bar\n"
@@ -933,50 +964,67 @@ def execute_prepared_batch(
         return [results_map[i] for i in range(len(batch_tasks))]
 
     # 2. Batched Boltzmann Generator Phase
+    all_monoatomic = all((m.num_sites <= 1 or m.dimension_mode == "1D_SPHERICAL") for m in loaded_materials)
     t_bg_start = time.perf_counter()
-    bg_steps = batch_tasks[0].bg_steps if batch_tasks else 30
     bg_samples = batch_tasks[0].bg_samples if batch_tasks else 32
 
-    flow = Base2CartesianFlow(n_atoms=128, n_layers=4, hidden_dim=64)
-    generator = BoltzmannGenerator(
-        flow=flow,
-        energy_fn=energy_fn,
-        prior=None,
-        batch_size=batch_size,
-    )
+    if all_monoatomic:
+        stacked_samples = np.zeros((bg_samples, len(loaded_materials), 128, 3), dtype=np.float32)
+        mean_energies = np.zeros(len(loaded_materials), dtype=np.float32)
+        var_energies = np.zeros(len(loaded_materials), dtype=np.float32)
+        mean_log_pxs = np.zeros(len(loaded_materials), dtype=np.float32)
+        bg_loss = 0.0
+        t_bg = time.perf_counter() - t_bg_start
+        flow = None
+        np_weights = {}
+    else:
+        bg_steps = batch_tasks[0].bg_steps if batch_tasks else 30
+        flow = Base2CartesianFlow(n_atoms=128, n_layers=4, hidden_dim=64)
+        generator = BoltzmannGenerator(
+            flow=flow,
+            energy_fn=energy_fn,
+            prior=None,
+            batch_size=batch_size,
+        )
 
-    bg_losses = generator.train(steps=bg_steps, batch_size=batch_size, verbose=False)
-    bg_loss = bg_losses[-1] if bg_losses else 0.0
+        bg_losses = generator.train(steps=bg_steps, batch_size=batch_size, verbose=False)
+        bg_loss = bg_losses[-1] if bg_losses else 0.0
 
-    conformer_stats = generator.evaluate_conformer_ensemble(n_samples=bg_samples)
-    stacked_samples = conformer_stats["coords"]
-    mean_energies = np.atleast_1d(conformer_stats["mean_energy"])
-    var_energies = np.atleast_1d(conformer_stats["var_energy"])
-    mean_log_pxs = np.atleast_1d(conformer_stats["mean_log_px"])
-    t_bg = time.perf_counter() - t_bg_start
+        conformer_stats = generator.evaluate_conformer_ensemble(n_samples=bg_samples)
+        stacked_samples = conformer_stats["coords"]
+        mean_energies = np.atleast_1d(conformer_stats["mean_energy"])
+        var_energies = np.atleast_1d(conformer_stats["var_energy"])
+        mean_log_pxs = np.atleast_1d(conformer_stats["mean_log_px"])
+        t_bg = time.perf_counter() - t_bg_start
 
-    # 3. Extract Per-Material Trajectories and Dispatch Async Writes
-    state_dict = nn.state.get_state_dict(flow)
-    np_weights = {k: v.numpy() for k, v in state_dict.items()}
+        # 3. Extract Per-Material Trajectories and Dispatch Async Writes
+        state_dict = nn.state.get_state_dict(flow)
+        np_weights = {k: v.numpy() for k, v in state_dict.items()}
 
     for local_idx, orig_idx in enumerate(task_indices):
         mat = loaded_materials[local_idx]
         task = batch_tasks[orig_idx]
-        mat_out_dir = os.path.join(task.out_dir, mat.name)
-        site_names = [s.site_name for s in mat.sites] if mat.sites else [mat.name]
-        if stacked_samples.ndim == 4:
-            mat_coords = stacked_samples[:bg_samples, local_idx, : mat.num_sites, :]
-        elif stacked_samples.ndim == 3:
-            mat_coords = stacked_samples[:bg_samples, : mat.num_sites, :]
-        else:
-            mat_coords = stacked_samples
+        m_name = getattr(task, "material_path_or_name", None) or mat.name
+        mat_out_dir = os.path.join(task.out_dir, m_name)
+        site_names = [s.site_name for s in mat.sites] if mat.sites else [m_name]
 
-        if async_writer and not task.skip_bg:
+        # Per-slot tensor clamping for monoatomic materials in any mixed or homogeneous batch:
+        if mat.num_sites <= 1 or mat.dimension_mode == "1D_SPHERICAL":
+            mat_coords = np.zeros((bg_samples, max(1, mat.num_sites), 3), dtype=np.float32)
+        else:
+            if stacked_samples.ndim == 4:
+                mat_coords = stacked_samples[:bg_samples, local_idx, : mat.num_sites, :]
+            elif stacked_samples.ndim == 3:
+                mat_coords = stacked_samples[:bg_samples, : mat.num_sites, :]
+            else:
+                mat_coords = stacked_samples
+
+        if async_writer and not task.skip_bg and np_weights:
             async_writer.write_xyz(
                 path=os.path.join(mat_out_dir, "trajectory.xyz"),
                 coords=mat_coords,
                 site_names=site_names,
-                material_name=mat.name,
+                material_name=m_name,
             )
             async_writer.write_npz(
                 path=os.path.join(mat_out_dir, "flow_weights.npz"),
@@ -1198,9 +1246,25 @@ def execute_prepared_batch(
             except Exception:
                 pass
 
+        try:
+            del x_t, z_t, bq_t, m_t, sf
+        except Exception:
+            pass
+        try:
+            del internal_e_tensor, q_mean_tensor, total_solv_mean, gb_mean, h_mol_mean, coop_mean
+        except Exception:
+            pass
+        try:
+            del gb_tensor, q_pred_tensor
+        except Exception:
+            pass
+
+        m_name = getattr(task, "material_path_or_name", None) or mat.name
         results_map[orig_idx] = MaterialPipelineResult(
-            material_name=mat.name,
+            material_name=m_name,
             status=PipelineStatus.SUCCESS.value,
+            solute_id=getattr(task, "solute_id", None),
+            solute_name=getattr(task, "solute_name", None),
             runtime_seconds=time.perf_counter() - t_start,
             cdft_runtime_seconds=t_cdft_per_mat,
             bg_runtime_seconds=t_bg,
@@ -1226,15 +1290,7 @@ def execute_prepared_batch(
         )
 
     # Clean up device state, synchronize timeline queues, and release kernel argument buffers
-    try:
-        from tinygrad.device import Device
-
-        Device[Device.DEFAULT].synchronize()
-    except Exception:
-        pass
-    import gc
-
-    gc.collect()
+    clean_device_memory()
 
     return [results_map[i] for i in range(len(batch_tasks))]
 

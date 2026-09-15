@@ -390,14 +390,40 @@ class SolvatumDataset(BenchmarkDataset):
         return mol2_txt
 
     def get_material(self, solute_id: str) -> Optional[Material]:
+        mols = self._load_sdf()
+        target_mol = None
+        for mol in mols:
+            m_id = mol.GetProp("_Name") if mol.HasProp("_Name") else ""
+            m_name = mol.GetProp("Name") if mol.HasProp("Name") else ""
+            if (
+                m_id == solute_id
+                or m_name.upper() == solute_id.upper()
+                or f"solvatum_{m_id}".lower() == solute_id.lower()
+            ):
+                target_mol = mol
+                break
+
+        if target_mol is not None:
+            raw_name = target_mol.GetProp("Name") if target_mol.HasProp("Name") else solute_id
+            m_id = target_mol.GetProp("_Name") if target_mol.HasProp("_Name") else solute_id
+            clean_name = re.sub(r"[^\w\-]", "_", raw_name).strip("_").lower()
+            mat_id = f"solvatum_{m_id}_{clean_name}"
+        else:
+            mat_id = solute_id
+
         # Check if exists as file on disk first
-        p = self.repo_root / "data" / "test_data" / "solvatum" / f"{solute_id}.mol2"
-        if p.exists():
-            return MaterialLoader.from_mol2_file(p, identifier=solute_id)
+        candidates = [
+            self.repo_root / "data" / "test_data" / f"{mat_id}.mol2",
+            self.repo_root / "data" / "test_data" / f"{solute_id}.mol2",
+            self.repo_root / "data" / "test_data" / "solvatum" / f"{solute_id}.mol2",
+        ]
+        for p in candidates:
+            if p.exists():
+                return MaterialLoader.from_mol2_file(p, identifier=mat_id)
 
         mol2_txt = self.get_mol2_text(solute_id)
         if mol2_txt:
-            return MaterialLoader.from_mol2_string(mol2_txt, identifier=solute_id)
+            return MaterialLoader.from_mol2_string(mol2_txt, identifier=mat_id)
         return None
 
     def populate_test_data(
