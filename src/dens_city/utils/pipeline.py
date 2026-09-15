@@ -890,7 +890,7 @@ def execute_prepared_batch(
     if engine_type == "egnn":
         energy_fn = (
             prepared_batch.energy_fn
-            if prepared_batch.energy_fn is not None
+            if (prepared_batch.energy_fn is not None and isinstance(prepared_batch.energy_fn, EGNNMicroscopicEnergy))
             else EGNNMicroscopicEnergy(material=mol_batch, egnn_ff=get_global_egnn_model())
         )
     else:
@@ -1069,6 +1069,8 @@ def execute_prepared_batch(
         quantum_q_list = None
         krr_res_val = None
         krr_density_val = None
+        egnn_energy_val = None
+        egnn_force_rms_val = None
 
         # Determine effective per-material tier: classical, electronegativity, egnn
         mat_engine = engine_type
@@ -1246,8 +1248,24 @@ def execute_prepared_batch(
                     )
 
                     solv_free_energy = vdw_solv + delta_vdw_val + delta_g_born_val + krr_res + dg_self_assoc
+
+                    try:
+                        u_egnn_t, f_egnn_t = egnn_model.compute_energy_and_forces(
+                            x=x_t[0:1],
+                            atomic_numbers=z_t[0:1],
+                            atom_mask=m_t[0:1],
+                            molecule_mask=Tensor.ones(1),
+                        )
+                        Tensor.realize(u_egnn_t, f_egnn_t)
+                        egnn_energy_val = float(u_egnn_t.numpy()[0])
+                        f_np = f_egnn_t.numpy()[0, :n_sites_real]
+                        egnn_force_rms_val = float(np.sqrt(np.mean(f_np**2)))
+                        del u_egnn_t, f_egnn_t
+                    except Exception:
+                        pass
                 else:
                     q_pred_tensor = bq_t
+                    quantum_q_list = [float(q) for q in bq_t[0, :n_sites_real].numpy().tolist()]
                     gb_tensor = gb_solver.compute_solvation_free_energy(
                         x=x_t,
                         charges=q_pred_tensor,
@@ -1260,6 +1278,23 @@ def execute_prepared_batch(
                     delta_g_born_val = float(gb_mean.item())
                     delta_vdw_val = 0.0
                     solv_free_energy = vdw_solv + delta_g_born_val
+
+                    try:
+                        egnn_eval = get_global_egnn_model()
+                        if egnn_eval is not None:
+                            u_egnn_t, f_egnn_t = egnn_eval.compute_energy_and_forces(
+                                x=x_t[0:1],
+                                atomic_numbers=z_t[0:1],
+                                atom_mask=m_t[0:1],
+                                molecule_mask=Tensor.ones(1),
+                            )
+                            Tensor.realize(u_egnn_t, f_egnn_t)
+                            egnn_energy_val = float(u_egnn_t.numpy()[0])
+                            f_np = f_egnn_t.numpy()[0, :n_sites_real]
+                            egnn_force_rms_val = float(np.sqrt(np.mean(f_np**2)))
+                            del u_egnn_t, f_egnn_t
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -1301,6 +1336,8 @@ def execute_prepared_batch(
             solvation_free_energy_kcal_mol=solv_free_energy,
             born_solvation_kcal_mol=delta_g_born_val,
             quantum_charges=quantum_q_list,
+            egnn_energy=egnn_energy_val,
+            egnn_force_rms=egnn_force_rms_val,
             krr_residual_kcal_mol=krr_res_val,
             krr_epistemic_density=krr_density_val,
             solvent_name=getattr(task, "solvent_name", "vacuum") if task else "vacuum",
@@ -1331,29 +1368,33 @@ def process_batched_materials(
         mat_out_dir = os.path.join(task.out_dir, mat_basename)
         os.makedirs(mat_out_dir, exist_ok=True)
 
-        try:
-            mat = MaterialLoader.load_material(
-                material_name_or_path=task.material_path_or_name,
-                temperature_k=task.temperature_k,
-                bulk_density_a3=task.bulk_density_a3,
-                pressure_bar=task.pressure_bar,
-                chemical_potential_kbt=task.chemical_potential_kbt,
-            )
-            loaded_materials.append(mat)
+        if task.material_obj is not None:
+            loaded_materials.append(task.material_obj)
             task_indices.append(idx)
-        except Exception as e:
-            status = (
-                PipelineStatus.SKIPPED_THERMO
-                if "spinodal" in str(e).lower() or "density" in str(e).lower()
-                else PipelineStatus.FAILED_ERROR
-            )
-            results_map[idx] = MaterialPipelineResult(
-                material_name=mat_basename,
-                status=status.value,
-                error_message=f"Thermodynamic routing failed: {str(e)}",
-                runtime_seconds=time.perf_counter() - t_start,
-                artifact_dir=mat_out_dir,
-            )
+        else:
+            try:
+                mat = MaterialLoader.load_material(
+                    material_name_or_path=task.material_path_or_name,
+                    temperature_k=task.temperature_k,
+                    bulk_density_a3=task.bulk_density_a3,
+                    pressure_bar=task.pressure_bar,
+                    chemical_potential_kbt=task.chemical_potential_kbt,
+                )
+                loaded_materials.append(mat)
+                task_indices.append(idx)
+            except Exception as e:
+                status = (
+                    PipelineStatus.SKIPPED_THERMO
+                    if "spinodal" in str(e).lower() or "density" in str(e).lower()
+                    else PipelineStatus.FAILED_ERROR
+                )
+                results_map[idx] = MaterialPipelineResult(
+                    material_name=mat_basename,
+                    status=status.value,
+                    error_message=f"Thermodynamic routing failed: {str(e)}",
+                    runtime_seconds=time.perf_counter() - t_start,
+                    artifact_dir=mat_out_dir,
+                )
 
     if not loaded_materials:
         return [results_map[i] for i in range(len(batch_tasks))]
@@ -1368,7 +1409,20 @@ def process_batched_materials(
         n_grid=128,
         learning_rate=batch_tasks[0].cdft_lr if batch_tasks else 0.02,
     )
-    energy_fn = MicroscopicEnergy(material=mol_batch, pad_to_128=True)
+    engine_type = (
+        batch_tasks[0].energy_engine if batch_tasks and hasattr(batch_tasks[0], "energy_engine") else "classical"
+    )
+    force_egnn = any(getattr(t, "force_egnn", False) for t in batch_tasks)
+    if force_egnn:
+        engine_type = "egnn"
+    elif engine_type == "auto":
+        any_hetero = any(any(getattr(s, "atomic_number", 6) not in (1, 6) for s in m.sites) for m in loaded_materials)
+        engine_type = "egnn" if any_hetero else "electronegativity"
+
+    if engine_type == "egnn":
+        energy_fn = EGNNMicroscopicEnergy(material=mol_batch, egnn_ff=get_global_egnn_model())
+    else:
+        energy_fn = MicroscopicEnergy(material=mol_batch, pad_to_128=True)
 
     prepared = PreparedMolecularBatch(
         tasks=batch_tasks,

@@ -416,3 +416,79 @@ def test_five_stage_generative_funnel_with_egnn_screening(tmp_path):
     assert mol2_dir.exists()
     exported_mol2s = list(mol2_dir.glob("*.mol2"))
     assert len(exported_mol2s) > 0, "No Pareto candidate mol2 files exported!"
+
+
+def test_pipeline_solvatum_non_null_observables():
+    """
+    Directly tests process_batched_materials on a mixed batch of Solvatum entries
+    (noble gas and polyatomic organic molecules).
+    Verifies that egnn_energy, egnn_force_rms, born_solvation_kcal_mol,
+    solvation_free_energy_kcal_mol, and quantum_charges are non-null and physically valid.
+    """
+    import tempfile
+
+    from dens_city.utils.benchmark_dataset import SolvatumDataset
+    from dens_city.utils.pipeline import MaterialPipelineTask, process_batched_materials
+
+    ds = SolvatumDataset()
+    entries = ds.load_entries()
+
+    # Select noble gas (Helium) and polyatomic molecules
+    he_entry = entries[0]  # Helium
+    poly_entries = []
+    for e in entries:
+        mat = ds.get_material(e.solute_id)
+        if mat and mat.num_sites >= 4:
+            poly_entries.append(e)
+            if len(poly_entries) >= 2:
+                break
+
+    test_entries = [he_entry] + poly_entries
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tasks = []
+        for e in test_entries:
+            mat = ds.get_material(e.solute_id)
+            t = MaterialPipelineTask(
+                material_path_or_name=f"{e.solute_id}_{e.solvent_name}",
+                out_dir=tmpdir,
+                material_obj=mat,
+                solvent_name=e.solvent_name,
+                dielectric_constant=e.solvent_dielectric,
+                formal_charge=0.0,
+                solute_id=e.solute_id,
+                solute_name=e.solute_name,
+                energy_engine="auto",
+                cdft_steps=5,
+                bg_steps=5,
+                bg_samples=8,
+            )
+            tasks.append(t)
+
+        results = process_batched_materials(tasks, batch_size=len(tasks))
+        assert len(results) == len(test_entries)
+
+        for r in results:
+            assert r.status == "SUCCESS", f"Task failed for {r.material_name}: {r.error_message}"
+            assert r.egnn_energy is not None, f"egnn_energy is None for {r.material_name}"
+            assert not math.isnan(r.egnn_energy), f"egnn_energy is NaN for {r.material_name}"
+
+            assert r.egnn_force_rms is not None, f"egnn_force_rms is None for {r.material_name}"
+            assert not math.isnan(r.egnn_force_rms), f"egnn_force_rms is NaN for {r.material_name}"
+
+            assert r.solvation_free_energy_kcal_mol is not None
+            assert not math.isnan(r.solvation_free_energy_kcal_mol)
+
+            assert r.quantum_charges is not None, f"quantum_charges is None for {r.material_name}"
+            assert len(r.quantum_charges) == r.num_sites
+
+            d = r.to_dict()
+            assert d["egnn_energy"] is not None
+            assert d["egnn_force_rms"] is not None
+
+        # Polyatomic specific checks
+        poly_results = results[1:]
+        for r in poly_results:
+            assert r.num_sites >= 4
+            assert r.born_solvation_kcal_mol is not None
+            assert abs(sum(r.quantum_charges)) < 1e-4, f"Charge conservation failed: {sum(r.quantum_charges)}"
