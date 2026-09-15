@@ -675,6 +675,9 @@ class EGNNForceField:
         _, _, a_mask, _, _ = self._prepare_inputs(x_in, atomic_numbers, atom_mask, molecule_mask)
         grad = x_in.grad if x_in.grad is not None else Tensor.zeros_like(x_in)
         forces = (-grad * a_mask).realize()
+        for p in nn.state.get_parameters(self):
+            p.grad = None
+        x_in.grad = None
         return u_total.realize(), forces
 
     def compute_energy_forces_and_charges(
@@ -763,6 +766,9 @@ class EGNNForceField:
 
         grad = x_in.grad if x_in.grad is not None else Tensor.zeros_like(x_in)
         forces = (-grad * atom_mask).realize()
+        for p in nn.state.get_parameters(self):
+            p.grad = None
+        x_in.grad = None
         return u_total.realize(), forces, q_final
 
     def get_jit_evaluator(self) -> Callable[[Tensor, Tensor, Tensor, Tensor], Tuple[Tensor, Tensor]]:

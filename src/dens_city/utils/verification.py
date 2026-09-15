@@ -750,7 +750,9 @@ def verify_pipeline_against_dataset(
             f"Executing dens-city end-to-end benchmark (dataset: {dataset_clean}, engine: {energy_engine}, force_egnn={force_egnn})..."
         )
         e2e_args = ["--materials", "all", "--benchmark", "--energy-engine", energy_engine]
-        if not is_solvatum:
+        if is_solvatum:
+            e2e_args.extend(["--dataset", "solvatum"])
+        else:
             e2e_args.extend(["--solvent", "water"])
         if force_egnn:
             e2e_args.append("--force-egnn")
