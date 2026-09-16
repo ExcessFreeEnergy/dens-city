@@ -70,10 +70,13 @@ class EGNNLayer:
         # 1. Project node features directly on (B, N, F) before spatial broadcast
         h_i_proj = self.edge_hi(h).reshape(B, N, 1, F)
         h_j_proj = self.edge_hj(h).reshape(B, 1, N, F)
-        d_p = d_proj if d_proj is not None else self.edge_d(d_sq)
-        a_proj = self.edge_a(edge_mask)
+        w_d = self.edge_d.weight.reshape(1, 1, 1, F)
+        d_p = d_proj if d_proj is not None else d_sq * w_d
+        w_a = self.edge_a.weight.reshape(1, 1, 1, F)
+        b_a = self.edge_a.bias.reshape(1, 1, 1, F)
+        a_proj = edge_mask * w_a + b_a
 
-        # 2. Sum linear projections and apply SiLU
+        # 2. Sum linear projections and apply SiLU (fuses into single elementwise kernel without 256MB allocations)
         e_hidden = (h_i_proj + h_j_proj + d_p + a_proj).silu()
 
         # 3. Dynamic radial cutoff envelope & degree normalization (use precomputed if provided)
@@ -677,16 +680,13 @@ class EGNNForceField:
             molecule_mask=molecule_mask,
         )
 
-        loss = u_total.sum()
-        loss.backward()
+        [grad] = u_total.sum().gradient(x_in)
 
         _, _, a_mask, _, _ = self._prepare_inputs(x_in, atomic_numbers, atom_mask, molecule_mask)
-        grad = x_in.grad if x_in.grad is not None else Tensor.zeros_like(x_in)
         forces = -grad * a_mask
         Tensor.realize(u_total, forces)
         for p in nn.state.get_parameters(self):
             p.grad = None
-        x_in.grad = None
         return u_total, forces
 
     def compute_energy_forces_and_charges(
@@ -770,15 +770,14 @@ class EGNNForceField:
         q_final = q_masked if Tensor.training else q_masked.realize()
 
         # 3. Forces via reverse-mode autograd
-        loss = u_total.sum()
-        loss.backward()
+        [grad] = u_total.sum().gradient(x_in)
+        if len(grad.shape) == 2:
+            grad = grad.reshape(1, -1, 3)
 
-        grad = x_in.grad if x_in.grad is not None else Tensor.zeros_like(x_in)
         forces = -grad * atom_mask
         Tensor.realize(u_total, forces, q_final)
         for p in nn.state.get_parameters(self):
             p.grad = None
-        x_in.grad = None
         return u_total, forces, q_final
 
     def get_jit_evaluator(self) -> Callable[[Tensor, Tensor, Tensor, Tensor], Tuple[Tensor, Tensor]]:
@@ -793,9 +792,9 @@ class EGNNForceField:
                 p.realize()
 
             def _step(x_in: Tensor, z_in: Tensor, a_mask: Tensor, m_mask: Tensor) -> Tuple[Tensor, Tensor]:
+                x_in.requires_grad = True
                 u = self.compute_energy(x=x_in, atomic_numbers=z_in, atom_mask=a_mask, molecule_mask=m_mask)
-                u.sum().backward()
-                grad = x_in.grad if x_in.grad is not None else Tensor.zeros_like(x_in)
+                [grad] = u.sum().gradient(x_in)
                 f = (-grad * a_mask).realize()
                 return u.realize(), f
 
@@ -833,8 +832,7 @@ class EGNNForceField:
                 for s in range(relax_steps):
                     x_curr.requires_grad = True
                     u = self.compute_energy(x=x_curr, atomic_numbers=z_in, atom_mask=a_mask, molecule_mask=m_mask)
-                    u.sum().backward()
-                    grad = x_curr.grad if x_curr.grad is not None else Tensor.zeros_like(x_curr)
+                    [grad] = u.sum().gradient(x_curr)
                     forces = -grad * a_mask
 
                     # 1. Clip extreme gradient spikes on steric overlap
@@ -855,18 +853,17 @@ class EGNNForceField:
 
                     # 5. Masked convergence freezing: freeze coordinates and zero velocity for equilibrium molecules
                     converged_mask = f_max_sq < force_tol_sq
-                    x_next = converged_mask.where(x_curr, x_cand).realize()
-                    v_next_masked = converged_mask.where(Tensor.zeros_like(v_curr), v_next).realize()
+                    x_next = converged_mask.where(x_curr, x_cand)
+                    v_next_masked = converged_mask.where(x_in.zeros_like(), v_next)
 
                     x_curr = x_next.detach()
                     v_curr = v_next_masked.detach()
 
                 x_curr.requires_grad = True
                 u_final = self.compute_energy(x=x_curr, atomic_numbers=z_in, atom_mask=a_mask, molecule_mask=m_mask)
-                u_final.sum().backward()
-                grad_final = x_curr.grad if x_curr.grad is not None else Tensor.zeros_like(x_curr)
-                forces_final = (-grad_final * a_mask).realize()
-                return x_curr.realize(), u_final.realize(), forces_final.realize()
+                [grad_final] = u_final.sum().gradient(x_curr)
+                forces_final = -grad_final * a_mask
+                return x_curr, u_final, forces_final
 
             setattr(self, attr_name, TinyJit(_step_relax))
         return getattr(self, attr_name)
