@@ -1515,6 +1515,33 @@ def main(argv: Optional[List[str]] = None) -> int:
     results: List[MaterialPipelineResult] = []
     t_batch_start = time.perf_counter()
 
+    completed_offset = 0
+    if os.path.exists(jsonl_log_path):
+        existing_results = []
+        with open(jsonl_log_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line_str = line.strip()
+                if line_str:
+                    try:
+                        d = json.loads(line_str)
+                        existing_results.append(MaterialPipelineResult.from_dict(d))
+                    except Exception:
+                        pass
+        num_clean_batches = len(existing_results) // args.batch_size
+        completed_offset = num_clean_batches * args.batch_size
+        if completed_offset > 0:
+            results = existing_results[:completed_offset]
+            with open(jsonl_log_path, "w", encoding="utf-8") as f:
+                for res in results:
+                    f.write(json.dumps(res.to_dict()) + "\n")
+            print(
+                colored(
+                    f"[RESUME] Found {completed_offset} existing results ({num_clean_batches} clean batches). Resuming remaining {len(tasks) - completed_offset} tasks...",
+                    "green",
+                )
+            )
+            tasks = tasks[completed_offset:]
+
     task_chunks = [tasks[i : i + args.batch_size] for i in range(0, len(tasks), args.batch_size)]
     async_writer = AsyncArtifactWriter()
     prefetcher = AsyncBatchPrefetcher(
@@ -1525,7 +1552,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ).start()
 
     try:
-        with open(jsonl_log_path, "w", encoding="utf-8") as jsonl_file:
+        with open(jsonl_log_path, "a", encoding="utf-8") as jsonl_file:
             for prepared_batch in prefetcher:
                 chunk_results = execute_prepared_batch(
                     prepared_batch=prepared_batch,

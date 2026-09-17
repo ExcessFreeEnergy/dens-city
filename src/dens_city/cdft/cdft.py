@@ -314,7 +314,7 @@ class BatchedTinyCDFT:
 
         # Universal static grouped convolution kernel sizing to prevent Tinygrad JIT invalidation
         self.STATIC_FMT_K: int = 41
-        self.STATIC_ATT_K: int = 101
+        self.STATIC_ATT_K: int = 129
 
         arrays = self._extract_batch_arrays(batch)
         self.slit_widths = arrays["slit_widths"]
@@ -374,6 +374,10 @@ class BatchedTinyCDFT:
         stacked = np.zeros((self.batch_size, 1, target_k, 1), dtype=np.float32)
         for b, arr in enumerate(kernel_arrays):
             k_len = len(arr)
+            if k_len > target_k:
+                crop = (k_len - target_k) // 2
+                arr = arr[crop : crop + target_k]
+                k_len = target_k
             start = (target_k - k_len) // 2
             stacked[b, 0, start : start + k_len, 0] = arr
         return Tensor(stacked, dtype=dtypes.float32).realize()

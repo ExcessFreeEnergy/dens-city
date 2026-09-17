@@ -103,6 +103,18 @@ This skill equips Antigravity agents with the compiled, persistent knowledge bas
 - **Rule**: Never use water's hard-sphere radius for non-aqueous fluids. Derive solvent kinetic diameters dynamically $\sigma_S = (6 V_m / \pi N_A)^{1/3}$ for BMCSL cavitation. In non-polar solvents, gate neural cooperative hydrogen-bonding readouts by Abraham H-bond capacity $\tanh((\alpha_S + \beta_S)/1.5)$ to suppress unphysical stabilization. For universal multi-solvent residual prediction, concatenate 7D normalized Abraham/physical descriptors into a 397D joint pair embedding $[\mathbf{z}_{\rm solute} \parallel 2.0\mathbf{d}_{\rm solute} \parallel 2.5\mathbf{s}_{\rm solvent}]$.
 - **Reference**: [pattern_solvatum_universal_solvent_architecture.md](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/patterns/pattern_solvatum_universal_solvent_architecture.md).
 
+### 23. Universal Static Padding & In-Place JIT Graph Reuse
+- **Rule (The Ideal Standard)**: Zero JIT kernel recompilation overhead after Batch 0. Never allow varying molecular sizes or kernel widths to trigger JIT schedule misses. Pad molecular batch tensors to static bounds ($B=64, N_{\rm pad}=128$) and pad grouped convolution kernels to universal static lengths ($K_{\rm fmt}=41, K_{\rm att}=129$) with symmetric center-padding and zero weights outside compact physical support. Re-bind batch parameters and optimizer moments in-place via `.assign()` on persistent solver singletons rather than re-instantiating objects.
+- **Reference**: [pattern_persistent_jit_graph_reuse_and_static_padding.md](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/patterns/pattern_persistent_jit_graph_reuse_and_static_padding.md).
+
+### 24. Decoupled Reverse Autodiff & Conservative Force Surrogates
+- **Rule (The Ideal Standard)**: In deep multi-layer equivariant networks (e.g. 7-layer EGNN), never backpropagate through an unrolled autograd tape over shared spatial distance matrices ($d_{\rm sq}$), which collapses register files into monolithic mega-reduction kernels. Decouple adjoint backpropagation layer-by-layer: $\nabla_x U = \sum_l \frac{\partial U}{\partial h_l} \frac{\partial h_l}{\partial x}$. In generative normalizing flows, train the coordinate generator via the detached conservative force surrogate work $\mathcal{L}_{\rm surr} = \mathbb{E}_z [ -\beta F_{\rm det} \cdot x_\theta(z) - \log p_z - \log |\det J| ]$, releasing forward activation graphs of the potential energy model and strictly enforcing Rule 5 (`p.grad = None`) after force evaluation.
+- **Reference**: [pattern_decoupled_reverse_autodiff_and_conservative_force_surrogate.md](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/patterns/pattern_decoupled_reverse_autodiff_and_conservative_force_surrogate.md).
+
+### 25. Fully Vectorized High-Throughput Batch Processing
+- **Rule (The Ideal Standard)**: Zero sequential Python candidate loops during batch post-processing. Combine all molecules in a batch ($B=64$) into padded tensors $(B, N_{\rm pad}, 3)$ and $(B, N_{\rm pad})$ along Axis 0. Execute Generalized Born continuum electrostatics, EGNN force fields, and Universal Delta-KRR models in parallel, and realize all output tensors in a single unified `Tensor.realize(...)` call to collapse host-device round-trip latency to near zero. Extract individual molecular quantities using fast NumPy vector slicing.
+- **Reference**: [pattern_fully_vectorized_high_throughput_batch_inference.md](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/patterns/pattern_fully_vectorized_high_throughput_batch_inference.md).
+
 ## Verification Workflow
 Always verify changes using the test suite:
 ```bash

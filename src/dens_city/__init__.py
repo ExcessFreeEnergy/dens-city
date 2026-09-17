@@ -3,6 +3,26 @@ dens-city: High-Performance Molecular Classical Density Functional Theory (cDFT)
 Powered by pure tinygrad tensor operations, autograd variational optimization, and JIT compilation.
 """
 
+
+def _patch_tinygrad_nv_overflow():
+    try:
+        from tinygrad.runtime.ops_nv import QMD
+
+        _orig_write = QMD.write
+
+        def _safe_write(self, **kwargs):
+            for k, val in kwargs.items():
+                if k.upper() == "PROGRAM_PREFETCH_ADDR_LOWER_SHIFTED" and isinstance(val, int):
+                    kwargs[k] = val & 0xFFFFFFFF
+            return _orig_write(self, **kwargs)
+
+        QMD.write = _safe_write
+    except Exception:
+        pass
+
+
+_patch_tinygrad_nv_overflow()
+
 from dens_city.cdft import KernelBuilder, TinyCDFT
 from dens_city.utils.materials import Material, MaterialLoader
 from dens_city.utils.pipeline import (
