@@ -689,6 +689,7 @@ class EGNNForceField:
         f_cut = cutoff_mask * 0.5 * ((r_ij * (math.pi / self.r_cut)).cos() + 1.0)
         effective_edge_mask = edge_mask * f_cut
         deg_i = (edge_mask * cutoff_mask).sum(axis=2).maximum(1.0)
+        Tensor.realize(d_sq, cutoff_mask, effective_edge_mask, deg_i)
 
         h_list = [h0]
         curr_h = h0
@@ -718,12 +719,10 @@ class EGNNForceField:
             diff_l = x_l.reshape(B, N, 1, 3) - x_l.reshape(B, 1, N, 3)
             d_sq_l = (diff_l * diff_l).sum(axis=-1, keepdim=True)
             r_ij_l = (d_sq_l + 1e-8).sqrt()
-            cutoff_mask_l = (r_ij_l < self.r_cut).cast(dtypes.float32)
-            f_cut_l = cutoff_mask_l * 0.5 * ((r_ij_l * (math.pi / self.r_cut)).cos() + 1.0)
+            f_cut_l = cutoff_mask * 0.5 * ((r_ij_l * (math.pi / self.r_cut)).cos() + 1.0)
             eff_mask_l = edge_mask * f_cut_l
-            deg_i_l = (edge_mask * cutoff_mask_l).sum(axis=2).maximum(1.0)
 
-            h_out = layer(h_in, d_sq_l, edge_mask, atom_mask, effective_edge_mask=eff_mask_l, deg_i=deg_i_l)
+            h_out = layer(h_in, d_sq_l, edge_mask, atom_mask, effective_edge_mask=eff_mask_l, deg_i=deg_i)
             step_loss = (g * h_out).sum()
             [g_prev, f_l] = step_loss.gradient(h_in, x_l)
             Tensor.realize(g_prev, f_l)

@@ -52,6 +52,33 @@ def get_global_gb_solver(dielectric_constant: float) -> Any:
     return _GLOBAL_GB_SOLVERS[dielectric_constant]
 
 
+_GLOBAL_FLOW_GENERATOR: Optional[Any] = None
+
+
+def get_or_create_flow_generator(energy_fn: Any, batch_size: int, n_atoms: int = 128) -> Any:
+    """Returns a module-level cached singleton BoltzmannGenerator instance, reusing compiled JIT schedules."""
+    global _GLOBAL_FLOW_GENERATOR
+    from dens_city.boltzmann.bijectors import Base2CartesianFlow
+
+    dim = n_atoms * 3
+    if (
+        _GLOBAL_FLOW_GENERATOR is not None
+        and getattr(_GLOBAL_FLOW_GENERATOR, "batch_size", None) == batch_size
+        and getattr(_GLOBAL_FLOW_GENERATOR, "dim", None) == dim
+    ):
+        _GLOBAL_FLOW_GENERATOR.reset_parameters(energy_fn=energy_fn)
+        return _GLOBAL_FLOW_GENERATOR
+
+    flow = Base2CartesianFlow(n_atoms=n_atoms, n_layers=4, hidden_dim=64)
+    _GLOBAL_FLOW_GENERATOR = BoltzmannGenerator(
+        flow=flow,
+        energy_fn=energy_fn,
+        prior=None,
+        batch_size=batch_size,
+    )
+    return _GLOBAL_FLOW_GENERATOR
+
+
 def clean_device_memory() -> None:
     """Safe host-side garbage collection, parameter gradient detachment, and allocator cache flushing between batches."""
     global _GLOBAL_EGNN_MODEL
@@ -981,16 +1008,26 @@ def execute_prepared_batch(
         flow = None
         np_weights = {}
     else:
-        bg_steps = batch_tasks[0].bg_steps if batch_tasks else 30
-        flow = Base2CartesianFlow(n_atoms=128, n_layers=4, hidden_dim=64)
-        generator = BoltzmannGenerator(
-            flow=flow,
-            energy_fn=energy_fn,
-            prior=None,
-            batch_size=batch_size,
+        bg_steps_req = batch_tasks[0].bg_steps if batch_tasks else 30
+        max_sites = max((m.num_sites for m in loaded_materials), default=1)
+        # Size-aware calibrated steps: simple molecules converge quickly; larger molecules get full steps
+        calibrated_steps = min(
+            bg_steps_req,
+            20 if max_sites <= 6 else (30 if max_sites <= 20 else bg_steps_req),
         )
+        min_steps = 10 if max_sites <= 6 else (15 if max_sites <= 20 else 20)
 
-        bg_losses = generator.train(steps=bg_steps, batch_size=batch_size, verbose=False)
+        generator = get_or_create_flow_generator(energy_fn=energy_fn, batch_size=batch_size, n_atoms=128)
+        flow = generator.flow
+
+        bg_losses = generator.train(
+            steps=calibrated_steps,
+            batch_size=batch_size,
+            verbose=False,
+            early_stopping=True,
+            min_steps=min_steps,
+            patience=3,
+        )
         bg_loss = bg_losses[-1] if bg_losses else 0.0
 
         stacked_samples = generator.sample_coords(n_samples=bg_samples)

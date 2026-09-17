@@ -304,14 +304,48 @@ class BoltzmannGenerator:
         loss.backward()
         return loss.realize(*self.opt.schedule_step())
 
+    def reset_parameters(self, energy_fn: Optional[Callable[[Tensor], Tensor]] = None) -> None:
+        """
+        Re-initializes all flow parameter buffers in-place using fresh Kaiming uniform distributions
+        and resets optimizer momentum/variance accumulators without invalidating the compiled
+        TinyJit execution graph. Optionally binds a new energy_fn.
+        """
+        params = nn.state.get_parameters(self.flow)
+        for p in params:
+            fresh = Tensor.kaiming_uniform(*p.shape, dtype=p.dtype)
+            p.assign(fresh).realize()
+            p.grad = None
+
+        if hasattr(self.opt, "m"):
+            for m in self.opt.m:
+                m.assign(Tensor.zeros_like(m)).realize()
+        if hasattr(self.opt, "v"):
+            for v in self.opt.v:
+                v.assign(Tensor.zeros_like(v)).realize()
+
+        if energy_fn is not None:
+            self.energy_fn = energy_fn
+            self.batch = getattr(energy_fn, "batch", None)
+            self.is_batched_generator = self.batch is not None
+            if self.is_batched_generator:
+                self.beta = self.batch.beta.realize()
+                self.molecule_mask = self.batch.molecule_mask.realize()
+                self.conditioning = self.batch.conditioning.realize()
+                self.batch_size = self.batch.batch_size
+
     def train(
         self,
         steps: int = 100,
         batch_size: int = 512,
         verbose: bool = False,
+        early_stopping: bool = True,
+        min_steps: int = 12,
+        patience: int = 3,
+        tol: float = 5e-4,
     ) -> List[float]:
         """
-        Trains the Boltzmann generator for a specified number of optimization steps.
+        Trains the Boltzmann generator for a specified number of optimization steps,
+        with optional size-calibrated patience-based early stopping.
         """
         if self.train_step is None or self.batch_size != batch_size:
             self.batch_size = int(batch_size)
@@ -329,6 +363,8 @@ class BoltzmannGenerator:
 
         losses = []
         iterator = trange(steps) if verbose else range(steps)
+        consecutive_small_changes = 0
+
         for i in iterator:
             loss = self.train_step(self.origin_pool) if self.origin_pool is not None else self.train_step()
             loss_val = float(loss.item())
@@ -336,6 +372,17 @@ class BoltzmannGenerator:
 
             if verbose and hasattr(iterator, "set_description") and (i % 20 == 0 or i == steps - 1):
                 iterator.set_description(f"KL Loss: {loss_val:8.4f}")
+
+            # Early stopping check after min_steps
+            if early_stopping and i >= min_steps and len(losses) >= 2:
+                prev_val = losses[-2]
+                rel_delta = abs(loss_val - prev_val) / max(1.0, abs(loss_val))
+                if rel_delta < tol:
+                    consecutive_small_changes += 1
+                    if consecutive_small_changes >= patience:
+                        break
+                else:
+                    consecutive_small_changes = 0
 
         Tensor.training = False
 
