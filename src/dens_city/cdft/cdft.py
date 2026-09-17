@@ -308,6 +308,81 @@ class BatchedTinyCDFT:
         self.n_grid = n_grid
         self.materials = batch.materials
 
+        self.wall_sigma = wall_sigma
+        self.wall_epsilon_k = wall_epsilon_k
+        self.learning_rate = learning_rate
+
+        # Universal static grouped convolution kernel sizing to prevent Tinygrad JIT invalidation
+        self.STATIC_FMT_K: int = 41
+        self.STATIC_ATT_K: int = 101
+
+        arrays = self._extract_batch_arrays(batch)
+        self.slit_widths = arrays["slit_widths"]
+        self.dz_vals = arrays["dz_vals"]
+        self.temp_vals = arrays["temp_vals"]
+        self.rho_bulk_vals = arrays["rho_bulk_vals"]
+
+        max_fmt_req = max(arrays["fmt_k_sizes"]) if arrays["fmt_k_sizes"] else self.STATIC_FMT_K
+        self.max_fmt_k = max(self.STATIC_FMT_K, max_fmt_req)
+        if self.max_fmt_k % 2 == 0:
+            self.max_fmt_k += 1
+        self.fmt_pad = (self.max_fmt_k - 1) // 2
+
+        max_att_req = max(arrays["att_k_sizes"]) if arrays["att_k_sizes"] else self.STATIC_ATT_K
+        self.max_att_k = max(self.STATIC_ATT_K, max_att_req)
+        if self.max_att_k % 2 == 0:
+            self.max_att_k += 1
+        self.att_pad = (self.max_att_k - 1) // 2
+
+        self.fmt_w3 = self._stack_grouped_kernels(arrays["raw_fmt_w3"], self.max_fmt_k)
+        self.fmt_w2 = self._stack_grouped_kernels(arrays["raw_fmt_w2"], self.max_fmt_k)
+        self.fmt_w1 = self._stack_grouped_kernels(arrays["raw_fmt_w1"], self.max_fmt_k)
+        self.fmt_w0 = self._stack_grouped_kernels(arrays["raw_fmt_w0"], self.max_fmt_k)
+        self.fmt_wv2 = self._stack_grouped_kernels(arrays["raw_fmt_wv2"], self.max_fmt_k)
+        self.fmt_wv1 = self._stack_grouped_kernels(arrays["raw_fmt_wv1"], self.max_fmt_k)
+        self.att_kernel = self._stack_grouped_kernels(arrays["raw_att_kernels"], self.max_att_k)
+
+        self.dz = Tensor(arrays["dz_vals"], dtype=dtypes.float32).reshape(1, self.batch_size, 1, 1).realize()
+        self.temperature_k = (
+            Tensor(arrays["temp_vals"], dtype=dtypes.float32).reshape(1, self.batch_size, 1, 1).realize()
+        )
+        self.bulk_density = (
+            Tensor(arrays["rho_bulk_vals"], dtype=dtypes.float32).reshape(1, self.batch_size, 1, 1).realize()
+        )
+        self.mu_ex = Tensor(arrays["mu_ex_vals"], dtype=dtypes.float32).reshape(1, self.batch_size, 1, 1).realize()
+        self.molecule_mask = (
+            batch.molecule_mask.reshape(1, self.batch_size, 1, 1).realize()
+            if hasattr(batch, "molecule_mask")
+            else Tensor.ones(1, self.batch_size, 1, 1)
+        )
+        self.v_ext = (
+            Tensor(np.array(arrays["v_ext_list"], dtype=np.float32))
+            .reshape(1, self.batch_size, n_grid, 1)
+            .contiguous()
+            .realize()
+        )
+
+        psi_init_np = np.array(arrays["psi_init_list"], dtype=np.float32).reshape(1, self.batch_size, n_grid, 1)
+        self.psi = Tensor(psi_init_np).contiguous().realize()
+        self.psi.requires_grad = True
+
+        opt_type = nn.optim.Muon if getenv("MUON") else nn.optim.SGD if getenv("SGD") else nn.optim.Adam
+        self.opt = opt_type([self.psi], lr=learning_rate)
+        self.train_step = TinyJit(self._train_step)
+
+    def _stack_grouped_kernels(self, kernel_arrays: List[np.ndarray], target_k: int) -> Tensor:
+        stacked = np.zeros((self.batch_size, 1, target_k, 1), dtype=np.float32)
+        for b, arr in enumerate(kernel_arrays):
+            k_len = len(arr)
+            start = (target_k - k_len) // 2
+            stacked[b, 0, start : start + k_len, 0] = arr
+        return Tensor(stacked, dtype=dtypes.float32).realize()
+
+    def _extract_batch_arrays(self, batch: MolecularBatch) -> Dict[str, Any]:
+        wall_sigma = getattr(self, "wall_sigma", 3.4)
+        wall_epsilon_k = getattr(self, "wall_epsilon_k", 50.0)
+        n_grid = self.n_grid
+
         dz_list = []
         temp_list = []
         rho_bulk_list = []
@@ -316,14 +391,17 @@ class BatchedTinyCDFT:
         v_ext_list = []
         slit_widths = []
 
-        # 1. Per-material parameter extraction and kernel building
         raw_fmt_w3, raw_fmt_w2, raw_fmt_w1, raw_fmt_w0, raw_fmt_wv2, raw_fmt_wv1 = [], [], [], [], [], []
         raw_att_kernels = []
         fmt_k_sizes = []
         att_k_sizes = []
 
         for b in range(self.batch_size):
-            mat = self.materials[b]
+            mat = (
+                self.materials[b]
+                if hasattr(self, "materials") and b < len(self.materials)
+                else (batch.materials[b] if hasattr(batch, "materials") and b < len(batch.materials) else None)
+            )
             is_active = (mat is not None) or (
                 hasattr(batch, "molecule_mask") and float(batch.molecule_mask.numpy()[b]) > 0.5
             )
@@ -458,55 +536,76 @@ class BatchedTinyCDFT:
             raw_att_kernels.append(att_arr)
             att_k_sizes.append(len(att_arr))
 
-        self.slit_widths = slit_widths
-        self.dz_vals = dz_list
-        self.temp_vals = temp_list
-        self.rho_bulk_vals = rho_bulk_list
+        return {
+            "slit_widths": slit_widths,
+            "dz_vals": dz_list,
+            "temp_vals": temp_list,
+            "rho_bulk_vals": rho_bulk_list,
+            "mu_ex_vals": mu_ex_list,
+            "psi_init_list": psi_init_list,
+            "v_ext_list": v_ext_list,
+            "raw_fmt_w3": raw_fmt_w3,
+            "raw_fmt_w2": raw_fmt_w2,
+            "raw_fmt_w1": raw_fmt_w1,
+            "raw_fmt_w0": raw_fmt_w0,
+            "raw_fmt_wv2": raw_fmt_wv2,
+            "raw_fmt_wv1": raw_fmt_wv1,
+            "raw_att_kernels": raw_att_kernels,
+            "fmt_k_sizes": fmt_k_sizes,
+            "att_k_sizes": att_k_sizes,
+        }
 
-        # 2. Build grouped convolution kernels with symmetric center-padding
-        max_fmt_k = max(fmt_k_sizes)
-        self.fmt_pad = (max_fmt_k - 1) // 2
+    def reset_batch(self, batch: MolecularBatch) -> None:
+        """
+        Re-binds molecular batch parameters in-place using .assign() without invalidating
+        the precompiled TinyJit execution graph.
+        """
+        self.batch = batch
+        self.materials = batch.materials
+        arrays = self._extract_batch_arrays(batch)
+        self.slit_widths = arrays["slit_widths"]
+        self.dz_vals = arrays["dz_vals"]
+        self.temp_vals = arrays["temp_vals"]
+        self.rho_bulk_vals = arrays["rho_bulk_vals"]
 
-        def stack_grouped_kernels(kernel_arrays: List[np.ndarray], target_k: int) -> Tensor:
-            stacked = np.zeros((self.batch_size, 1, target_k, 1), dtype=np.float32)
-            for b, arr in enumerate(kernel_arrays):
-                k_len = len(arr)
-                start = (target_k - k_len) // 2
-                stacked[b, 0, start : start + k_len, 0] = arr
-            return Tensor(stacked, dtype=dtypes.float32).realize()
-
-        self.fmt_w3 = stack_grouped_kernels(raw_fmt_w3, max_fmt_k)
-        self.fmt_w2 = stack_grouped_kernels(raw_fmt_w2, max_fmt_k)
-        self.fmt_w1 = stack_grouped_kernels(raw_fmt_w1, max_fmt_k)
-        self.fmt_w0 = stack_grouped_kernels(raw_fmt_w0, max_fmt_k)
-        self.fmt_wv2 = stack_grouped_kernels(raw_fmt_wv2, max_fmt_k)
-        self.fmt_wv1 = stack_grouped_kernels(raw_fmt_wv1, max_fmt_k)
-
-        max_att_k = max(att_k_sizes)
-        self.att_pad = (max_att_k - 1) // 2
-        self.att_kernel = stack_grouped_kernels(raw_att_kernels, max_att_k)
-
-        # 3. Stacked static field buffers: shape (1, B, N_grid, 1) and (1, B, 1, 1)
-        self.dz = Tensor(dz_list, dtype=dtypes.float32).reshape(1, self.batch_size, 1, 1).realize()
-        self.temperature_k = Tensor(temp_list, dtype=dtypes.float32).reshape(1, self.batch_size, 1, 1).realize()
-        self.bulk_density = Tensor(rho_bulk_list, dtype=dtypes.float32).reshape(1, self.batch_size, 1, 1).realize()
-        self.mu_ex = Tensor(mu_ex_list, dtype=dtypes.float32).reshape(1, self.batch_size, 1, 1).realize()
-        self.molecule_mask = (
+        self.dz.assign(Tensor(arrays["dz_vals"], dtype=dtypes.float32).reshape(1, self.batch_size, 1, 1)).realize()
+        self.temperature_k.assign(
+            Tensor(arrays["temp_vals"], dtype=dtypes.float32).reshape(1, self.batch_size, 1, 1)
+        ).realize()
+        self.bulk_density.assign(
+            Tensor(arrays["rho_bulk_vals"], dtype=dtypes.float32).reshape(1, self.batch_size, 1, 1)
+        ).realize()
+        self.mu_ex.assign(
+            Tensor(arrays["mu_ex_vals"], dtype=dtypes.float32).reshape(1, self.batch_size, 1, 1)
+        ).realize()
+        mol_mask_t = (
             batch.molecule_mask.reshape(1, self.batch_size, 1, 1).realize()
             if hasattr(batch, "molecule_mask")
             else Tensor.ones(1, self.batch_size, 1, 1)
         )
-        self.v_ext = (
-            Tensor(np.array(v_ext_list, dtype=np.float32)).reshape(1, self.batch_size, n_grid, 1).contiguous().realize()
-        )
+        self.molecule_mask.assign(mol_mask_t).realize()
+        self.v_ext.assign(
+            Tensor(np.array(arrays["v_ext_list"], dtype=np.float32)).reshape(1, self.batch_size, self.n_grid, 1)
+        ).realize()
 
-        psi_init_np = np.array(psi_init_list, dtype=np.float32).reshape(1, self.batch_size, n_grid, 1)
-        self.psi = Tensor(psi_init_np).contiguous().realize()
-        self.psi.requires_grad = True
+        self.fmt_w3.assign(self._stack_grouped_kernels(arrays["raw_fmt_w3"], self.max_fmt_k)).realize()
+        self.fmt_w2.assign(self._stack_grouped_kernels(arrays["raw_fmt_w2"], self.max_fmt_k)).realize()
+        self.fmt_w1.assign(self._stack_grouped_kernels(arrays["raw_fmt_w1"], self.max_fmt_k)).realize()
+        self.fmt_w0.assign(self._stack_grouped_kernels(arrays["raw_fmt_w0"], self.max_fmt_k)).realize()
+        self.fmt_wv2.assign(self._stack_grouped_kernels(arrays["raw_fmt_wv2"], self.max_fmt_k)).realize()
+        self.fmt_wv1.assign(self._stack_grouped_kernels(arrays["raw_fmt_wv1"], self.max_fmt_k)).realize()
+        self.att_kernel.assign(self._stack_grouped_kernels(arrays["raw_att_kernels"], self.max_att_k)).realize()
 
-        opt_type = nn.optim.Muon if getenv("MUON") else nn.optim.SGD if getenv("SGD") else nn.optim.Adam
-        self.opt = opt_type([self.psi], lr=learning_rate)
-        self.train_step = TinyJit(self._train_step)
+        psi_init_np = np.array(arrays["psi_init_list"], dtype=np.float32).reshape(1, self.batch_size, self.n_grid, 1)
+        self.psi.assign(Tensor(psi_init_np)).realize()
+        self.psi.grad = None
+
+        if hasattr(self.opt, "m"):
+            for m in self.opt.m:
+                m.assign(Tensor.zeros_like(m)).realize()
+        if hasattr(self.opt, "v"):
+            for v in self.opt.v:
+                v.assign(Tensor.zeros_like(v)).realize()
 
     def compute_density(self) -> Tensor:
         """Computes positive density field rho for all batch slots: (1, B, N_grid, 1)."""
@@ -673,3 +772,30 @@ class BatchedTinyCDFT:
             gamma = float(np.sum(rho_arr - self.rho_bulk_vals[b]) * self.dz_vals[b])
             gammas.append(gamma)
         return gammas
+
+
+_GLOBAL_BATCHED_CDFT: Optional[BatchedTinyCDFT] = None
+
+
+def get_or_create_batched_cdft(
+    batch: MolecularBatch,
+    batch_size: int,
+    n_grid: int = 128,
+    learning_rate: float = 0.02,
+) -> BatchedTinyCDFT:
+    """Returns a module-level cached singleton BatchedTinyCDFT instance, reusing compiled JIT schedules."""
+    global _GLOBAL_BATCHED_CDFT
+    if (
+        _GLOBAL_BATCHED_CDFT is not None
+        and getattr(_GLOBAL_BATCHED_CDFT, "batch_size", None) == batch_size
+        and getattr(_GLOBAL_BATCHED_CDFT, "n_grid", None) == n_grid
+    ):
+        _GLOBAL_BATCHED_CDFT.reset_batch(batch)
+        return _GLOBAL_BATCHED_CDFT
+
+    _GLOBAL_BATCHED_CDFT = BatchedTinyCDFT(
+        batch=batch,
+        n_grid=n_grid,
+        learning_rate=learning_rate,
+    )
+    return _GLOBAL_BATCHED_CDFT

@@ -894,11 +894,14 @@ def execute_prepared_batch(
         )
     )
 
+    from dens_city.cdft.cdft import get_or_create_batched_cdft
+
     batched_cdft = (
         prepared_batch.batched_cdft
         if prepared_batch.batched_cdft is not None
-        else BatchedTinyCDFT(
+        else get_or_create_batched_cdft(
             batch=mol_batch,
+            batch_size=batch_size,
             n_grid=128,
             learning_rate=batch_tasks[0].cdft_lr if batch_tasks else 0.02,
         )
@@ -1045,9 +1048,43 @@ def execute_prepared_batch(
         for p in nn.state.get_parameters(egnn_model):
             p.grad = None
 
+    s_fixed = 16
+    N_pad = 128
+    batch_has_hetero = any(any(getattr(s, "atomic_number", 6) not in (1, 6) for s in m.sites) for m in loaded_materials)
+    run_egnn_readouts = (
+        force_egnn
+        or engine_type in ("egnn", "electronegativity")
+        or (engine_type == "auto" and (batch_has_hetero or any(m.num_sites > 1 for m in loaded_materials)))
+    )
+
+    batch_x = np.zeros((batch_size, s_fixed, N_pad, 3), dtype=np.float32)
+    batch_z = np.zeros((batch_size, N_pad), dtype=np.float32)
+    batch_bq = np.zeros((batch_size, N_pad), dtype=np.float32)
+    batch_mask = np.zeros((batch_size, N_pad, 1), dtype=np.float32)
+    batch_mol_mask = np.zeros(batch_size, dtype=np.float32)
+    batch_delta_e = np.zeros((batch_size, s_fixed), dtype=np.float32)
+    batch_dielectric = np.ones(batch_size, dtype=np.float32)
+    batch_hbond = np.zeros(batch_size, dtype=np.float32)
+    batch_s_vec = np.zeros((batch_size, 7), dtype=np.float32)
+    batch_phys_desc = np.zeros((batch_size, 6), dtype=np.float32)
+    batch_vdw_solv = np.zeros(batch_size, dtype=np.float32)
+    batch_dg_self_assoc = np.zeros(batch_size, dtype=np.float32)
+
+    from dens_city.utils.materials import (
+        compute_neat_liquid_self_association_correction,
+        generate_conformer_rotamer_diversity,
+    )
+    from dens_city.utils.solvents import (
+        get_solvent_descriptors_vector,
+        get_solvent_dielectric,
+        get_solvent_properties,
+    )
+
     for local_idx, orig_idx in enumerate(task_indices):
         mat = loaded_materials[local_idx]
         task = batch_tasks[orig_idx]
+        batch_mol_mask[local_idx] = 1.0
+
         m_raw = getattr(task, "material_path_or_name", None) or mat.name
         m_name = Path(m_raw).stem if (os.path.exists(str(m_raw)) or "/" in str(m_raw)) else mat.name
         mat_out_dir = os.path.join(task.out_dir, m_name)
@@ -1076,25 +1113,63 @@ def execute_prepared_batch(
                 np_dict=np_weights,
             )
 
-        # Determine nonpolar solvation free energy ΔG_nonpolar from physical first principles
-        vdw_solv = 0.0
-        if hasattr(task, "vdw_energy") and task.vdw_energy is not None:
-            vdw_solv = float(task.vdw_energy)
+        # Conformer ensemble generation (s_fixed=16)
+        n_sites_real = mat.num_sites
+        n_rot = getattr(mat, "num_rotatable_bonds", 0)
+        x_ground = (
+            np.array([[s.x, s.y, s.z] for s in mat.sites], dtype=np.float32)
+            if mat.sites
+            else np.zeros((max(1, n_sites_real), 3), dtype=np.float32)
+        )
+        z_list = [getattr(s, "atomic_number", 6) for s in mat.sites] if mat.sites else [6] * max(1, n_sites_real)
+        bonds = getattr(mat, "bonds", [])
+
+        div_conf = generate_conformer_rotamer_diversity(
+            coords=x_ground,
+            atomic_numbers=z_list,
+            bonds=bonds,
+            n_rot=n_rot,
+            n_conf=s_fixed,
+            seed=42 + local_idx,
+        )
+
+        if mat_coords is not None and len(mat_coords) > 0 and np.max(np.abs(mat_coords)) < 50.0:
+            n_flow = min(s_fixed // 4, len(mat_coords))
+            for k in range(n_flow):
+                slot = s_fixed - 1 - k
+                div_conf[slot, :n_sites_real] = mat_coords[k, :n_sites_real]
+
+        delta_e = compute_conformer_internal_energy_diffs(div_conf[:, :n_sites_real], mat)
+
+        batch_x[local_idx, :, :n_sites_real] = div_conf[:, :n_sites_real]
+        batch_z[local_idx, :n_sites_real] = z_list[:n_sites_real]
+        bq_list = mat.base_charges or mat.compute_topological_base_charges(kappa=0.10, q_max=0.50)
+        batch_bq[local_idx, :n_sites_real] = bq_list[:n_sites_real]
+        batch_mask[local_idx, :n_sites_real, :] = 1.0
+        batch_delta_e[local_idx] = delta_e
+
+        # Solvent parameters & nonpolar free energy
+        s_name = getattr(task, "solvent_name", None) or "vacuum"
+        is_vacuum = s_name.lower() in ("vacuum", "gas", "vapor", "none", "")
+        temp_k = float(mat.temperature_k if mat.temperature_k is not None else getattr(task, "temperature_k", 298.15))
+
+        if is_vacuum:
+            eps_solvent = 1.0
+            vdw_solv = 0.0
+            batch_s_vec[local_idx] = get_solvent_descriptors_vector("water")
         else:
-            s_name = getattr(task, "solvent_name", None) or "vacuum"
-            is_vacuum = s_name.lower() in ("vacuum", "gas", "vapor", "none", "")
-            if is_vacuum:
-                vdw_solv = 0.0
+            if hasattr(task, "dielectric_constant") and task.dielectric_constant is not None:
+                eps_solvent = float(task.dielectric_constant)
+            else:
+                eps_solvent = get_solvent_dielectric(s_name, temp_k=temp_k)
+
+            if hasattr(task, "vdw_energy") and task.vdw_energy is not None:
+                vdw_solv = float(task.vdw_energy)
             else:
                 try:
-                    from dens_city.utils.solvents import get_solvent_properties
-
                     solv_props = get_solvent_properties(s_name)
                     rho_s_a3 = (solv_props.density_g_cm3 * 6.02214076e23) / (
                         max(1.0, solv_props.molecular_weight) * 1e24
-                    )
-                    temp_k = float(
-                        mat.temperature_k if mat.temperature_k is not None else getattr(task, "temperature_k", 298.15)
                     )
                     vdw_solv = mat.compute_solvation_in_solvent(
                         solvent_sigma=solv_props.kinetic_diameter_a,
@@ -1105,254 +1180,157 @@ def execute_prepared_batch(
                 except Exception:
                     vdw_solv = float(getattr(mat, "solvation_free_energy_kcal_mol", 0.0))
 
-        solv_free_energy = vdw_solv
-        delta_g_born_val = None
-        quantum_q_list = None
-        krr_res_val = None
-        krr_density_val = None
-        egnn_energy_val = None
-        egnn_force_rms_val = None
+            batch_s_vec[local_idx] = get_solvent_descriptors_vector(s_name)
+            solv_props = get_solvent_properties(s_name)
+            batch_hbond[local_idx] = solv_props.hbond_capacity
+            eta_solv = (
+                (np.pi / 6.0)
+                * solv_props.density_g_cm3
+                * 6.02214076e23
+                / (solv_props.molecular_weight * 1e24)
+                * (solv_props.kinetic_diameter_a**3)
+            )
+            batch_dg_self_assoc[local_idx] = compute_neat_liquid_self_association_correction(
+                solute_name=mat.name,
+                solvent_name=s_name,
+                alpha_s=solv_props.abraham_alpha,
+                beta_s=solv_props.abraham_beta,
+                packing_fraction=float(eta_solv),
+                temp_k=temp_k,
+            )
 
-        # Determine effective per-material tier: classical, electronegativity, egnn
-        mat_engine = engine_type
-        if getattr(task, "force_egnn", False) or force_egnn:
-            mat_engine = "egnn"
-        elif mat_engine == "auto":
-            has_hetero = any(getattr(s, "atomic_number", 6) not in (1, 6) for s in mat.sites)
-            mat_engine = "egnn" if has_hetero else "electronegativity"
+        batch_dielectric[local_idx] = eps_solvent
+        batch_vdw_solv[local_idx] = vdw_solv
 
-        if mat_engine in ("egnn", "electronegativity") and mat.num_sites > 0:
-            try:
-                s_name = getattr(task, "solvent_name", None) or "vacuum"
-                is_vacuum = s_name.lower() in ("vacuum", "gas", "vapor", "none", "")
-                if is_vacuum:
-                    eps_solvent = 1.0
-                elif hasattr(task, "dielectric_constant") and task.dielectric_constant is not None:
-                    eps_solvent = float(task.dielectric_constant)
-                else:
-                    from dens_city.utils.solvents import get_solvent_dielectric
+        z_np_arr = np.array(z_list, dtype=np.int32)
+        n_heavy = float(np.sum(z_np_arr > 1))
+        n_o = float(np.sum(z_np_arr == 8))
+        n_n = float(np.sum(z_np_arr == 7))
+        n_hal = float(np.sum(np.isin(z_np_arr, [9, 17, 35, 53])))
+        batch_phys_desc[local_idx] = [n_heavy, n_o, n_n, n_hal, 0.0, vdw_solv]
 
-                    temp_k_val = float(
-                        mat.temperature_k if mat.temperature_k is not None else getattr(task, "temperature_k", 298.15)
-                    )
-                    eps_solvent = get_solvent_dielectric(s_name, temp_k=temp_k_val)
-                gb_solver = get_global_gb_solver(dielectric_constant=eps_solvent)
+    # Vectorized GPU Evaluation (Single fused pass across all batch slots)
+    if run_egnn_readouts and len(loaded_materials) > 0:
+        t_x = Tensor(batch_x, dtype=dtypes.float32)
+        t_z = Tensor(batch_z, dtype=dtypes.float32)
+        t_bq = Tensor(batch_bq, dtype=dtypes.float32)
+        t_mask = Tensor(batch_mask, dtype=dtypes.float32)
+        t_mol_mask = Tensor(batch_mol_mask, dtype=dtypes.float32)
+        t_delta_e = Tensor(batch_delta_e, dtype=dtypes.float32)
+        t_diel = Tensor(batch_dielectric, dtype=dtypes.float32)
+        t_hbond = Tensor(batch_hbond, dtype=dtypes.float32)
 
-                # Adaptive Boltzmann conformational ensemble (Weinreich FML principle):
-                # Depth s depends on molecular flexibility (rotatable bonds):
-                # s=64 for very flexible long chains (N_rot >= 10) to sample coiled globules (power of 2),
-                # s=32 for flexible (5 <= N_rot < 10), s=16 for medium (2 <= N_rot < 5), s=8 for rigid.
-                n_sites_real = mat.num_sites
-                n_pad = max(128, ((n_sites_real + 127) // 128) * 128)
-                n_rot = getattr(mat, "num_rotatable_bonds", 0)
-                if n_rot >= 10:
-                    n_conf = 64
-                elif n_rot >= 5:
-                    n_conf = 32
-                elif n_rot >= 2:
-                    n_conf = 16
-                else:
-                    n_conf = 8
+        x_flat = t_x.reshape(batch_size * s_fixed, N_pad, 3)
+        z_flat = (
+            t_z.reshape(batch_size, 1, N_pad).expand(batch_size, s_fixed, N_pad).reshape(batch_size * s_fixed, N_pad)
+        )
+        m_flat = (
+            t_mask.reshape(batch_size, 1, N_pad, 1)
+            .expand(batch_size, s_fixed, N_pad, 1)
+            .reshape(batch_size * s_fixed, N_pad, 1)
+        )
+        bq_flat = (
+            t_bq.reshape(batch_size, 1, N_pad).expand(batch_size, s_fixed, N_pad).reshape(batch_size * s_fixed, N_pad)
+        )
 
-                from dens_city.utils.materials import (
-                    compute_neat_liquid_self_association_correction,
-                    generate_conformer_rotamer_diversity,
-                )
+        gb_solver = get_global_gb_solver(dielectric_constant=78.3)
+        sf_flat = gb_solver.compute_solvent_descriptors(x_flat, z_flat, m_flat, base_charges=bq_flat)
+        sf_4d = sf_flat.reshape(batch_size, s_fixed, N_pad, 4)
 
-                # Ground state coordinates (n_sites_real, 3)
-                x_ground = np.array([[s.x, s.y, s.z] for s in mat.sites], dtype=np.float32)
-                z_list = [getattr(s, "atomic_number", 6) for s in mat.sites] if mat.sites else [6] * n_sites_real
-                bonds = getattr(mat, "bonds", [])
+        egnn_model = get_global_egnn_model()
+        (
+            q_mean_t,
+            total_solv_t,
+            gb_mean_t,
+            h_mol_mean_t,
+            coop_mean_t,
+        ) = egnn_model.compute_ensembled_solvation_readouts(
+            x_ensemble=t_x,
+            atomic_numbers=t_z,
+            atom_mask=t_mask,
+            molecule_mask=t_mol_mask,
+            total_charge=0.0,
+            base_charges=t_bq,
+            solvent_features=sf_4d,
+            solvent_hbond_capacity=t_hbond,
+            dielectric_constant=t_diel,
+            gb_solver=gb_solver,
+            detach_trunk=True,
+            internal_energies=t_delta_e,
+            temperature_k=298.15,
+            return_global=True,
+        )
 
-                # Generate diverse conformer ensemble with open-rotamer & Rg-contracted coiled states
-                div_conf = generate_conformer_rotamer_diversity(
-                    coords=x_ground,
-                    atomic_numbers=z_list,
-                    bonds=bonds,
-                    n_rot=n_rot,
-                    n_conf=n_conf,
-                    seed=42 + local_idx,
-                )
+        u_egnn_t, f_egnn_t = egnn_model.compute_energy_and_forces(
+            x=t_x[:, 0, :, :],
+            atomic_numbers=t_z,
+            atom_mask=t_mask,
+            molecule_mask=t_mol_mask,
+        )
 
-                conf_padded = np.zeros((n_conf, n_pad, 3), dtype=np.float32)
-                conf_padded[:, :n_sites_real] = div_conf
+        from dens_city.boltzmann.train_charges import predict_krr_residual_tensor
 
-                # If flow coordinates exist and are physically bounded, blend into later conformer slots
-                if mat_coords is not None and len(mat_coords) > 0 and np.max(np.abs(mat_coords)) < 50.0:
-                    n_flow = min(n_conf // 4, len(mat_coords))
-                    for k in range(n_flow):
-                        slot = n_conf - 1 - k
-                        conf_padded[slot, :n_sites_real] = mat_coords[k, :n_sites_real]
+        d_phys_base = Tensor(batch_phys_desc, dtype=dtypes.float32)
+        gb_mean_col = gb_mean_t.reshape(batch_size, 1)
+        d_phys_t = Tensor.cat(d_phys_base[:, :4], gb_mean_col, d_phys_base[:, 5:6], dim=1)
 
-                # Compute intramolecular energy differences for Boltzmann weighting
-                delta_e = compute_conformer_internal_energy_diffs(conf_padded[:, :n_sites_real], mat)
+        krr_res_t, krr_density_t = predict_krr_residual_tensor(
+            z_mol=h_mol_mean_t,
+            d_phys=d_phys_t,
+            s_solv=batch_s_vec,
+        )
 
-                z_padded = np.zeros((n_conf, n_pad), dtype=np.float32)
-                z_padded[:, :n_sites_real] = z_list
+        Tensor.realize(total_solv_t, gb_mean_t, q_mean_t, h_mol_mean_t, u_egnn_t, f_egnn_t, krr_res_t, krr_density_t)
+        total_solv_np = total_solv_t.numpy()
+        gb_mean_np = gb_mean_t.numpy()
+        q_mean_np = q_mean_t.numpy()
+        u_egnn_np = u_egnn_t.numpy()
+        f_egnn_np = f_egnn_t.numpy()
+        krr_res_np = krr_res_t.numpy()
+        krr_density_np = krr_density_t.numpy()
+    else:
+        total_solv_np = np.zeros(batch_size, dtype=np.float32)
+        gb_mean_np = np.zeros(batch_size, dtype=np.float32)
+        q_mean_np = np.zeros((batch_size, N_pad), dtype=np.float32)
+        u_egnn_np = np.zeros(batch_size, dtype=np.float32)
+        f_egnn_np = np.zeros((batch_size, N_pad, 3), dtype=np.float32)
+        krr_res_np = np.zeros((batch_size, 1), dtype=np.float32)
+        krr_density_np = np.zeros((batch_size, 1), dtype=np.float32)
 
-                bq_list = mat.base_charges or mat.compute_topological_base_charges(kappa=0.10, q_max=0.50)
-                bq_padded = np.zeros((n_conf, n_pad), dtype=np.float32)
-                bq_padded[:, :n_sites_real] = bq_list[:n_sites_real]
+    for local_idx, orig_idx in enumerate(task_indices):
+        mat = loaded_materials[local_idx]
+        task = batch_tasks[orig_idx]
+        n_sites_real = mat.num_sites
+        vdw_solv = float(batch_vdw_solv[local_idx])
 
-                a_mask_padded = np.zeros((n_conf, n_pad, 1), dtype=np.float32)
-                a_mask_padded[:, :n_sites_real, :] = 1.0
+        if run_egnn_readouts and n_sites_real > 0:
+            gb_val = float(gb_mean_np[local_idx])
+            tot_solv = float(total_solv_np[local_idx])
+            delta_vdw = tot_solv - gb_val
+            krr_res = float(krr_res_np[local_idx, 0])
+            krr_density = float(krr_density_np[local_idx, 0])
+            dg_self = float(batch_dg_self_assoc[local_idx])
 
-                x_t = Tensor(conf_padded, dtype=dtypes.float32)
-                z_t = Tensor(z_padded, dtype=dtypes.float32)
-                bq_t = Tensor(bq_padded, dtype=dtypes.float32)
-                m_t = Tensor(a_mask_padded, dtype=dtypes.float32)
+            delta_g_born_val = gb_val
+            quantum_q_list = [float(q) for q in q_mean_np[local_idx, :n_sites_real].tolist()]
+            krr_res_val = krr_res
+            krr_density_val = krr_density
+            egnn_energy_val = float(u_egnn_np[local_idx])
+            f_np = f_egnn_np[local_idx, :n_sites_real]
+            egnn_force_rms_val = float(np.sqrt(np.mean(f_np**2))) if len(f_np) > 0 else 0.0
 
-                q_tot_val = float(getattr(mat, "total_charge", getattr(task, "formal_charge", 0.0) or 0.0))
-
-                # Continuous 4-channel solvent descriptors (alpha, beta, q_base, chi)
-                sf = gb_solver.compute_solvent_descriptors(x_t, z_t, m_t, base_charges=bq_t)
-
-                if mat_engine == "egnn":
-                    egnn_model = (
-                        energy_fn.egnn_ff
-                        if hasattr(energy_fn, "egnn_ff") and energy_fn.egnn_ff is not None
-                        else get_global_egnn_model()
-                    )
-
-                    internal_e_tensor = Tensor(delta_e.reshape(1, n_conf), dtype=dtypes.float32)
-                    temp_k = float(mat.temperature_k or 298.15)
-                    from dens_city.utils.solvents import get_solvent_properties
-
-                    solv_props = get_solvent_properties(s_name)
-                    (
-                        q_mean_tensor,
-                        total_solv_mean,
-                        gb_mean,
-                        h_mol_mean,
-                        coop_mean,
-                    ) = egnn_model.compute_ensembled_solvation_readouts(
-                        x_ensemble=x_t.reshape(1, n_conf, n_pad, 3),
-                        atomic_numbers=z_t[0],
-                        atom_mask=m_t[0],
-                        total_charge=q_tot_val,
-                        base_charges=bq_t[0],
-                        solvent_features=sf[0],
-                        solvent_hbond_capacity=solv_props.hbond_capacity,
-                        dielectric_constant=eps_solvent,
-                        gb_solver=gb_solver,
-                        detach_trunk=True,
-                        internal_energies=internal_e_tensor,
-                        temperature_k=temp_k,
-                        return_global=True,
-                    )
-
-                    # Explicit safe realization
-                    Tensor.realize(total_solv_mean, gb_mean, q_mean_tensor, h_mol_mean)
-
-                    delta_g_born_val = float(gb_mean.numpy()[0])
-                    delta_vdw_val = float(total_solv_mean.numpy()[0]) - delta_g_born_val
-                    q_mean = q_mean_tensor.numpy()[0, :n_sites_real].tolist()
-                    quantum_q_list = [float(q) for q in q_mean]
-
-                    # Delta-KRR residual stacking correction (Pure on-device tinygrad tensor execution)
-                    from dens_city.boltzmann.train_charges import predict_krr_residual_tensor
-
-                    z_np_arr = np.array(z_list, dtype=np.int32)
-                    n_heavy = float(np.sum(z_np_arr > 1))
-                    n_o = float(np.sum(z_np_arr == 8))
-                    n_n = float(np.sum(z_np_arr == 7))
-                    n_hal = float(np.sum(np.isin(z_np_arr, [9, 17, 35, 53])))
-                    phys_desc_np = np.array([[n_heavy, n_o, n_n, n_hal, delta_g_born_val, vdw_solv]], dtype=np.float32)
-                    phys_desc_t = Tensor(phys_desc_np, dtype=dtypes.float32)
-
-                    krr_res_t, krr_density_t = predict_krr_residual_tensor(
-                        z_mol=h_mol_mean,
-                        d_phys=phys_desc_t,
-                        s_solv=s_name,
-                    )
-                    Tensor.realize(krr_res_t, krr_density_t)
-                    krr_res = float(krr_res_t.numpy()[0, 0])
-                    krr_density = float(krr_density_t.numpy()[0, 0])
-                    krr_res_val = krr_res
-                    krr_density_val = krr_density
-
-                    # First-principles neat protic liquid self-association correction
-                    eta_solv = (
-                        (np.pi / 6.0)
-                        * solv_props.density_g_cm3
-                        * 6.02214076e23
-                        / (solv_props.molecular_weight * 1e24)
-                        * (solv_props.kinetic_diameter_a**3)
-                    )
-                    dg_self_assoc = compute_neat_liquid_self_association_correction(
-                        solute_name=mat.name,
-                        solvent_name=s_name,
-                        alpha_s=solv_props.abraham_alpha,
-                        beta_s=solv_props.abraham_beta,
-                        packing_fraction=float(eta_solv),
-                        temp_k=temp_k,
-                    )
-
-                    solv_free_energy = vdw_solv + delta_vdw_val + delta_g_born_val + krr_res + dg_self_assoc
-
-                    try:
-                        u_egnn_t, f_egnn_t = egnn_model.compute_energy_and_forces(
-                            x=x_t[0:1],
-                            atomic_numbers=z_t[0:1],
-                            atom_mask=m_t[0:1],
-                            molecule_mask=Tensor.ones(1),
-                        )
-                        Tensor.realize(u_egnn_t, f_egnn_t)
-                        egnn_energy_val = float(u_egnn_t.numpy()[0])
-                        f_np = f_egnn_t.numpy()[0, :n_sites_real]
-                        egnn_force_rms_val = float(np.sqrt(np.mean(f_np**2)))
-                        del u_egnn_t, f_egnn_t
-                    except Exception:
-                        pass
-                else:
-                    q_pred_tensor = bq_t
-                    quantum_q_list = [float(q) for q in bq_t[0, :n_sites_real].numpy().tolist()]
-                    gb_tensor = gb_solver.compute_solvation_free_energy(
-                        x=x_t,
-                        charges=q_pred_tensor,
-                        atomic_numbers=z_t,
-                        atom_mask=m_t,
-                        dielectric_constant=eps_solvent,
-                    )
-                    gb_mean = gb_tensor.mean()
-                    Tensor.realize(gb_mean)
-                    delta_g_born_val = float(gb_mean.item())
-                    delta_vdw_val = 0.0
-                    solv_free_energy = vdw_solv + delta_g_born_val
-
-                    try:
-                        egnn_eval = get_global_egnn_model()
-                        if egnn_eval is not None:
-                            u_egnn_t, f_egnn_t = egnn_eval.compute_energy_and_forces(
-                                x=x_t[0:1],
-                                atomic_numbers=z_t[0:1],
-                                atom_mask=m_t[0:1],
-                                molecule_mask=Tensor.ones(1),
-                            )
-                            Tensor.realize(u_egnn_t, f_egnn_t)
-                            egnn_energy_val = float(u_egnn_t.numpy()[0])
-                            f_np = f_egnn_t.numpy()[0, :n_sites_real]
-                            egnn_force_rms_val = float(np.sqrt(np.mean(f_np**2)))
-                            del u_egnn_t, f_egnn_t
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-        try:
-            del x_t, z_t, bq_t, m_t, sf
-        except Exception:
-            pass
-        try:
-            del internal_e_tensor, q_mean_tensor, total_solv_mean, gb_mean, h_mol_mean, coop_mean
-        except Exception:
-            pass
-        try:
-            del gb_tensor, q_pred_tensor
-        except Exception:
-            pass
+            solv_free_energy = vdw_solv + delta_vdw + gb_val + krr_res + dg_self
+        else:
+            delta_g_born_val = None
+            quantum_q_list = None
+            krr_res_val = None
+            krr_density_val = None
+            egnn_energy_val = None
+            egnn_force_rms_val = None
+            solv_free_energy = vdw_solv
 
         m_name = getattr(task, "material_path_or_name", None) or mat.name
+        mat_out_dir = os.path.join(task.out_dir, m_name)
         results_map[orig_idx] = MaterialPipelineResult(
             material_name=m_name,
             status=PipelineStatus.SUCCESS.value,
@@ -1382,7 +1360,7 @@ def execute_prepared_batch(
             krr_residual_kcal_mol=krr_res_val,
             krr_epistemic_density=krr_density_val,
             solvent_name=getattr(task, "solvent_name", "vacuum") if task else "vacuum",
-            solvent_dielectric=eps_solvent if "eps_solvent" in locals() and eps_solvent is not None else 1.0,
+            solvent_dielectric=float(batch_dielectric[local_idx]),
             artifact_dir=mat_out_dir,
         )
 

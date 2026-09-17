@@ -470,7 +470,9 @@ class EGNNForceField:
             (optional) h_mol_mean: Tensor of shape (B, 384) if return_global is True
             (optional) coop_mean: Tensor of shape (B,) if return_global is True
         """
-        if dielectric_constant is None or dielectric_constant <= 0.0:
+        if dielectric_constant is None:
+            raise ValueError("dielectric_constant must be explicitly provided as a positive float or Tensor")
+        if isinstance(dielectric_constant, (int, float)) and dielectric_constant <= 0.0:
             raise ValueError(
                 f"dielectric_constant must be explicitly provided as a positive float, got {dielectric_constant}"
             )
@@ -565,12 +567,24 @@ class EGNNForceField:
         if gb_solver is None:
             gb_solver = self.gb_solver
 
+        if isinstance(dielectric_constant, Tensor):
+            if len(dielectric_constant.shape) == 0:
+                diel_flat = dielectric_constant.reshape(1).expand(B * s)
+            elif len(dielectric_constant.shape) == 1 and dielectric_constant.shape[0] == B:
+                diel_flat = dielectric_constant.reshape(B, 1).expand(B, s).reshape(B * s)
+            elif len(dielectric_constant.shape) == 1 and dielectric_constant.shape[0] == B * s:
+                diel_flat = dielectric_constant
+            else:
+                diel_flat = dielectric_constant.reshape(B, 1).expand(B, s).reshape(B * s)
+        else:
+            diel_flat = float(dielectric_constant)
+
         gb_tensor = gb_solver.compute_solvation_free_energy(
             x=x_flat,
             charges=q_pred,
             atomic_numbers=z_flat,
             atom_mask=m_flat,
-            dielectric_constant=dielectric_constant,
+            dielectric_constant=diel_flat,
         )
         if detach_trunk:
             gb_tensor = gb_tensor.realize()
@@ -586,9 +600,12 @@ class EGNNForceField:
 
             # In polar solution (dielectric > 2.5), weight conformers by solution-phase potential of mean force:
             # G_eff(k) = E_int(k) + (Delta G_born(k) - Delta G_born(0))
-            if dielectric_constant > 2.5:
-                gb_2d = gb_tensor.reshape(B, s)
-                gb_diff = gb_2d - gb_2d[:, :1]
+            gb_2d = gb_tensor.reshape(B, s)
+            gb_diff = gb_2d - gb_2d[:, :1]
+            if isinstance(dielectric_constant, Tensor):
+                polar_mask = (dielectric_constant.reshape(B, 1) > 2.5).cast(dtypes.float32)
+                e_eff = e_int + gb_diff * polar_mask
+            elif float(dielectric_constant) > 2.5:
                 e_eff = e_int + gb_diff
             else:
                 e_eff = e_int
