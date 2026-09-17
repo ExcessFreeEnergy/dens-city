@@ -269,17 +269,16 @@ class BoltzmannGenerator:
                     self.origin_pool = raw_pool.reshape(-1, self.dim).realize()
             self.train_step = TinyJit(self._train_step)
 
-        loss_tensors = []
+        losses = []
         iterator = trange(steps) if verbose else range(steps)
         for i in iterator:
             loss = self.train_step(self.origin_pool) if self.origin_pool is not None else self.train_step()
-            loss_tensors.append(loss)
+            loss_val = float(loss.item())
+            losses.append(loss_val)
 
             if verbose and hasattr(iterator, "set_description") and (i % 20 == 0 or i == steps - 1):
-                loss_val = float(loss.item())
                 iterator.set_description(f"KL Loss: {loss_val:8.4f}")
 
-        losses = [float(loss_t.item()) for loss_t in loss_tensors]
         Tensor.training = False
         return losses
 
