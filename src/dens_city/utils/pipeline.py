@@ -1003,6 +1003,11 @@ def execute_prepared_batch(
         state_dict = nn.state.get_state_dict(flow)
         np_weights = {k: v.numpy() for k, v in state_dict.items()}
 
+        # Detach parameter gradients on global EGNN model per Rule 5
+        egnn_model = get_global_egnn_model()
+        for p in nn.state.get_parameters(egnn_model):
+            p.grad = None
+
     for local_idx, orig_idx in enumerate(task_indices):
         mat = loaded_materials[local_idx]
         task = batch_tasks[orig_idx]

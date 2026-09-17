@@ -116,10 +116,11 @@ class BoltzmannGenerator:
                 return x_flat.reshape(B, self.dim // 3, 3)
             return x_flat
 
-    def compute_loss(self, z: Tensor, origin: Optional[Tensor] = None) -> Tensor:
-        r"""
-        Evaluates the variational Reverse KL Divergence training loss:
-        \mathcal{L}(\theta) = \mathbb{E}_{z \sim p_z} \left[ \beta U(f_\theta(z)) - \log p_z(z) - \log |\det J_{f_\theta}(z)| + w_{\rm tor} J_{\rm tor} \right]
+    def _forward_transform(
+        self, z: Tensor, origin: Optional[Tensor] = None
+    ) -> Tuple[Tensor, Tensor, Tensor, Optional[Tensor]]:
+        """
+        Transforms latent noise z into coordinates x, returning (x, log_pz, log_det, j_tor).
         """
         B = z.shape[0]
         j_tor = None
@@ -189,10 +190,67 @@ class BoltzmannGenerator:
             ):
                 j_tor = compute_cartesian_torsion_loss(x, self.dihedral_quadruplets)
 
+        return x, log_pz, log_det, j_tor
+
+    def compute_loss(self, z: Tensor, origin: Optional[Tensor] = None) -> Tensor:
+        r"""
+        Evaluates the variational Reverse KL Divergence training loss:
+        \mathcal{L}(\theta) = \mathbb{E}_{z \sim p_z} \left[ \beta U(f_\theta(z)) - \log p_z(z) - \log |\det J_{f_\theta}(z)| + w_{\rm tor} J_{\rm tor} \right]
+        """
+        x, log_pz, log_det, j_tor = self._forward_transform(z, origin=origin)
+
         # Evaluate exact microscopic potential energy
         u_exact = self.energy_fn(x)  # (B,)
 
         # Variational KL Loss with realized beta buffer and optional torsional penalty
+        loss_batch = self.beta * u_exact - log_pz - log_det
+        if j_tor is not None:
+            loss_batch = loss_batch + self.w_tor * j_tor
+
+        if getattr(self, "is_batched_generator", False) and self.molecule_mask is not None:
+            n_active = self.molecule_mask.sum().maximum(1.0)
+            return (loss_batch * self.molecule_mask).sum() / n_active
+
+        return loss_batch.mean()
+
+    def _compute_step_loss(self, z: Tensor, origin: Optional[Tensor] = None) -> Tensor:
+        """
+        Evaluates training step loss using detached force evaluations when supported
+        by energy_fn, decoupling reverse autograd of energy potentials from normalizing flow
+        parameter gradients and freeing forward activation memory graphs.
+        """
+        x, log_pz, log_det, j_tor = self._forward_transform(z, origin=origin)
+
+        if hasattr(self.energy_fn, "compute_forces"):
+            x_eval = x.detach()
+            u_val, forces = self.energy_fn.compute_forces(x_eval)
+            forces_det = forces.detach()
+
+            # Conservative force work: - F · x (since F = - dU/dx => d/dθ [ - F · x(θ) ] = dU/dx · dx/dθ)
+            if len(x.shape) == 3:
+                work = (forces_det * x).sum(axis=(-1, -2))
+            else:
+                work = (forces_det * x).sum(axis=-1)
+
+            u_surrogate = -work
+            loss_surr_batch = self.beta * u_surrogate - log_pz - log_det
+            loss_exact_batch = self.beta * u_val.detach() - log_pz - log_det
+            if j_tor is not None:
+                loss_surr_batch = loss_surr_batch + self.w_tor * j_tor
+                loss_exact_batch = loss_exact_batch + self.w_tor * j_tor
+
+            if getattr(self, "is_batched_generator", False) and self.molecule_mask is not None:
+                n_active = self.molecule_mask.sum().maximum(1.0)
+                loss_surr = (loss_surr_batch * self.molecule_mask).sum() / n_active
+                loss_exact = (loss_exact_batch * self.molecule_mask).sum() / n_active
+            else:
+                loss_surr = loss_surr_batch.mean()
+                loss_exact = loss_exact_batch.mean()
+
+            return loss_surr - loss_surr.detach() + loss_exact
+
+        # Fallback to direct forward evaluation
+        u_exact = self.energy_fn(x)
         loss_batch = self.beta * u_exact - log_pz - log_det
         if j_tor is not None:
             loss_batch = loss_batch + self.w_tor * j_tor
@@ -220,7 +278,7 @@ class BoltzmannGenerator:
                     origin = origin_pool.reshape(1, 3).expand(self.batch_size, 3)
             else:
                 origin = None
-            loss = self.compute_loss(z, origin=origin)
+            loss = self._compute_step_loss(z, origin=origin)
         elif self.is_composite:
             z = Tensor.randn(self.batch_size, self.dim)
             if origin_pool is not None:
@@ -231,7 +289,7 @@ class BoltzmannGenerator:
                     origin = origin_pool.reshape(1, 3).expand(self.batch_size, 3)
             else:
                 origin = None
-            loss = self.compute_loss(z, origin=origin)
+            loss = self._compute_step_loss(z, origin=origin)
         else:
             if origin_pool is not None:
                 if origin_pool.shape[0] > 1:
@@ -241,7 +299,7 @@ class BoltzmannGenerator:
                     z = origin_pool.reshape(1, self.dim).expand(self.batch_size, self.dim)
             else:
                 z = Tensor.randn(self.batch_size, self.dim)
-            loss = self.compute_loss(z)
+            loss = self._compute_step_loss(z)
 
         loss.backward()
         return loss.realize(*self.opt.schedule_step())
@@ -280,6 +338,13 @@ class BoltzmannGenerator:
                 iterator.set_description(f"KL Loss: {loss_val:8.4f}")
 
         Tensor.training = False
+
+        # Rule 5 invariant: detach any lingering parameter gradients on energy force field
+        egnn_ff = getattr(self.energy_fn, "egnn_ff", None)
+        if egnn_ff is not None:
+            for p in nn.state.get_parameters(egnn_ff):
+                p.grad = None
+
         return losses
 
     def _sample_batch(self, n_samples: int) -> Tensor:

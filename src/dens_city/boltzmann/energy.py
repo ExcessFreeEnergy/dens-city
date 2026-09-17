@@ -10,7 +10,7 @@ import math
 from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Union
 
 import numpy as np
-from tinygrad import Tensor, TinyJit, dtypes
+from tinygrad import Tensor, TinyJit, dtypes, nn
 
 if TYPE_CHECKING:
     from dens_city.utils.materials import Material
@@ -381,6 +381,17 @@ class MicroscopicEnergy:
             return energy
         return regularize_energy(energy, e_high=eh, e_max=em if em is not None else 1e20)
 
+    def compute_forces(self, pos: Tensor) -> Tuple[Tensor, Tensor]:
+        """
+        Evaluates classical total potential energy U(x) and conservative forces F = -∇_x U(x).
+        Returns: Tuple of (energy (B,), forces (B, N, 3)).
+        """
+        pos_in = pos.detach()
+        u = self.__call__(pos_in, shift=True, regularize=False)
+        [grad] = u.sum().gradient(pos_in)
+        forces = -grad
+        return u, forces
+
     def __call__(self, pos: Tensor, shift: bool = True, regularize: bool = True) -> Tensor:
         """
         Computes total microscopic Hamiltonian U(pos) = U_pair(pos) + U_ext(pos).
@@ -533,6 +544,7 @@ class EGNNMicroscopicEnergy:
         """Evaluates 1D Steele 9-3 / steric wall potential in Z."""
         is_batched = len(pos.shape) == 3
         pos_b = pos if is_batched else pos.unsqueeze(0)
+        B, N, _ = pos_b.shape
         z = pos_b[..., 2]
         Lz = self.box_size[2]
         z_l = z
@@ -559,11 +571,55 @@ class EGNNMicroscopicEnergy:
             v_wall = is_steric.where(self.v_wall_inf, 0.0)
 
         if getattr(self, "is_batched_energy", False):
-            u_wall = (v_wall * self.is_real_atom).sum(axis=-1) * self.molecule_mask
+            mask_2d = self.is_real_atom.reshape(B, N)
+            u_wall = (v_wall * mask_2d).sum(axis=-1) * self.molecule_mask
         else:
-            u_wall = (v_wall * self.is_real_atom.unsqueeze(0)).sum(axis=-1)
+            mask_2d = self.is_real_atom.reshape(1, N).expand(B, N)
+            u_wall = (v_wall * mask_2d).sum(axis=-1)
 
         return u_wall if is_batched else u_wall.squeeze(0)
+
+    def compute_forces(self, pos: Tensor) -> Tuple[Tensor, Tensor]:
+        """
+        Evaluates total potential energy U(x) and conservative forces F = -∇_x U(x)
+        using decoupled layer-by-layer reverse autodiff on EGNN and analytical wall forces.
+        Detaches parameter graphs per Rule 5.
+        Returns: Tuple of (energy (B,), forces (B, N, 3)).
+        """
+        is_batched = len(pos.shape) == 3
+        pos_b = pos if is_batched else pos.unsqueeze(0)
+        B, N, _ = pos_b.shape
+
+        if getattr(self, "is_batched_energy", False):
+            z_in = self.atomic_numbers
+            a_mask = self.is_real_atom.reshape(B, N)
+            m_mask = self.molecule_mask
+        else:
+            z_in = self.atomic_numbers.reshape(1, N).expand(B, N)
+            a_mask = self.is_real_atom.reshape(1, N).expand(B, N)
+            m_mask = Tensor.ones(B, dtype=dtypes.float32)
+
+        u_egnn, f_egnn = self.egnn_ff.compute_energy_and_forces(
+            x=pos_b,
+            atomic_numbers=z_in,
+            atom_mask=a_mask,
+            molecule_mask=m_mask,
+        )
+
+        pos_detached = pos_b.detach()
+        u_wall = self.compute_wall_energy(pos_detached)
+        [grad_wall] = u_wall.sum().gradient(pos_detached)
+        f_wall = -grad_wall
+
+        u_total = u_egnn + u_wall
+        f_total = f_egnn + f_wall
+
+        for p in nn.state.get_parameters(self.egnn_ff):
+            p.grad = None
+
+        if not is_batched:
+            return u_total.squeeze(0), f_total.squeeze(0)
+        return u_total, f_total
 
     def compute_quantum_charges(
         self,
