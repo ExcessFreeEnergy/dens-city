@@ -115,6 +115,10 @@ This skill equips Antigravity agents with the compiled, persistent knowledge bas
 - **Rule (The Ideal Standard)**: Zero sequential Python candidate loops during batch post-processing. Combine all molecules in a batch ($B=64$) into padded tensors $(B, N_{\rm pad}, 3)$ and $(B, N_{\rm pad})$ along Axis 0. Execute Generalized Born continuum electrostatics, EGNN force fields, and Universal Delta-KRR models in parallel, and realize all output tensors in a single unified `Tensor.realize(...)` call to collapse host-device round-trip latency to near zero. Extract individual molecular quantities using fast NumPy vector slicing.
 - **Reference**: [pattern_fully_vectorized_high_throughput_batch_inference.md](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/patterns/pattern_fully_vectorized_high_throughput_batch_inference.md).
 
+### 26. Generalized Born Dielectric Regularization & Rigid-Rotor Ensemble Integrity
+- **Rule (The Ideal Standard)**: Zero unphysical Born dielectric explosions ($\Delta G_{\rm GB} \ll -50\text{ kcal/mol}$ on neutral molecules) and zero conformer hijacking in thermal Boltzmann ensembles. All generated conformational ensembles must preserve 100% of covalent bond lengths to machine precision ($|d - d_0| < 10^{-4}\text{ \AA}$) strictly via rigid-rotor dihedral rotations using Rodrigues' formula around single bonds, never uniform centroid contraction. Assign prohibitive intramolecular penalties ($E_{\rm int} \ge 10^4\text{ kcal/mol}$) to conformers with bond stretch $>0.35\text{ \AA}$ or clash $<0.85\text{ \AA}$, mask invalid conformers ($E_{\rm int} \ge 500\text{ kcal/mol}$) with $w_k = 0.0$, clamp solution-phase Born modulations $\Delta(\Delta G_{\rm GB}) \in [-15, +15]\text{ kcal/mol}$, and preserve unconstrained $q^2$ scaling in continuum solvers.
+- **Reference**: [pattern_generalized_born_dielectric_regularization_and_conformer_integrity.md](file:///home/gauss/code/cdft_sim/dens-city/.agents/wikiskill/wiki/patterns/pattern_generalized_born_dielectric_regularization_and_conformer_integrity.md).
+
 ## Verification Workflow
 Always verify changes using the test suite:
 ```bash

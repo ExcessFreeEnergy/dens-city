@@ -1351,6 +1351,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             else "freesolv"
         )
         is_pop_all = args.all_solvatum or args.all_freesolv
+        engine_choice = args.energy_engine if ("--energy-engine" in argv or "-e" in argv) else "auto"
         return verify_pipeline_against_dataset(
             dataset=target_dataset,
             results_dir=args.results_dir,
@@ -1358,7 +1359,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             report_out=args.report_out,
             run_e2e=args.run_e2e,
             populate_all=is_pop_all,
-            energy_engine=args.energy_engine,
+            energy_engine=engine_choice,
             force_egnn=args.force_egnn,
             batch_size=args.batch_size if ("-b" in argv or "--batch-size" in argv) else None,
         )

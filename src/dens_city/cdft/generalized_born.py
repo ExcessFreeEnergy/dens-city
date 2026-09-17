@@ -139,9 +139,9 @@ class GeneralizedBornSolvation:
         descreen = ((0.12 * (sigma_j**3)) / denom.maximum(0.5)) * pair_mask  # (B, N, N, 1)
         integral_i = descreen.sum(axis=2) * atom_mask  # (B, N, 1)
 
-        # 5. Effective Born radius alpha_i >= rho_i
-        alpha_i = rho_i * (1.0 + integral_i.minimum(1.5)) * atom_mask
-        alpha_out = alpha_i.maximum(0.8 * atom_mask)
+        # 5. Effective Born radius alpha_i >= rho_i (Hawkins/Grycuk descreening up to 30 Å)
+        alpha_i = rho_i * (1.0 + integral_i) * atom_mask
+        alpha_out = alpha_i.maximum(rho_i).minimum(30.0 * atom_mask)
         return alpha_out if Tensor.training else alpha_out.realize()
 
     def compute_solvent_descriptors(
@@ -244,17 +244,20 @@ class GeneralizedBornSolvation:
         # 1. Evaluate Effective Born Radii alpha_i
         alpha = self.compute_born_radii(x, atomic_numbers, atom_mask)  # (B, N, 1)
 
-        # 2. Self-solvation energy: sum_i q_i^2 / alpha_i
-        self_energy = ((q * q) / alpha.maximum(0.5)).sum(axis=(1, 2))  # (B,)
+        # 2. Solute charges
+        q_real = q * atom_mask
 
-        # 3. Pairwise Still interaction equation: sum_{i != j} q_i q_j / f_GB(r_ij, alpha_i, alpha_j)
+        # 3. Self-solvation energy: sum_i q_i^2 / alpha_i
+        self_energy = ((q_real * q_real) / alpha.maximum(0.5)).sum(axis=(1, 2))  # (B,)
+
+        # 4. Pairwise Still interaction equation: sum_{i != j} q_i q_j / f_GB(r_ij, alpha_i, alpha_j)
         x_i = x.reshape(B, N, 1, 3)
         x_j = x.reshape(B, 1, N, 3)
         diff = x_i - x_j
         d_sq = (diff * diff).sum(axis=-1, keepdim=True)  # (B, N, N, 1)
 
-        q_i = q.reshape(B, N, 1, 1)
-        q_j = q.reshape(B, 1, N, 1)
+        q_i = q_real.reshape(B, N, 1, 1)
+        q_j = q_real.reshape(B, 1, N, 1)
         q_prod = q_i * q_j  # (B, N, N, 1)
 
         alpha_i = alpha.reshape(B, N, 1, 1)

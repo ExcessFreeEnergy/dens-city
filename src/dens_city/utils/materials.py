@@ -1378,22 +1378,97 @@ def generate_conformer_rotamer_diversity(
             conf_array[1] = open_coords
             open_conf_created = True
 
-    # For long flexible chains (N_rot >= 10): generate R_g-contracted / coiled conformers
+    # For flexible molecules: generate true rigid-rotor rotamers around rotatable bonds
     start_k = 2 if open_conf_created else 1
-    centroid = np.mean(coords, axis=0, keepdims=True)
-    disp = coords - centroid
+
+    # Extract rotatable bridge bonds and their subtrees
+    adj: Dict[int, List[int]] = {i: [] for i in range(n_real)}
+    if bonds:
+        for a1, a2, _ in bonds:
+            if a1 < n_real and a2 < n_real:
+                adj[a1].append(a2)
+                adj[a2].append(a1)
+
+    def get_subtree(root: int, parent: int) -> set:
+        visited = set()
+        stack = [root]
+        while stack:
+            curr = stack.pop()
+            visited.add(curr)
+            for nbr in adj[curr]:
+                if nbr != parent and nbr not in visited:
+                    stack.append(nbr)
+        return visited
+
+    rot_bonds: List[Tuple[int, int, List[int]]] = []
+    if bonds:
+        for a1, a2, _ in bonds:
+            if a1 < n_real and a2 < n_real:
+                sub = get_subtree(a2, a1)
+                if a1 not in sub and 1 < len(sub) < (n_real - 1):
+                    rot_bonds.append((a1, a2, list(sub)))
+
+    staggered_angles = np.array([-np.pi * 2 / 3, -np.pi / 3, np.pi / 3, np.pi * 2 / 3, np.pi], dtype=np.float32)
 
     is_long_chain = n_rot >= 10
+
     for k in range(start_k, n_conf):
-        if is_long_chain and k >= n_conf // 2:
-            contraction_factor = rng.uniform(0.65, 0.85)
-            noise = rng.normal(0.0, 0.08, (n_real, 3)).astype(np.float32)
-            conf_array[k] = (centroid + contraction_factor * disp + noise).astype(np.float32)
+        if rot_bonds:
+            cur_coords = coords.copy()
+            if is_long_chain and k >= n_conf // 2:
+                # Coiled globule states: perturb all rotatable bonds sequentially along the chain
+                chosen_bonds = rot_bonds
+            else:
+                n_pert = min(len(rot_bonds), max(1, int(rng.integers(1, min(5, len(rot_bonds) + 1)))))
+                chosen_bonds = [rot_bonds[idx] for idx in rng.choice(len(rot_bonds), size=n_pert, replace=False)]
+
+            for a1, a2, sub_list in chosen_bonds:
+                axis = cur_coords[a2] - cur_coords[a1]
+                norm = np.linalg.norm(axis)
+                if norm < 1e-6:
+                    continue
+                u = axis / norm
+                p0 = cur_coords[a2]
+
+                # Check if downstream atom in sub_list is collinear with bond axis
+                downstream = [nbr for nbr in adj[a2] if nbr in sub_list]
+                is_collinear = False
+                if downstream:
+                    d_vec = cur_coords[downstream[0]] - cur_coords[a2]
+                    d_norm = np.linalg.norm(d_vec)
+                    if d_norm > 1e-4:
+                        d_u = d_vec / d_norm
+                        if np.linalg.norm(np.cross(u, d_u)) < 0.15:
+                            is_collinear = True
+
+                if is_collinear:
+                    # Choose perpendicular axis to bend bond towards tetrahedral angle
+                    perp = (
+                        np.array([0.0, 1.0, 0.0], dtype=np.float32)
+                        if abs(u[1]) < 0.8
+                        else np.array([0.0, 0.0, 1.0], dtype=np.float32)
+                    )
+                    n_vec = perp - np.dot(perp, u) * u
+                    rot_axis = n_vec / max(1e-6, np.linalg.norm(n_vec))
+                    theta = float(rng.choice([1.23, -1.23]))
+                else:
+                    rot_axis = u
+                    base_angle = float(rng.choice(staggered_angles))
+                    jitter = float(rng.normal(0.0, 0.08))  # ~4.5 degrees thermal jitter
+                    theta = base_angle + jitter
+
+                sub_idx = np.array(sub_list, dtype=np.int32)
+                r = cur_coords[sub_idx] - p0
+                cross = np.cross(rot_axis, r)
+                dot = np.sum(r * rot_axis, axis=-1, keepdims=True)
+                r_rot = r * np.cos(theta) + cross * np.sin(theta) + rot_axis * dot * (1.0 - np.cos(theta))
+                cur_coords[sub_idx] = p0 + r_rot
+
+            conf_array[k] = cur_coords.astype(np.float32)
         elif open_conf_created and k < 4:
-            noise = rng.normal(0.0, 0.05, (n_real, 3)).astype(np.float32)
-            conf_array[k] = (conf_array[1] + noise).astype(np.float32)
+            conf_array[k] = conf_array[1].copy()
         else:
-            noise = rng.normal(0.0, 0.05, (n_real, 3)).astype(np.float32)
-            conf_array[k] = (coords + noise).astype(np.float32)
+            # Rigid molecule without rotatable bonds: exact ground state
+            conf_array[k] = coords.copy()
 
     return conf_array

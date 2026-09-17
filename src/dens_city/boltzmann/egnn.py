@@ -599,9 +599,10 @@ class EGNNForceField:
                 e_int = internal_energies.reshape(B, s)
 
             # In polar solution (dielectric > 2.5), weight conformers by solution-phase potential of mean force:
-            # G_eff(k) = E_int(k) + (Delta G_born(k) - Delta G_born(0))
+            # G_eff(k) = E_int(k) + Delta(Delta G_born)
+            # Clamping Delta(Delta G_born) prevents unphysical singularities from overwhelming bond strain
             gb_2d = gb_tensor.reshape(B, s)
-            gb_diff = gb_2d - gb_2d[:, :1]
+            gb_diff = (gb_2d - gb_2d[:, :1]).maximum(-15.0).minimum(15.0)
             if isinstance(dielectric_constant, Tensor):
                 polar_mask = (dielectric_constant.reshape(B, 1) > 2.5).cast(dtypes.float32)
                 e_eff = e_int + gb_diff * polar_mask
@@ -610,10 +611,14 @@ class EGNNForceField:
             else:
                 e_eff = e_int
 
-            e_min = e_eff.min(axis=1, keepdim=True)
+            valid_mask = (e_int < 500.0).cast(dtypes.float32)
+            e_eff_valid = (valid_mask > 0.0).where(e_eff, 1e6)
+            e_min = e_eff_valid.min(axis=1, keepdim=True)
             delta_e = (e_eff - e_min).maximum(0.0).minimum(50.0)
-            w_unnorm = (-delta_e / kb_t).exp()
-            w = w_unnorm / w_unnorm.sum(axis=1, keepdim=True).maximum(1e-8)
+            w_unnorm = (-delta_e / kb_t).exp() * valid_mask
+            w_sum = w_unnorm.sum(axis=1, keepdim=True)
+            gs_fallback = Tensor.cat(Tensor.ones(B, 1), Tensor.zeros(B, s - 1), dim=1)
+            w = (w_sum > 1e-6).where(w_unnorm / w_sum.maximum(1e-8), gs_fallback)
         else:
             w = x_ensemble[:, :, 0, 0].ones_like() * (1.0 / float(s))
 

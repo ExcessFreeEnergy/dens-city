@@ -848,11 +848,15 @@ def compute_conformer_internal_energy_diffs(
     for k in range(1, s_conf):
         xk = coords_ens[k, :n_real]
         e_k = 0.0
+        max_bond_dev = 0.0
 
         # Harmonic bond stretch penalty: 250 kcal/(mol * Å^2) * (d - d0)^2
         for a1, a2, d0 in bond_pairs:
             dk = float(np.linalg.norm(xk[a1] - xk[a2]))
-            e_k += 250.0 * ((dk - d0) ** 2)
+            dev = abs(dk - d0)
+            if dev > max_bond_dev:
+                max_bond_dev = dev
+            e_k += 250.0 * (dev**2)
 
         # Pairwise non-bonded steric clashes (distance < 1.10 Å)
         diff = xk[:, None, :] - xk[None, :, :]
@@ -862,10 +866,15 @@ def compute_conformer_internal_energy_diffs(
             dist[a1, a2] = 10.0
             dist[a2, a1] = 10.0
 
+        min_nonbonded = float(np.min(dist))
         clashes = np.maximum(0.0, 1.10 - dist)
         e_k += float(np.sum(clashes**2) * 100.0)
 
-        delta_e[k] = min(50.0, max(0.0, e_k))
+        # Severe penalty if bonds are stretched (>0.35 Å) or severe atomic clash (<0.85 Å)
+        if max_bond_dev > 0.35 or min_nonbonded < 0.85:
+            delta_e[k] = 10000.0
+        else:
+            delta_e[k] = max(0.0, e_k)
 
     return delta_e
 
@@ -1141,8 +1150,20 @@ def execute_prepared_batch(
         if mat_coords is not None and len(mat_coords) > 0 and np.max(np.abs(mat_coords)) < 50.0:
             n_flow = min(s_fixed // 4, len(mat_coords))
             for k in range(n_flow):
-                slot = s_fixed - 1 - k
-                div_conf[slot, :n_sites_real] = mat_coords[k, :n_sites_real]
+                flow_c = mat_coords[k, :n_sites_real]
+                # Validate covalent bond lengths before admitting flow sample into ensemble
+                is_valid_flow = True
+                if bonds and len(bonds) > 0:
+                    for a1, a2, _ in bonds:
+                        if a1 < n_sites_real and a2 < n_sites_real:
+                            d0 = float(np.linalg.norm(x_ground[a1] - x_ground[a2]))
+                            dk = float(np.linalg.norm(flow_c[a1] - flow_c[a2]))
+                            if abs(dk - d0) > 0.35:
+                                is_valid_flow = False
+                                break
+                if is_valid_flow:
+                    slot = s_fixed - 1 - k
+                    div_conf[slot, :n_sites_real] = flow_c
 
         delta_e = compute_conformer_internal_energy_diffs(div_conf[:, :n_sites_real], mat)
 
