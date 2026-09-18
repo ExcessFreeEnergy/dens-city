@@ -1303,24 +1303,56 @@ class MolecularBatch:
             else np.zeros((b_size, n_particles), dtype=np.float32)
         )
 
+        t_sigmas = Tensor(sigmas.astype(np.float32), dtype=dtypes.float32)
+        t_epsilons = Tensor(epsilons.astype(np.float32), dtype=dtypes.float32)
+        t_charges = Tensor(charges.astype(np.float32), dtype=dtypes.float32)
+        t_base_q = Tensor(base_q_np, dtype=dtypes.float32)
+        t_atomic_numbers = Tensor(atomic_numbers.astype(np.float32), dtype=dtypes.float32)
+        t_atom_mask = Tensor(atom_mask.astype(np.float32), dtype=dtypes.float32)
+        t_molecule_mask = Tensor(molecule_mask.astype(np.float32), dtype=dtypes.float32)
+        t_temp = Tensor(temp_np, dtype=dtypes.float32)
+        t_beta = Tensor(beta_np, dtype=dtypes.float32)
+        t_rho = Tensor(bulk_density_a3.astype(np.float32), dtype=dtypes.float32)
+        t_mu = Tensor(bulk_mu.astype(np.float32), dtype=dtypes.float32)
+        t_slit = Tensor(slit_width_a.astype(np.float32), dtype=dtypes.float32)
+        t_cond = Tensor(conditioning.astype(np.float32), dtype=dtypes.float32)
+        t_excl = Tensor(excl_np, dtype=dtypes.float32)
+
+        Tensor.realize(
+            t_sigmas,
+            t_epsilons,
+            t_charges,
+            t_base_q,
+            t_atomic_numbers,
+            t_atom_mask,
+            t_molecule_mask,
+            t_temp,
+            t_beta,
+            t_rho,
+            t_mu,
+            t_slit,
+            t_cond,
+            t_excl,
+        )
+
         return MolecularBatch(
             materials=mats,
             batch_size=b_size,
             n_particles=n_particles,
-            sigmas=Tensor(sigmas.astype(np.float32), dtype=dtypes.float32).realize(),
-            epsilons=Tensor(epsilons.astype(np.float32), dtype=dtypes.float32).realize(),
-            charges=Tensor(charges.astype(np.float32), dtype=dtypes.float32).realize(),
-            base_charges=Tensor(base_q_np, dtype=dtypes.float32).realize(),
-            atomic_numbers=Tensor(atomic_numbers.astype(np.float32), dtype=dtypes.float32).realize(),
-            atom_mask=Tensor(atom_mask.astype(np.float32), dtype=dtypes.float32).realize(),
-            molecule_mask=Tensor(molecule_mask.astype(np.float32), dtype=dtypes.float32).realize(),
-            temperature_k=Tensor(temp_np, dtype=dtypes.float32).realize(),
-            beta=Tensor(beta_np, dtype=dtypes.float32).realize(),
-            bulk_density_a3=Tensor(bulk_density_a3.astype(np.float32), dtype=dtypes.float32).realize(),
-            bulk_mu=Tensor(bulk_mu.astype(np.float32), dtype=dtypes.float32).realize(),
-            slit_width_a=Tensor(slit_width_a.astype(np.float32), dtype=dtypes.float32).realize(),
-            conditioning=Tensor(conditioning.astype(np.float32), dtype=dtypes.float32).realize(),
-            exclusions=Tensor(excl_np, dtype=dtypes.float32).realize(),
+            sigmas=t_sigmas,
+            epsilons=t_epsilons,
+            charges=t_charges,
+            base_charges=t_base_q,
+            atomic_numbers=t_atomic_numbers,
+            atom_mask=t_atom_mask,
+            molecule_mask=t_molecule_mask,
+            temperature_k=t_temp,
+            beta=t_beta,
+            bulk_density_a3=t_rho,
+            bulk_mu=t_mu,
+            slit_width_a=t_slit,
+            conditioning=t_cond,
+            exclusions=t_excl,
         )
 
     @classmethod

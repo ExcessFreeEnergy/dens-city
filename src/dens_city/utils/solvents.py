@@ -9,6 +9,7 @@ derivation for novel or unlisted fluids.
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 import os
@@ -221,6 +222,7 @@ class SolventDatabase:
         return cls._default_instance
 
 
+@functools.lru_cache(maxsize=1024)
 def derive_solvent_properties_from_structure(
     name: str,
     molecular_weight: Optional[float] = None,
@@ -424,6 +426,7 @@ VACUUM_PROPERTIES = SolventProperties(
 )
 
 
+@functools.lru_cache(maxsize=1024)
 def get_solvent_properties(name: str) -> SolventProperties:
     """
     Retrieves full physical properties for a solvent by canonical name or alias.
@@ -441,6 +444,7 @@ def get_solvent_properties(name: str) -> SolventProperties:
     return derive_solvent_properties_from_structure(name)
 
 
+@functools.lru_cache(maxsize=1024)
 def get_solvent_dielectric(
     name: str,
     default: Optional[float] = None,

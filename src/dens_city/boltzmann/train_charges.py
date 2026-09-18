@@ -1235,11 +1235,15 @@ def load_krr_device_tensors(
         diag_a_inv_pad[:n_train_real, :] = diag_a_inv_raw
         diag_a_inv_tensor = Tensor(diag_a_inv_pad, dtype=dtypes.float32).realize()
 
+    density_mask_pad = np.zeros((1, n_padded), dtype=np.float32)
+    density_mask_pad[0, :n_train_real] = 1.0
+
     device_dict = {
         "z_train": Tensor(z_train_pad, dtype=dtypes.float32).realize(),
         "z_train_sq": Tensor(z_train_sq_pad, dtype=dtypes.float32).realize(),
         "alpha": Tensor(alpha_pad, dtype=dtypes.float32).realize(),
         "diag_a_inv": diag_a_inv_tensor,
+        "density_mask": Tensor(density_mask_pad, dtype=dtypes.float32).realize(),
         "z_mean": Tensor(z_mean, dtype=dtypes.float32).realize(),
         "z_std": Tensor(z_std, dtype=dtypes.float32).realize(),
         "d_mean": Tensor(d_mean, dtype=dtypes.float32).realize(),
@@ -1347,7 +1351,12 @@ def predict_krr_residual_tensor(
         loocv_corr = match_mask.matmul(loocv_term)  # (B, 1)
         pred = pred - loocv_corr
 
-    density = k_mat[:, : dev["n_train_real"]].sum(axis=1, keepdim=True)  # (B, 1)
+    if dev.get("density_mask") is not None:
+        density = (k_mat * dev["density_mask"]).sum(
+            axis=1, keepdim=True
+        )  # (B, 1) pure SIMD vectorized float4 reduction
+    else:
+        density = k_mat[:, : dev["n_train_real"]].sum(axis=1, keepdim=True)  # (B, 1)
     return pred, density
 
 
