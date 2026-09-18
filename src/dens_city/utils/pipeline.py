@@ -1088,12 +1088,9 @@ def execute_prepared_batch(
 
     s_fixed = 16
     N_pad = 128
-    batch_has_hetero = any(any(getattr(s, "atomic_number", 6) not in (1, 6) for s in m.sites) for m in loaded_materials)
-    run_egnn_readouts = (
-        force_egnn
-        or engine_type in ("egnn", "electronegativity")
-        or (engine_type == "auto" and (batch_has_hetero or any(m.num_sites > 1 for m in loaded_materials)))
-    )
+    # Unconditional unified readout graph: evaluates all batch slots (monoatomics and polyatomics alike)
+    # ensuring Batch 0 compiles the entire thermodynamic readout graph with zero hybrid batch spikes
+    run_egnn_readouts = True
 
     batch_x = np.zeros((batch_size, s_fixed, N_pad, 3), dtype=np.float32)
     batch_z = np.zeros((batch_size, N_pad), dtype=np.float32)
@@ -1103,8 +1100,8 @@ def execute_prepared_batch(
     batch_delta_e = np.zeros((batch_size, s_fixed), dtype=np.float32)
     batch_dielectric = np.ones(batch_size, dtype=np.float32)
     batch_hbond = np.zeros(batch_size, dtype=np.float32)
-    batch_s_vec = np.zeros((batch_size, 7), dtype=np.float32)
-    batch_phys_desc = np.zeros((batch_size, 6), dtype=np.float32)
+    batch_s_vec = np.zeros((batch_size, 8), dtype=np.float32)
+    batch_phys_desc = np.zeros((batch_size, 8), dtype=np.float32)
     batch_vdw_solv = np.zeros(batch_size, dtype=np.float32)
     batch_dg_self_assoc = np.zeros(batch_size, dtype=np.float32)
 
@@ -1216,7 +1213,7 @@ def execute_prepared_batch(
         if is_vacuum:
             eps_solvent = 1.0
             vdw_solv = 0.0
-            batch_s_vec[local_idx] = get_solvent_descriptors_vector("water")
+            batch_s_vec[local_idx, :7] = get_solvent_descriptors_vector("water")
             batch_hbond[local_idx] = 0.0
             batch_dg_self_assoc[local_idx] = 0.0
         else:
@@ -1276,7 +1273,7 @@ def execute_prepared_batch(
                 except Exception:
                     vdw_solv = float(getattr(mat, "solvation_free_energy_kcal_mol", 0.0))
 
-            batch_s_vec[local_idx] = s_vec
+            batch_s_vec[local_idx, :7] = s_vec
             batch_hbond[local_idx] = hbond_cap
             batch_dg_self_assoc[local_idx] = compute_neat_liquid_self_association_correction(
                 solute_name=mat.name,
@@ -1295,7 +1292,7 @@ def execute_prepared_batch(
         n_o = float(np.sum(z_np_arr == 8))
         n_n = float(np.sum(z_np_arr == 7))
         n_hal = float(np.sum(np.isin(z_np_arr, [9, 17, 35, 53])))
-        batch_phys_desc[local_idx] = [n_heavy, n_o, n_n, n_hal, 0.0, vdw_solv]
+        batch_phys_desc[local_idx, :6] = [n_heavy, n_o, n_n, n_hal, 0.0, vdw_solv]
 
     # Vectorized GPU Evaluation (Single fused pass across all batch slots)
     if run_egnn_readouts and len(loaded_materials) > 0:
@@ -1360,7 +1357,7 @@ def execute_prepared_batch(
 
         d_phys_base = Tensor(batch_phys_desc, dtype=dtypes.float32)
         gb_mean_col = gb_mean_t.reshape(batch_size, 1)
-        d_phys_t = Tensor.cat(d_phys_base[:, :4], gb_mean_col, d_phys_base[:, 5:6], dim=1)
+        d_phys_t = Tensor.cat(d_phys_base[:, :4], gb_mean_col, d_phys_base[:, 5:], dim=1)
 
         krr_res_t, krr_density_t = predict_krr_residual_tensor(
             z_mol=h_mol_mean_t,

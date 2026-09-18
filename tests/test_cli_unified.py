@@ -125,6 +125,7 @@ def test_unified_cli_cDFT_screening_execution():
                 str(out_dir),
                 "--workers",
                 "1",
+                "--save-artifacts",
             ]
         )
         assert ret == 0
@@ -155,6 +156,7 @@ def test_unified_cli_benchmark_and_debug_flags():
                     str(out_dir),
                     "--workers",
                     "1",
+                    "--save-artifacts",
                 ]
             )
             assert ret == 0

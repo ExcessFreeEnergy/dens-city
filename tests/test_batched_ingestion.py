@@ -29,7 +29,7 @@ def test_molecular_batch_creation():
     assert batch.charges.shape == (32, 128)
     assert batch.atom_mask.shape == (32, 128)
     assert batch.molecule_mask.shape == (32,)
-    assert batch.conditioning.shape == (32, 5)
+    assert batch.conditioning.shape == (32, 8)
 
     # Active molecules have molecule_mask == 1.0
     mol_mask = batch.molecule_mask.numpy()

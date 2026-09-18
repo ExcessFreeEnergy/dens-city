@@ -996,16 +996,22 @@ Execution Modes & Examples:
         help="Enable DEBUG=2 and write detailed per-material compiler logs to data/logs_<timestamp>/",
     )
     perf_group.add_argument(
+        "--max-batches",
+        type=int,
+        default=None,
+        help="Maximum number of batches to execute before halting (useful for profiling/validation)",
+    )
+    perf_group.add_argument(
         "--save-artifacts",
         action="store_true",
-        default=None,
-        help="Write full per-material 3D trajectory (.xyz), flow weights (.npz), and cDFT density profiles to disk",
+        default=False,
+        help="Write full per-material 3D trajectory (.xyz), flow weights (.npz), and cDFT density profiles to disk (default: False)",
     )
     perf_group.add_argument(
         "--no-save-artifacts",
         action="store_false",
         dest="save_artifacts",
-        help="Disable writing per-material trajectory and density profile files to disk (default for benchmarks)",
+        help="Disable writing per-material trajectory and density profile files to disk (default: False)",
     )
 
     return parser
@@ -1465,18 +1471,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         debug_log_dir = Path("data") / f"logs_{ts}"
         debug_log_dir.mkdir(parents=True, exist_ok=True)
 
-    is_large_benchmark = (
-        args.benchmark
-        or args.verify_solvatum
-        or args.verify_freesolv
-        or args.all_solvatum
-        or args.all_freesolv
-        or (args.materials == ["all"])
-    )
-    if args.save_artifacts is None:
-        effective_save_artifacts = False if is_large_benchmark else True
-    else:
-        effective_save_artifacts = bool(args.save_artifacts)
+    effective_save_artifacts = bool(args.save_artifacts)
 
     if args.dataset == "solvatum":
         from dens_city.utils.benchmark_dataset import SolvatumDataset
@@ -1617,6 +1612,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             tasks = tasks[completed_offset:]
 
     task_chunks = [tasks[i : i + args.batch_size] for i in range(0, len(tasks), args.batch_size)]
+    if args.max_batches is not None:
+        task_chunks = task_chunks[: args.max_batches]
     async_writer = AsyncArtifactWriter(enabled=effective_save_artifacts)
     prefetcher = AsyncBatchPrefetcher(
         task_chunks=task_chunks,

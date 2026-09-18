@@ -1141,8 +1141,8 @@ def load_krr_device_tensors(
     if w_dict is None:
         return None
 
-    z_train = np.asarray(w_dict["z_train"], dtype=np.float32)  # (N, D)
-    alpha = np.asarray(w_dict["alpha"], dtype=np.float32).reshape(-1, 1)  # (N, 1)
+    z_train_raw = np.asarray(w_dict["z_train"], dtype=np.float32)  # (N, D)
+    alpha_raw = np.asarray(w_dict["alpha"], dtype=np.float32).reshape(-1, 1)  # (N, 1)
     z_mean = np.asarray(w_dict["z_mean"], dtype=np.float32).reshape(1, -1)  # (1, 384)
     z_std = np.asarray(w_dict["z_std"], dtype=np.float32).reshape(1, -1)  # (1, 384)
     d_mean = np.asarray(w_dict["d_mean"], dtype=np.float32).reshape(1, -1)  # (1, 6)
@@ -1159,12 +1159,24 @@ def load_krr_device_tensors(
         else np.ones((1, 7), dtype=np.float32)
     )
     sigma = float(w_dict["sigma"])
-    z_train_sq = np.sum(z_train**2, axis=1, keepdims=True).T.astype(np.float32)  # (1, N)
+
+    n_train_real, orig_feat = z_train_raw.shape
+    n_padded = ((n_train_real + 15) // 16) * 16  # 5472 (multiple of 16 for optimal SIMD/warp alignment)
+
+    # Pad features to pure power-of-2 (512 features: 384 + 8 + 8 + 112)
+    z_train_pad = np.zeros((n_padded, 512), dtype=np.float32)
+    z_train_pad[:n_train_real, :384] = z_train_raw[:, :384]
+    z_train_pad[:n_train_real, 384:390] = z_train_raw[:, 384:390]
+    z_train_pad[:n_train_real, 392:399] = z_train_raw[:, 390:397]
+    z_train_sq_pad = np.sum(z_train_pad**2, axis=1, keepdims=True).T.astype(np.float32)  # (1, N_padded)
+
+    alpha_pad = np.zeros((n_padded, 1), dtype=np.float32)
+    alpha_pad[:n_train_real, :] = alpha_raw
 
     device_dict = {
-        "z_train": Tensor(z_train, dtype=dtypes.float32).realize(),
-        "z_train_sq": Tensor(z_train_sq, dtype=dtypes.float32).realize(),
-        "alpha": Tensor(alpha, dtype=dtypes.float32).realize(),
+        "z_train": Tensor(z_train_pad, dtype=dtypes.float32).realize(),
+        "z_train_sq": Tensor(z_train_sq_pad, dtype=dtypes.float32).realize(),
+        "alpha": Tensor(alpha_pad, dtype=dtypes.float32).realize(),
         "z_mean": Tensor(z_mean, dtype=dtypes.float32).realize(),
         "z_std": Tensor(z_std, dtype=dtypes.float32).realize(),
         "d_mean": Tensor(d_mean, dtype=dtypes.float32).realize(),
@@ -1172,7 +1184,8 @@ def load_krr_device_tensors(
         "s_mean": Tensor(s_mean, dtype=dtypes.float32).realize(),
         "s_std": Tensor(s_std, dtype=dtypes.float32).realize(),
         "sigma": sigma,
-        "n_features": z_train.shape[1],
+        "n_train_real": n_train_real,
+        "n_features": 512,
     }
     _KRR_DEVICE_CACHE[p_str] = device_dict
     return device_dict
@@ -1187,11 +1200,12 @@ def predict_krr_residual_tensor(
     """
     Pure tinygrad GPU tensor kernel predicting Delta-KRR residual and epistemic similarity density.
     Operates directly on device buffers with zero CPU host synchronization stalls.
+    Guarantees strict power-of-2 dimension alignments (512 features, N % 16 == 0) for vectorized float4 loads.
 
     Args:
         z_mol: Tensor shape (B, 384) or (384,)
-        d_phys: Tensor shape (B, 6) or (6,)
-        s_solv: Solvent name string, numpy array (B, 7), or Tensor (B, 7)
+        d_phys: Tensor shape (B, 6), (B, 8), (6,), or (8,)
+        s_solv: Solvent name string, numpy array (B, 7/8), or Tensor (B, 7/8)
         weights: Checkpoint path or dictionary
 
     Returns:
@@ -1231,24 +1245,34 @@ def predict_krr_residual_tensor(
         s_vec = get_solvent_descriptors_vector("water")
         s_t = Tensor(np.tile(s_vec, (b_sz, 1)).astype(np.float32))
 
-    # Standardize features
+    # Standardize features (extract real 6 and 7 active channels)
     z_norm = (z_q - dev["z_mean"]) / dev["z_std"]
-    d_norm = (d_q - dev["d_mean"]) / dev["d_std"]
-    s_norm = (s_t - dev["s_mean"]) / dev["s_std"]
+    d_norm = (d_q[:, :6] - dev["d_mean"]) / dev["d_std"]
+    s_norm = (s_t[:, :7] - dev["s_mean"]) / dev["s_std"]
 
-    if dev["n_features"] == 397:
-        z_comb = Tensor.cat(z_norm, d_norm * PHYSICAL_DESCRIPTOR_WEIGHT, s_norm * SOLVENT_DESCRIPTOR_WEIGHT, dim=1)
-    else:
-        z_comb = Tensor.cat(z_norm, d_norm * PHYSICAL_DESCRIPTOR_WEIGHT, dim=1)
+    pad_d = Tensor.zeros(b_sz, 2, dtype=dtypes.float32)
+    pad_s = Tensor.zeros(b_sz, 1, dtype=dtypes.float32)
+    pad_tail = Tensor.zeros(b_sz, 112, dtype=dtypes.float32)
+
+    # Padded feature tensor: 384 + 6 + 2 + 7 + 1 + 112 = 512 (power-of-2: 2^9)
+    z_comb = Tensor.cat(
+        z_norm,
+        d_norm * PHYSICAL_DESCRIPTOR_WEIGHT,
+        pad_d,
+        s_norm * SOLVENT_DESCRIPTOR_WEIGHT,
+        pad_s,
+        pad_tail,
+        dim=1,
+    )
 
     # Vectorized pairwise RBF kernel computation: D^2 = ||z_q||^2 + ||z_train||^2 - 2 z_q z_train^T
     q_sq = (z_comb * z_comb).sum(axis=1, keepdim=True)  # (B, 1)
-    d2 = (q_sq + dev["z_train_sq"] - 2.0 * z_comb.matmul(dev["z_train"].transpose())).maximum(0.0)  # (B, N)
-    k_mat = (-d2 / (2.0 * (dev["sigma"] ** 2))).exp()  # (B, N)
+    d2 = (q_sq + dev["z_train_sq"] - 2.0 * z_comb.matmul(dev["z_train"].transpose())).maximum(0.0)  # (B, N_padded)
+    k_mat = (-d2 / (2.0 * (dev["sigma"] ** 2))).exp()  # (B, N_padded)
 
     # Linear dual regression prediction and epistemic density metric
     pred = k_mat.matmul(dev["alpha"])  # (B, 1)
-    density = k_mat.sum(axis=1, keepdim=True)  # (B, 1)
+    density = k_mat[:, : dev["n_train_real"]].sum(axis=1, keepdim=True)  # (B, 1)
     return pred, density
 
 

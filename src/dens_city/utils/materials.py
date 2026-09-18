@@ -1100,7 +1100,7 @@ class MolecularBatch:
     bulk_density_a3: Any = None  # Tensor of shape (B,)
     bulk_mu: Any = None  # Tensor of shape (B,)
     slit_width_a: Any = None  # Tensor of shape (B,)
-    conditioning: Any = None  # Tensor of shape (B, 5) [sigma_eff, eps_eff, T, rho_bulk, mu]
+    conditioning: Any = None  # Tensor of shape (B, 8) [sigma_eff, eps_eff, T, rho_bulk, mu, 0, 0, 0]
     exclusions: Any = None  # Tensor of shape (B, N, N) - 1.0 for excluded pairs, 0.0 for non-bonded
 
     @property
@@ -1195,7 +1195,7 @@ class MolecularBatch:
         rho_np = np.zeros(batch_size, dtype=np.float32)
         mu_np = np.zeros(batch_size, dtype=np.float32)
         slit_np = np.full(batch_size, 40.0, dtype=np.float32)
-        cond_np = np.zeros((batch_size, 5), dtype=np.float32)
+        cond_np = np.zeros((batch_size, 8), dtype=np.float32)
         cond_np[:, 2] = default_temp_k
 
         n_mats = len(materials)
@@ -1223,7 +1223,7 @@ class MolecularBatch:
             rho_np[b] = mat.bulk_density_a3
             mu_np[b] = mat.bulk_mu
             slit_np[b] = max(40.0, 12.0 * mat.effective_sigma)
-            cond_np[b] = [mat.effective_sigma, mat.effective_epsilon_k, temp_val, mat.bulk_density_a3, mat.bulk_mu]
+            cond_np[b, :5] = [mat.effective_sigma, mat.effective_epsilon_k, temp_val, mat.bulk_density_a3, mat.bulk_mu]
 
         for b in range(n_mats, batch_size):
             mats_padded.append(None)
