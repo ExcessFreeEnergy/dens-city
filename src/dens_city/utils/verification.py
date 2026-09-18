@@ -759,10 +759,12 @@ def verify_pipeline_against_dataset(
             e2e_args.append("--force-egnn")
         if batch_size is not None:
             e2e_args.extend(["--batch-size", str(batch_size)])
-        elif energy_engine == "egnn" or force_egnn:
-            e2e_args.extend(["--batch-size", "32"])
+        elif energy_engine in ("egnn", "auto") or force_egnn:
+            e2e_args.extend(["--batch-size", "64"])
         else:
             e2e_args.extend(["--batch-size", "512"])
+        if results_dir:
+            e2e_args.extend(["--out-dir", str(results_dir)])
         cli_main(e2e_args)
 
     res_dir = Path(results_dir) if results_dir else find_latest_results_dir()

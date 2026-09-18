@@ -332,6 +332,7 @@ class BoltzmannGenerator:
                 self.molecule_mask = self.batch.molecule_mask.realize()
                 self.conditioning = self.batch.conditioning.realize()
                 self.batch_size = self.batch.batch_size
+            self.train_step = None
 
     def train(
         self,
