@@ -1,0 +1,27 @@
+{
+  "benchmark": "solvatum",
+  "total_materials": 5952,
+  "total_wall_time_seconds": 1656.11,
+  "materials_per_second": 3.5939,
+  "mae_kcal_mol": 0.7813897302860242,
+  "rmse_kcal_mol": 1.1283593116729829,
+  "mean_signed_bias_kcal_mol": -0.4677557645919509,
+  "max_absolute_error_kcal_mol": 8.752767962507384,
+  "error_variance": 1.0543992809301268,
+  "error_std_dev": 1.0268394621020984,
+  "pearson_r": 0.9074231943663245,
+  "r2": 0.8234168536739842,
+  "max_allowed_slowdown_ratio": 1.10,
+  "last_updated_timestamp": "2026-09-17T16:55:52Z",
+  "source_results_dir": "runs/batch_20260917_162803",
+  "ratchet_history": [
+    {
+      "timestamp": "2026-09-17T16:55:52Z",
+      "commit": "e242012",
+      "total_wall_time_seconds": 1656.11,
+      "mae_kcal_mol": 0.7814,
+      "rmse_kcal_mol": 1.1284,
+      "note": "Initial baseline post-dielectric singularity and conformer integrity fixes"
+    }
+  ]
+}

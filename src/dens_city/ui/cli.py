@@ -18,9 +18,10 @@ import contextlib
 import json
 import os
 import re
+import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -341,6 +342,26 @@ Execution Modes & Examples:
         choices=["freesolv", "solvatum"],
         default=None,
         help="Validate simulation results against specified dataset ('freesolv' or 'solvatum')",
+    )
+    mode_group.add_argument(
+        "--solvatum-ratchet-gate",
+        "--check-solvatum-gate",
+        dest="solvatum_ratchet_gate",
+        action="store_true",
+        default=False,
+        help="Execute the Solvatum E2E Pre-Commit & Pre-Merge Ratchet Gate against the master baseline standard",
+    )
+    mode_group.add_argument(
+        "--install-git-hooks",
+        action="store_true",
+        default=False,
+        help="Install git pre-commit, pre-merge-commit, and pre-push hooks for the Solvatum ratchet gate",
+    )
+    mode_group.add_argument(
+        "--no-ratchet",
+        action="store_true",
+        default=False,
+        help="Disable automatic ratcheting of baseline standard when running ratchet gate",
     )
     mode_group.add_argument(
         "--wikiskill-status",
@@ -1365,6 +1386,29 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
 
     # =========================================================================
+    # MODE 9.1: Solvatum E2E Pre-Commit & Pre-Merge Ratchet Gate
+    # =========================================================================
+    if args.install_git_hooks:
+        installer_script = Path(__file__).resolve().parent.parent.parent.parent / "scripts" / "install_git_hooks.sh"
+        if not installer_script.exists():
+            print(colored(f"Error: {installer_script} not found", "red"))
+            return 1
+        return subprocess.run(["bash", str(installer_script)], check=False).returncode
+
+    if args.solvatum_ratchet_gate:
+        from dens_city.utils.ratchet_gate import evaluate_solvatum_ratchet_gate
+
+        passed, _, _ = evaluate_solvatum_ratchet_gate(
+            results_dir=args.results_dir,
+            run_e2e=args.run_e2e,
+            baseline_path=args.database,
+            auto_ratchet=not args.no_ratchet,
+            report_out=args.report_out,
+            batch_size=args.batch_size if ("-b" in argv or "--batch-size" in argv) else 512,
+        )
+        return 0 if passed else 1
+
+    # =========================================================================
     # MODE 9.5: Analytical Delta-KRR Universal Recalibration
     # =========================================================================
     if args.recalibrate_krr:
@@ -1589,6 +1633,21 @@ def main(argv: Optional[List[str]] = None) -> int:
             PipelineStatus.FAILED_ERROR.value,
         ]
     )
+
+    batch_metadata = {
+        "total_materials": len(results),
+        "successful_materials": n_success,
+        "failed_materials": n_failed,
+        "skipped_materials": n_skipped,
+        "total_wall_time_seconds": float(t_batch_total),
+        "materials_per_second": float(len(results) / max(t_batch_total, 1e-6)),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        with open(out_dir / "batch_metadata.json", "w", encoding="utf-8") as f_meta:
+            json.dump(batch_metadata, f_meta, indent=2)
+    except Exception as e:
+        print(colored(f"  Warning saving batch_metadata.json: {e}", "yellow"))
 
     if args.benchmark:
         print_benchmark_table(results, t_batch_total, args.batch_size)
