@@ -51,6 +51,9 @@ uv run dens-city --verify-solvatum
 # 3. Run the 5-Stage Generative Molecular Funnel on an Example Spec (Conjugated OLEDs)
 uv run dens-city --funnel --spec tests/data/conjugated_oled_semiconductors.yaml \
   --train-steps 25000 --num-candidates 512 --batch-size 512 --top-k 20
+
+# 4. Launch the Model Context Protocol (MCP) Server for LLM Agent Tool Calling
+uv run dens-city --serve-mcp --transport stdio
 ```
 
 ---
@@ -80,13 +83,18 @@ uv run dens-city [MODE_SELECTOR] [OPTIONS...]
 | `--verify-freesolv`, `--verify-e2e` | **FreeSolv Statistical Validation** | Compare predictions against FreeSolv experimental hydration database |
 | `--verify-solvatum` | **Solvatum Statistical Validation** | Validate predictions against Solv@TUM non-aqueous multi-solvent benchmark |
 | `--verify-dataset` | **Dataset Validation Dispatcher** | Validate simulation results against specified dataset (`freesolv` or `solvatum`) |
+| `--solvatum-ratchet-gate`, `--check-solvatum-gate` | **Solvatum Ratchet Pre-Commit Gate** | Run automated E2E quality & regression ratchet gate against baseline standard |
+| `--install-git-hooks` | **Install Ratchet Git Hooks** | Install automated pre-commit, pre-merge-commit, and pre-push ratchet hooks |
+| `--no-ratchet` | **Disable Baseline Ratchet** | Disable automatic ratcheting of baseline standard when running ratchet gate |
 | `--recalibrate-krr` | **Delta-KRR Model Recalibration** | Recalibrate analytical Delta-KRR residual model via Cholesky decomposition |
 | `--serve-mcp` | **Model Context Protocol (MCP) Server** | Launch the MCP server for direct autonomous LLM agent tool calling |
 | `--serve-api` | **FastAPI REST Server** | Launch FastAPI REST server for web clients and asynchronous harnesses |
 | `--cleanup-pools` | **Artifact Pool Garbage Collection** | Prune scratch files and intermediate pools to prevent disk creep |
 | `--wikiskill-status` | **WikiSkill Knowledge Index** | Display persistent knowledge base patterns, anti-pattern ledger, and status |
+| `--wikiskill-init` | **WikiSkill Initialization** | Initialize WikiSkill three-layer directories and bootstrap foundational physics patterns |
 | `--wikiskill-consolidate` | **WikiSkill Trace Consolidation** | Analyze execution traces and consolidate verified root causes into patterns |
 | `--wikiskill-audit` | **WikiSkill Anti-Pattern Audit** | Audit proposed edits or skills against past rejection history and invariants |
+| `--wikiskill-record` | **WikiSkill Trace Recorder** | Execute a test/command and record an immutable trace into the WikiSkill raw layer |
 
 ---
 
@@ -105,14 +113,15 @@ uv run dens-city [MODE_SELECTOR] [OPTIONS...]
 - `--pressure`, `-p` : Reservoir pressure in bar (default: `1.0` bar).
 - `--mu` : Chemical potential in $k_B T$ (overrides bulk pressure calculation).
 - `--grid`, `-g` : Spatial grid points for cDFT 1D discretization (default: `128`).
-- `--cdft-steps` : Variational cDFT optimization steps (default: `50`).
+- `--cdft-steps` : Variational cDFT optimization steps (default: `60`).
 - `--cdft-lr` : cDFT solver learning rate (default: `0.02`).
+- `--solvent` : Target solvent fluid for solvation calculations (e.g. `'water'`, `'HEXANE'`, `'ethanol'`, `'vacuum'`). Defaults to `'water'` when verifying FreeSolv, else `'vacuum'`.
 - `--skip-bg` : Halt immediately after cDFT screening, skipping Boltzmann Generator training.
 
 #### Boltzmann Generator & Geometry Relaxation Options
-- `--bg-steps` : Boltzmann Generator training iterations (default: `30`).
+- `--bg-steps` : Boltzmann Generator training iterations (default: `40`).
 - `--bg-lr` : Boltzmann Generator learning rate (default: `0.01`).
-- `--bg-samples` : Number of 3D equilibrium conformations sampled into `.xyz` trajectory (default: `32`).
+- `--bg-samples` : Number of 3D equilibrium conformations sampled into `.xyz` trajectory (default: `100`).
 - `--bg-w-tor` : Torsional rotamer loss biasing weight (default: `0.0`).
 - `--bg-mcmc-steps` : Latent Metropolis Monte Carlo relaxation steps per sample (default: `0`).
 - `--bg-mcmc-step-size` : Step size for Gaussian latent perturbations (default: `0.1`).
@@ -127,23 +136,26 @@ uv run dens-city [MODE_SELECTOR] [OPTIONS...]
 - `--egnn-layers` : Number of message-passing layers in the EGNN architecture (default: `7`).
 - `--egnn-relax-steps` : Unrolled GPU quantum geometry relaxation steps (default: `50`).
 - `--egnn-weights` : Optional path to pretrained EGNN weights `.npz` archive.
-- `--charge-epochs` : Training epochs for end-to-end differentiable charge optimization (default: `60`).
-- `--charge-warmup-epochs` : Warmup epochs with frozen trunk and cached features (default: `15`).
-- `--charge-lr-head` : Learning rate for dynamic charge readout MLP head (default: `5e-4`).
-- `--charge-lr-trunk` : Learning rate for end-to-end EGNN message-passing trunk (default: `1e-5`).
+- `--charge-epochs` : Training epochs for end-to-end differentiable charge optimization (default: `1000`).
+- `--charge-lr` : Learning rate for `--train-charges` (default: `8e-4`).
+- `--charge-huber-delta` : Huber loss transition delta threshold in kcal/mol (default: `2.5`).
+- `--charge-lambda` : L2 regularization penalty weight on $(\Delta q)^2$ neural charge perturbations (default: `0.02`).
+- `--charge-lambda-vdw` : L2 regularization penalty weight on $(\Delta g_{\text{vdw}})^2$ neural cavitation perturbations (default: `0.002`).
+- `--charge-max-vdw` : Maximum per-atom nonpolar cavitation adjustment ceiling in kcal/mol (default: `3.5`).
+- `--charge-weights-out` : Destination path for trained quantum charge checkpoint archive (default: `data/checkpoints/egnn_charges_trained.npz`).
 
 #### RL Swarm & Generative Funnel Options
-- `--train-steps`, `--total-timesteps` : RL curriculum training timesteps (default: `5,000,000`).
+- `--train-steps`, `--total-timesteps`, `--timesteps` : RL curriculum training timesteps (default: `5,000,000`).
 - `--num-candidates` : Number of candidates to sample from trained policy via C-FFI (default: `512`).
 - `--top-k` : Number of top Pareto-optimal candidates to export (default: `20`).
 - `--checkpoint` : Path to existing policy `.pt` checkpoint file to skip Stage 1 training.
-- `--num-envs` : Number of parallel C-FFI environment workers (default: `16`).
+- `--num-envs` : Number of parallel C-FFI environment workers (default: `64`).
 - `--horizon` : Rollout horizon per environment (default: `16`).
 - `--learning-rate`, `--lr` : PPO learning rate (default: `3e-4`).
 - `--hidden-size` : Policy latent dimension (default: `256`).
 - `--recurrent` : Enable recurrent MinGRU backbone instead of MLP (default: `False`).
-- `--early-stopping-lookback` : Step lookback window for EMA reward flatline detection (default: `500,000`).
-- `--early-stopping-delta` : EMA reward threshold for early stopping (default: `0.01`).
+- `--early-stopping-lookback` : Step lookback window for EMA reward flatline detection (default: `100,000`).
+- `--early-stopping-delta` : EMA reward threshold for early stopping (default: `0.05`).
 - `--no-early-stopping` : Disable dynamic EMA early stopping.
 - `--no-curriculum` : Disable 3-stage curriculum scheduler.
 - `--no-sa-penalty` : Disable in-the-loop batch SA score penalty.
@@ -155,6 +167,10 @@ uv run dens-city [MODE_SELECTOR] [OPTIONS...]
 - `--checkpoint-dir` : Directory to save `trained_policy.pt` (default: `runs/checkpoints`).
 - `--export-dir` : Directory to save candidate `.mol2` files (default: `runs/candidates`).
 
+#### Curriculum Sweep Options
+- `--num-trials-per-spec` : Number of random hyperparameter trials per material spec (default: `2`).
+- `--steps-per-trial` : Timesteps to train each trial before evaluation (default: `5,000`).
+
 #### Combinatorial Library Generator Options
 - `--target-count`, `-n` : Target number of unique molecules to generate (default: from YAML `target_molecules`).
 - `--skip-3d` : Skip 3D conformer embedding (2D combinatorial generation only).
@@ -162,8 +178,10 @@ uv run dens-city [MODE_SELECTOR] [OPTIONS...]
 - `--seed` : Random seed for deterministic sampling (default: `42`).
 
 #### Solvation Benchmark & Dataset Options
-- `--dataset` : Benchmark dataset target: `'freesolv'`, `'solvatum'`, or `'all'` (default: `freesolv`).
-- `--all-freesolv` : Extract and populate all 642+ FreeSolv molecules into `data/test_data/`.
+- `--dataset` : Benchmark dataset target: `'freesolv'`, `'solvatum'`, or path to arbitrary `.sdf`, `.csv`, `.tsv`, `.jsonl` file.
+- `--eval-loocv` : Enable exact Leave-One-Out Cross-Validation (LOOCV) out-of-fold evaluation for KRR residuals on benchmark samples (default: `True` for verification and benchmark dataset runs).
+- `--no-eval-loocv` : Disable exact LOOCV out-of-fold evaluation (reverting to in-fold interpolation).
+- `--all-freesolv`, `--all-data` : Extract and populate all 642+ FreeSolv molecules into `data/test_data/`.
 - `--all-solvatum` : Extract and populate all 658+ Solvatum solute molecules into `data/test_data/`.
 - `--solvent` : Target solvent fluid for solvation calculations (e.g. `'water'`, `'hexane'`, `'ethanol'`, `'vacuum'`).
 - `--database` : Path to benchmark database (`FreeSolv/database.pickle` or `Solvatum/solvatum/data/solvatum.sdf`).
@@ -176,21 +194,22 @@ uv run dens-city [MODE_SELECTOR] [OPTIONS...]
 - `--krr-sigma` : Gaussian RBF kernel lengthscale parameter for Delta-KRR (default: `25.0`).
 - `--krr-lambda` : L2 ridge regularization penalty for Delta-KRR matrix inversion (default: `1e-3`).
 - `--krr-out` : Output filepath for recalibrated Delta-KRR checkpoint archive (default: `data/checkpoints/krr_residual_weights.npz`).
-- `--krr-deduplicate` : Enforce canonical SMILES and feature-space deduplication to prevent Gram singularity.
+- `--krr-deduplicate` : Enforce canonical SMILES and feature-space deduplication to prevent Gram singularity and LOOCV data leakage (default: `True`).
 
 #### Server & MCP Options
 - `--host` : Host interface to bind server (default: `0.0.0.0`).
 - `--port` : Port to bind server (default: `8000`).
 - `--transport` : MCP transport protocol: `'stdio'`, `'sse'`, or `'streamable-http'` (default: `'stdio'`).
-- `--cleanup-mode` : Cleanup policy for `--cleanup-pools`: `'keep_pareto_only'`, `'failed'`, `'age'`, or `'all'`.
+- `--cleanup-mode` : Cleanup policy for `--cleanup-pools`: `'keep_pareto_only'`, `'failed'`, `'age'`, or `'all'` (default: `'keep_pareto_only'`).
 
 #### Execution & Compiler Performance
 - `--batch-size`, `-b` : Molecule batch size for parallel tensor evaluation (default: `512`).
 - `--max-batches` : Maximum number of task batches to execute before halting (useful for profiling/validation).
 - `--workers`, `-w` : Concurrent worker processes (default: `min(4, CPU_COUNT)`).
 - `--timeout` : Maximum execution timeout per material in seconds (default: `180s`).
-- `--beam` : tinygrad compiler BEAM search optimization level (default: `2`).
+- `--beam` : tinygrad compiler BEAM search optimization level (default: `0` to prevent JIT kernel exploration pauses on novel topologies).
 - `--save-artifacts` : Persist full per-material 3D trajectory (`.xyz`), flow weights (`.npz`), and cDFT density profiles to disk (default: `False` to prevent disk bloat).
+- `--no-save-artifacts` : Explicitly disable writing per-material trajectory and density profiles to disk (default: `False`).
 - `--show-table`, `--verbose` : Display verbose row-by-row scrolling terminal table instead of the live TUI progress bar (default: `False`).
 - `--benchmark` : Profile execution time and output comprehensive throughput table.
 - `--debug` : Enable `DEBUG=2` and write per-material compiler logs to `data/logs_<timestamp>/`.
@@ -249,6 +268,39 @@ The MCP server exposes 10 modular tools designed for context-window protection, 
 | `validate_spec` | Synchronously validates chemical SMILES and target constraints | `smiles_list`, `target_spec` (catches errors before running GPU jobs) |
 | `cleanup_artifacts` | Prunes intermediate scratch pools to prevent disk space creep | `mode` (`keep_pareto_only`, `failed`, `age`, `all`), `pool_id` |
 
+### 3.4 MCP Server Verification & Direct Testing
+
+You can verify that the MCP server and all 10 exposed tools are active and working via automated tests or direct CLI invocations:
+
+```bash
+# 1. Run the comprehensive MCP & FastAPI test suite (15 tests, 100% passing)
+uv run pytest tests/test_server_and_mcp.py -v
+
+# 2. Inspect all registered tools programmatically
+uv run python -c "
+import asyncio
+from dens_city.server.mcp_server import mcp
+
+async def check():
+    tools = await mcp.list_tools()
+    print(f'Registered MCP tools ({len(tools)}): {[t.name for t in tools]}')
+
+asyncio.run(check())
+"
+
+# 3. Test synchronous chemical intake validation via MCP tool call
+uv run python -c "
+import asyncio
+from dens_city.server.mcp_server import mcp
+
+async def check():
+    res = await mcp.call_tool('validate_spec', {'smiles_list': ['CC(=O)Oc1ccccc1C(=O)O']})
+    print('Intake validation:', res.structured_content)
+
+asyncio.run(check())
+"
+```
+
 ---
 
 ## 4. Practical Usage Examples
@@ -258,8 +310,8 @@ The MCP server exposes 10 modular tools designed for context-window protection, 
 # Screen benchmark fluids with coupled cDFT + Boltzmann Generator (batch size 512)
 uv run dens-city --materials argon water methane 5cb --batch-size 512
 
-# Run full FreeSolv benchmark with BEAM=2 compiler optimization
-uv run dens-city --materials all --benchmark --beam 2
+# Run full FreeSolv benchmark with performance profiling
+uv run dens-city --materials all --benchmark
 
 # Fast cDFT screening only (skipping Boltzmann training)
 uv run dens-city --materials all --skip-bg
@@ -293,9 +345,9 @@ uv run dens-city --benchmark-specs --train-steps 25000 --num-candidates 64 --bat
 
 ### 5. Stage 1 RL Swarm Training
 ```bash
-# Train PPO policy with curriculum learning for 5M steps on 16 parallel C environments
+# Train PPO policy with curriculum learning for 5M steps on 64 parallel C environments
 uv run dens-city --train-swarm --spec conjugated_oled_semiconductors \
-  --train-steps 5000000 --num-envs 16 --checkpoint-dir runs/checkpoints
+  --train-steps 5000000 --num-envs 64 --checkpoint-dir runs/checkpoints
 ```
 
 ### 6. Constellation Curriculum Hyperparameter Sweeps
@@ -343,6 +395,27 @@ uv run dens-city --verify-solvatum
 uv run dens-city --verify-freesolv --results-dir runs/batch_20260828
 ```
 
+### 11. Solvatum Pre-Commit & Pre-Merge Ratchet Gate
+```bash
+# Execute the automated Solvatum E2E ratchet gate against baseline standard
+uv run dens-city --solvatum-ratchet-gate
+
+# Install automated Git pre-commit, pre-merge-commit, and pre-push hooks
+uv run dens-city --install-git-hooks
+```
+
+### 12. WikiSkill Persistent Knowledge Base & Anti-Pattern Audit
+```bash
+# View active persistent patterns, anti-pattern rejection ledger, and proposal audit status
+uv run dens-city --wikiskill-status
+
+# Audit a proposed change or skill against the historical anti-pattern rejection catalog
+uv run dens-city --wikiskill-audit pattern_fully_vectorized_high_throughput_batch_inference
+
+# Consolidate raw failure traces into verified wiki patterns
+uv run dens-city --wikiskill-consolidate
+```
+
 <!-- SOLVATUM_BENCHMARK_TABLE_START -->
 ### Solv@TUM (Solvatum) Multi-Solvent Benchmark Results (5,952 Pairs across 146 Solvents)
 
@@ -377,7 +450,10 @@ uv run pytest -m "not gpu" -n auto
 # 4. Run dedicated compiler remediation and ingestion verification test
 uv run pytest tests/test_audit_remediation_ingestion.py -v
 
-# 5. Run linting and code formatting checks
+# 5. Run Model Context Protocol (MCP) & FastAPI server integration test
+uv run pytest tests/test_server_and_mcp.py -v
+
+# 6. Run linting and code formatting checks
 uv run ruff check src/ tests/ scripts/
 uv run ruff format --check src/ tests/ scripts/
 ```

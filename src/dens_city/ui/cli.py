@@ -739,6 +739,7 @@ Execution Modes & Examples:
     rl_group.add_argument(
         "--train-steps",
         "--total-timesteps",
+        "--timesteps",
         dest="train_steps",
         type=int,
         default=5000000,
@@ -1355,7 +1356,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         out_dir = args.out_dir or "runs/rl_stage_evaluation"
         return evaluate_all_swarm_specs(
             specs_dir=args.specs_dir,
-            timesteps=args.train_steps if ("--train-steps" in argv or "--total-timesteps" in argv) else 10000,
+            timesteps=args.train_steps
+            if ("--train-steps" in argv or "--total-timesteps" in argv or "--timesteps" in argv)
+            else 10000,
             num_candidates=args.num_candidates if "--num-candidates" in argv else 50,
             num_envs=args.num_envs,
             out_dir=out_dir,
