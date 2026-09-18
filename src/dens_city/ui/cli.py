@@ -980,8 +980,8 @@ Execution Modes & Examples:
     perf_group.add_argument(
         "--beam",
         type=int,
-        default=0,
-        help="tinygrad compiler BEAM search optimization level (default: 0)",
+        default=2,
+        help="tinygrad compiler BEAM search optimization level (default: 2)",
     )
     perf_group.add_argument(
         "--benchmark",
