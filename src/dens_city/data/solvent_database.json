@@ -2257,5 +2257,41 @@
     "abraham_beta": 0.77,
     "abraham_pi2": 0.6,
     "dipole_moment_debye": 3.07
+  },
+  "BENZENE": {
+    "name": "BENZENE",
+    "aliases": [
+      "BENZOL",
+      "C6H6",
+      "c1ccccc1"
+    ],
+    "dielectric_constant": 2.27,
+    "refractive_index": 1.501,
+    "density_g_cm3": 0.876,
+    "surface_tension_mn_m": 28.9,
+    "solvent_class": "aromatic",
+    "molecular_weight": 78.11,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.14,
+    "abraham_pi2": 0.52,
+    "dipole_moment_debye": 0.0
+  },
+  "CYCLOHEXANE": {
+    "name": "CYCLOHEXANE",
+    "aliases": [
+      "HEXAMETHYLENE",
+      "C6H12",
+      "C1CCCCC1"
+    ],
+    "dielectric_constant": 2.02,
+    "refractive_index": 1.426,
+    "density_g_cm3": 0.778,
+    "surface_tension_mn_m": 24.9,
+    "solvent_class": "alkane_nonpolar",
+    "molecular_weight": 84.16,
+    "abraham_alpha": 0.0,
+    "abraham_beta": 0.0,
+    "abraham_pi2": 0.0,
+    "dipole_moment_debye": 0.0
   }
 }

@@ -927,8 +927,14 @@ Execution Modes & Examples:
     data_group.add_argument(
         "--eval-loocv",
         action="store_true",
+        default=None,
+        help="Enable exact Leave-One-Out Cross-Validation (LOOCV) out-of-fold evaluation for KRR residuals on benchmark samples (default: True for verification and benchmark dataset runs)",
+    )
+    data_group.add_argument(
+        "--no-eval-loocv",
+        action="store_true",
         default=False,
-        help="Enable exact Leave-One-Out Cross-Validation (LOOCV) evaluation for KRR residuals on training benchmark samples",
+        help="Disable exact LOOCV out-of-fold evaluation (reverting to in-fold interpolation)",
     )
     data_group.add_argument(
         "--all-solvatum",
@@ -995,8 +1001,8 @@ Execution Modes & Examples:
     perf_group.add_argument(
         "--beam",
         type=int,
-        default=2,
-        help="tinygrad compiler BEAM search optimization level (default: 2)",
+        default=0,
+        help="tinygrad compiler BEAM search optimization level (default: 0)",
     )
     perf_group.add_argument(
         "--benchmark",
@@ -1417,6 +1423,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         is_pop_all = args.all_solvatum or args.all_freesolv
         engine_choice = args.energy_engine if ("--energy-engine" in argv or "-e" in argv) else "auto"
+        effective_eval_loocv = (
+            False if args.no_eval_loocv else (True if args.eval_loocv is None else bool(args.eval_loocv))
+        )
         return verify_pipeline_against_dataset(
             dataset=target_dataset,
             results_dir=args.results_dir,
@@ -1427,7 +1436,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             energy_engine=engine_choice,
             force_egnn=args.force_egnn,
             batch_size=args.batch_size if ("-b" in argv or "--batch-size" in argv) else None,
-            eval_loocv=args.eval_loocv,
+            eval_loocv=effective_eval_loocv,
         )
 
     # =========================================================================
@@ -1523,6 +1532,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             clean_name = re.sub(r"[^\w\-]", "_", sname).strip("_").lower()
             return f"{ds.name}_{sid}_{clean_name}"
 
+        effective_loocv_entries = (
+            False if args.no_eval_loocv else (True if args.eval_loocv is None else bool(args.eval_loocv))
+        )
         tasks = [
             MaterialPipelineTask(
                 material_path_or_name=_resolve_task_name(e.solute_id, e.solute_name),
@@ -1549,7 +1561,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 dielectric_constant=e.solvent_dielectric,
                 solute_id=e.solute_id,
                 solute_name=e.solute_name,
-                eval_loocv=args.eval_loocv,
+                eval_loocv=effective_loocv_entries,
                 save_artifacts=effective_save_artifacts,
             )
             for e in entries
@@ -1562,6 +1574,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 1
 
         target_solvent = args.solvent or ("water" if (args.verify_freesolv or args.dataset == "freesolv") else "vacuum")
+        effective_loocv_tasks = False if args.no_eval_loocv else bool(args.eval_loocv)
         tasks = [
             MaterialPipelineTask(
                 material_path_or_name=m,
@@ -1585,7 +1598,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 energy_engine=args.energy_engine,
                 force_egnn=args.force_egnn,
                 solvent_name=target_solvent,
-                eval_loocv=args.eval_loocv,
+                eval_loocv=effective_loocv_tasks,
                 save_artifacts=effective_save_artifacts,
             )
             for m in materials

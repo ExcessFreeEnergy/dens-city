@@ -146,7 +146,8 @@ def verify_and_generate_benchmark_report(
         raw_name = mat_name.upper()
         clean_name = re.sub(r"[^\w]", "", raw_name)
         res_sid = str(r.get("solute_id", "")).upper()
-        res_solvent = normalize_solvent_name(r.get("solvent_name") or r.get("solvent", "water"))
+        raw_solv = r.get("solvent_name") or r.get("solvent")
+        res_solvent = normalize_solvent_name(raw_solv) if raw_solv else "vacuum"
 
         candidate_keys: List[str] = []
         if res_sid:
@@ -178,20 +179,8 @@ def verify_and_generate_benchmark_report(
                             matched_entry = e
                             break
                     if matched_entry is None and len(entries_by_solute[k]) == 1:
-                        matched_entry = entries_by_solute[k][0]
-                if matched_entry is not None:
-                    break
-
-        # 3. Substring matching fallback
-        if matched_entry is None:
-            for s_k, e_list in entries_by_solute.items():
-                if len(s_k) > 3 and (s_k in clean_name or clean_name in s_k):
-                    for e in e_list:
-                        if normalize_solvent_name(e.solvent_name) == res_solvent:
-                            matched_entry = e
-                            break
-                    if matched_entry is None and len(e_list) == 1:
-                        matched_entry = e_list[0]
+                        if normalize_solvent_name(entries_by_solute[k][0].solvent_name) == res_solvent:
+                            matched_entry = entries_by_solute[k][0]
                 if matched_entry is not None:
                     break
 
@@ -486,7 +475,7 @@ def verify_pipeline_against_dataset(
     energy_engine: str = "classical",
     force_egnn: bool = False,
     batch_size: Optional[int] = None,
-    eval_loocv: bool = False,
+    eval_loocv: bool = True,
 ) -> int:
     """Unified entrypoint for benchmark verification across FreeSolv, Solvatum, and custom datasets."""
     from dens_city.utils.benchmark_dataset import get_benchmark_dataset

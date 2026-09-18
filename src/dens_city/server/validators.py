@@ -12,7 +12,25 @@ from rdkit import Chem
 
 from dens_city.server.models import InvalidSMILESEntry, ValidationResponse
 
-ALLOWED_ATOMIC_NUMBERS = {1, 5, 6, 7, 8, 9, 14, 15, 16, 17, 35, 53}  # H, B, C, N, O, F, Si, P, S, Cl, Br, I
+ALLOWED_ATOMIC_NUMBERS = {
+    1,
+    2,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    14,
+    15,
+    16,
+    17,
+    18,
+    35,
+    36,
+    53,
+    54,
+}  # H, He, B, C, N, O, F, Ne, Si, P, S, Cl, Ar, Br, Kr, I, Xe
 
 
 def validate_single_smiles(smiles: str, index: int = 0) -> Optional[InvalidSMILESEntry]:
@@ -59,7 +77,7 @@ def validate_single_smiles(smiles: str, index: int = 0) -> Optional[InvalidSMILE
                 return InvalidSMILESEntry(
                     index=index,
                     smiles=smi_clean,
-                    reason=f"Unsupported element symbol '{atom.GetSymbol()}' (Z={z}). Allowed elements: H, B, C, N, O, F, Si, P, S, Cl, Br, I.",
+                    reason=f"Unsupported element symbol '{atom.GetSymbol()}' (Z={z}). Allowed elements: H, He, B, C, N, O, F, Ne, Si, P, S, Cl, Ar, Br, Kr, I, Xe.",
                     atom_index=atom.GetIdx(),
                 )
 
