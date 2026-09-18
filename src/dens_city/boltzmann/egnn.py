@@ -548,21 +548,51 @@ class EGNNForceField:
         else:
             cap_flat = None
 
-        # Execute single fused forward pass over all B * s conformers
-        q_pred, delta_vdw_mol, delta_vdw_atomic, delta_g_coop, graph_features = self.compute_solvation_readouts(
-            x=x_flat,
-            atomic_numbers=z_flat,
-            atom_mask=m_flat,
-            molecule_mask=mol_flat,
-            total_charge=tq_flat,
-            base_charges=bq_flat,
-            solvent_features=sf_flat,
-            solvent_hbond_capacity=cap_flat,
-            detach_trunk=detach_trunk,
-            return_global=True,
-        )
-        if detach_trunk:
-            Tensor.realize(q_pred, delta_vdw_mol, delta_g_coop, graph_features)
+        # Execute fused forward pass over all B * s conformers (chunked if > 1024 to respect GPU VRAM)
+        total_conf = B * s
+        max_chunk = 1024
+
+        if total_conf <= max_chunk:
+            q_pred, delta_vdw_mol, delta_vdw_atomic, delta_g_coop, graph_features = self.compute_solvation_readouts(
+                x=x_flat,
+                atomic_numbers=z_flat,
+                atom_mask=m_flat,
+                molecule_mask=mol_flat,
+                total_charge=tq_flat,
+                base_charges=bq_flat,
+                solvent_features=sf_flat,
+                solvent_hbond_capacity=cap_flat,
+                detach_trunk=detach_trunk,
+                return_global=True,
+            )
+            if detach_trunk:
+                Tensor.realize(q_pred, delta_vdw_mol, delta_g_coop, graph_features)
+        else:
+            q_list, vdw_list, gcoop_list, gf_list = [], [], [], []
+            for c_start in range(0, total_conf, max_chunk):
+                c_end = min(c_start + max_chunk, total_conf)
+                q_c, vdw_c, _, gcoop_c, gf_c = self.compute_solvation_readouts(
+                    x=x_flat[c_start:c_end],
+                    atomic_numbers=z_flat[c_start:c_end],
+                    atom_mask=m_flat[c_start:c_end],
+                    molecule_mask=mol_flat[c_start:c_end] if mol_flat is not None else None,
+                    total_charge=tq_flat[c_start:c_end] if tq_flat is not None else None,
+                    base_charges=bq_flat[c_start:c_end] if bq_flat is not None else None,
+                    solvent_features=sf_flat[c_start:c_end] if sf_flat is not None else None,
+                    solvent_hbond_capacity=cap_flat[c_start:c_end] if cap_flat is not None else None,
+                    detach_trunk=detach_trunk,
+                    return_global=True,
+                )
+                if detach_trunk:
+                    Tensor.realize(q_c, vdw_c, gcoop_c, gf_c)
+                q_list.append(q_c)
+                vdw_list.append(vdw_c)
+                gcoop_list.append(gcoop_c)
+                gf_list.append(gf_c)
+            q_pred = Tensor.cat(*q_list, dim=0)
+            delta_vdw_mol = Tensor.cat(*vdw_list, dim=0)
+            delta_g_coop = Tensor.cat(*gcoop_list, dim=0)
+            graph_features = Tensor.cat(*gf_list, dim=0)
 
         if gb_solver is None:
             gb_solver = self.gb_solver
@@ -579,15 +609,32 @@ class EGNNForceField:
         else:
             diel_flat = float(dielectric_constant)
 
-        gb_tensor = gb_solver.compute_solvation_free_energy(
-            x=x_flat,
-            charges=q_pred,
-            atomic_numbers=z_flat,
-            atom_mask=m_flat,
-            dielectric_constant=diel_flat,
-        )
-        if detach_trunk:
-            gb_tensor = gb_tensor.realize()
+        if total_conf <= max_chunk:
+            gb_tensor = gb_solver.compute_solvation_free_energy(
+                x=x_flat,
+                charges=q_pred,
+                atomic_numbers=z_flat,
+                atom_mask=m_flat,
+                dielectric_constant=diel_flat,
+            )
+            if detach_trunk:
+                gb_tensor = gb_tensor.realize()
+        else:
+            gb_list = []
+            for c_start in range(0, total_conf, max_chunk):
+                c_end = min(c_start + max_chunk, total_conf)
+                d_c = diel_flat[c_start:c_end] if isinstance(diel_flat, Tensor) else diel_flat
+                gb_c = gb_solver.compute_solvation_free_energy(
+                    x=x_flat[c_start:c_end],
+                    charges=q_pred[c_start:c_end],
+                    atomic_numbers=z_flat[c_start:c_end],
+                    atom_mask=m_flat[c_start:c_end],
+                    dielectric_constant=d_c,
+                )
+                if detach_trunk:
+                    gb_c = gb_c.realize()
+                gb_list.append(gb_c)
+            gb_tensor = Tensor.cat(*gb_list, dim=0)
 
         # Normalized Boltzmann weights: w_k \propto exp(-\Delta E_k / k_B T)
         kb = 0.001987204  # kcal / (mol * K)

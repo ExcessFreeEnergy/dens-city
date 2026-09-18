@@ -149,6 +149,7 @@ class MaterialPipelineTask:
     formal_charge: Optional[float] = None
     solute_id: Optional[str] = None
     solute_name: Optional[str] = None
+    save_artifacts: bool = True
 
 
 @dataclass
@@ -548,10 +549,14 @@ class AsyncArtifactWriter:
     to prevent blocking or halting device execution.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, enabled: bool = True) -> None:
+        self.enabled = enabled
         self.q: queue.Queue = queue.Queue()
-        self._thread = threading.Thread(target=self._worker, daemon=True)
-        self._thread.start()
+        if self.enabled:
+            self._thread: Optional[threading.Thread] = threading.Thread(target=self._worker, daemon=True)
+            self._thread.start()
+        else:
+            self._thread = None
 
     def _worker(self) -> None:
         while True:
@@ -581,12 +586,18 @@ class AsyncArtifactWriter:
                 self.q.task_done()
 
     def write_npy(self, path: str, arr: np.ndarray) -> None:
+        if not self.enabled:
+            return
         self.q.put(("npy", path, arr))
 
     def write_csv(self, path: str, header: str, data: np.ndarray) -> None:
+        if not self.enabled:
+            return
         self.q.put(("csv", path, (header, data)))
 
     def write_txt(self, path: str, text: str) -> None:
+        if not self.enabled:
+            return
         self.q.put(("txt", path, text))
 
     def write_xyz(
@@ -597,15 +608,23 @@ class AsyncArtifactWriter:
         energies: Optional[List[float]] = None,
         material_name: str = "",
     ) -> None:
+        if not self.enabled:
+            return
         self.q.put(("xyz", path, (coords, site_names, energies, material_name)))
 
     def write_npz(self, path: str, np_dict: Dict[str, np.ndarray]) -> None:
+        if not self.enabled:
+            return
         self.q.put(("npz", path, np_dict))
 
     def flush(self) -> None:
+        if not self.enabled or self._thread is None:
+            return
         self.q.join()
 
     def close(self) -> None:
+        if not self.enabled or self._thread is None:
+            return
         self.q.put(None)
         self._thread.join()
 
@@ -765,9 +784,10 @@ class AsyncBatchPrefetcher:
         for idx, mat, err in results:
             task = chunk[idx]
             mat_input = task.material_path_or_name or (mat.name if mat else f"mat_{idx}")
-            mat_basename = Path(mat_input).stem if os.path.exists(mat_input) or "/" in mat_input else str(mat_input)
+            mat_basename = Path(mat_input).stem if ("/" in str(mat_input) or "\\" in str(mat_input)) else str(mat_input)
             mat_out_dir = os.path.join(task.out_dir, mat_basename)
-            os.makedirs(mat_out_dir, exist_ok=True)
+            if getattr(task, "save_artifacts", False):
+                os.makedirs(mat_out_dir, exist_ok=True)
 
             if mat is not None:
                 loaded_materials.append(mat)
@@ -957,17 +977,18 @@ def execute_prepared_batch(
     final_cdft_loss = cdft_losses[-1] if cdft_losses else 0.0
 
     for local_idx, orig_idx in enumerate(task_indices):
-        mat = loaded_materials[local_idx]
-        rho = cdft_profiles[local_idx]
-        p_w = cdft_pressures[local_idx]
-        gamma = cdft_gammas[local_idx]
-        dz_val = batched_cdft.dz_vals[local_idx]
-        slit_w = batched_cdft.slit_widths[local_idx]
+        task = batch_tasks[orig_idx]
+        if async_writer and async_writer.enabled and getattr(task, "save_artifacts", False):
+            mat = loaded_materials[local_idx]
+            rho = cdft_profiles[local_idx]
+            p_w = cdft_pressures[local_idx]
+            gamma = cdft_gammas[local_idx]
+            dz_val = batched_cdft.dz_vals[local_idx]
+            slit_w = batched_cdft.slit_widths[local_idx]
 
-        m_raw = getattr(batch_tasks[orig_idx], "material_path_or_name", None) or mat.name
-        m_name = Path(m_raw).stem if (os.path.exists(str(m_raw)) or "/" in str(m_raw)) else mat.name
-        mat_out_dir = os.path.join(batch_tasks[orig_idx].out_dir, m_name)
-        if async_writer:
+            m_raw = getattr(task, "material_path_or_name", None) or mat.name
+            m_name = Path(m_raw).stem if ("/" in str(m_raw) or "\\" in str(m_raw)) else str(m_raw)
+            mat_out_dir = os.path.join(task.out_dir, m_name)
             async_writer.write_npy(os.path.join(mat_out_dir, "density_profile.npy"), rho)
             z_grid = np.linspace(0.5 * dz_val, slit_w - 0.5 * dz_val, batched_cdft.n_grid)
             async_writer.write_csv(
@@ -1054,8 +1075,11 @@ def execute_prepared_batch(
         t_bg = time.perf_counter() - t_bg_start
 
         # 3. Extract Per-Material Trajectories and Dispatch Async Writes
-        state_dict = nn.state.get_state_dict(flow)
-        np_weights = {k: v.numpy() for k, v in state_dict.items()}
+        if any(getattr(t, "save_artifacts", False) for t in batch_tasks):
+            state_dict = nn.state.get_state_dict(flow)
+            np_weights = {k: v.numpy() for k, v in state_dict.items()}
+        else:
+            np_weights = {}
 
         # Detach parameter gradients on global EGNN model per Rule 5
         egnn_model = get_global_egnn_model()
@@ -1094,13 +1118,17 @@ def execute_prepared_batch(
         get_solvent_properties,
     )
 
+    solvent_cache: Dict[
+        Tuple[str, float], Tuple[float, np.ndarray, float, float, float, float, float, float, float]
+    ] = {}
+
     for local_idx, orig_idx in enumerate(task_indices):
         mat = loaded_materials[local_idx]
         task = batch_tasks[orig_idx]
         batch_mol_mask[local_idx] = 1.0
 
         m_raw = getattr(task, "material_path_or_name", None) or mat.name
-        m_name = Path(m_raw).stem if (os.path.exists(str(m_raw)) or "/" in str(m_raw)) else mat.name
+        m_name = Path(m_raw).stem if ("/" in str(m_raw) or "\\" in str(m_raw)) else str(m_raw)
         mat_out_dir = os.path.join(task.out_dir, m_name)
         site_names = [s.site_name for s in mat.sites] if mat.sites else [m_name]
 
@@ -1115,7 +1143,13 @@ def execute_prepared_batch(
             else:
                 mat_coords = stacked_samples
 
-        if async_writer and not task.skip_bg and np_weights:
+        if (
+            async_writer
+            and async_writer.enabled
+            and getattr(task, "save_artifacts", False)
+            and not task.skip_bg
+            and np_weights
+        ):
             async_writer.write_xyz(
                 path=os.path.join(mat_out_dir, "trajectory.xyz"),
                 coords=mat_coords,
@@ -1149,21 +1183,21 @@ def execute_prepared_batch(
 
         if mat_coords is not None and len(mat_coords) > 0 and np.max(np.abs(mat_coords)) < 50.0:
             n_flow = min(s_fixed // 4, len(mat_coords))
-            for k in range(n_flow):
-                flow_c = mat_coords[k, :n_sites_real]
-                # Validate covalent bond lengths before admitting flow sample into ensemble
-                is_valid_flow = True
-                if bonds and len(bonds) > 0:
-                    for a1, a2, _ in bonds:
-                        if a1 < n_sites_real and a2 < n_sites_real:
-                            d0 = float(np.linalg.norm(x_ground[a1] - x_ground[a2]))
-                            dk = float(np.linalg.norm(flow_c[a1] - flow_c[a2]))
-                            if abs(dk - d0) > 0.35:
-                                is_valid_flow = False
-                                break
-                if is_valid_flow:
+            valid_bonds = [(b[0], b[1]) for b in bonds if b[0] < n_sites_real and b[1] < n_sites_real] if bonds else []
+            if valid_bonds:
+                b_arr = np.array(valid_bonds, dtype=np.int32)
+                d0 = np.linalg.norm(x_ground[b_arr[:, 0]] - x_ground[b_arr[:, 1]], axis=-1)
+                cand = mat_coords[:n_flow, :n_sites_real]
+                dk = np.linalg.norm(cand[:, b_arr[:, 0]] - cand[:, b_arr[:, 1]], axis=-1)
+                max_dev = np.max(np.abs(dk - d0), axis=-1)
+                for k in range(n_flow):
+                    if max_dev[k] <= 0.35:
+                        slot = s_fixed - 1 - k
+                        div_conf[slot, :n_sites_real] = cand[k]
+            else:
+                for k in range(n_flow):
                     slot = s_fixed - 1 - k
-                    div_conf[slot, :n_sites_real] = flow_c
+                    div_conf[slot, :n_sites_real] = mat_coords[k, :n_sites_real]
 
         delta_e = compute_conformer_internal_energy_diffs(div_conf[:, :n_sites_real], mat)
 
@@ -1183,44 +1217,72 @@ def execute_prepared_batch(
             eps_solvent = 1.0
             vdw_solv = 0.0
             batch_s_vec[local_idx] = get_solvent_descriptors_vector("water")
+            batch_hbond[local_idx] = 0.0
+            batch_dg_self_assoc[local_idx] = 0.0
         else:
-            if hasattr(task, "dielectric_constant") and task.dielectric_constant is not None:
-                eps_solvent = float(task.dielectric_constant)
+            solv_key = (s_name.lower(), round(temp_k, 2))
+            if solv_key in solvent_cache:
+                eps_cached, s_vec, hbond_cap, eta_solv, alpha_s, beta_s, solv_sigma, solv_rho, refr_idx = solvent_cache[
+                    solv_key
+                ]
+                eps_solvent = (
+                    float(task.dielectric_constant)
+                    if (hasattr(task, "dielectric_constant") and task.dielectric_constant is not None)
+                    else eps_cached
+                )
             else:
-                eps_solvent = get_solvent_dielectric(s_name, temp_k=temp_k)
+                eps_solvent = (
+                    float(task.dielectric_constant)
+                    if (hasattr(task, "dielectric_constant") and task.dielectric_constant is not None)
+                    else get_solvent_dielectric(s_name, temp_k=temp_k)
+                )
+                s_vec = get_solvent_descriptors_vector(s_name)
+                solv_props = get_solvent_properties(s_name)
+                hbond_cap = solv_props.hbond_capacity
+                eta_solv = (
+                    (np.pi / 6.0)
+                    * solv_props.density_g_cm3
+                    * 6.02214076e23
+                    / (solv_props.molecular_weight * 1e24)
+                    * (solv_props.kinetic_diameter_a**3)
+                )
+                alpha_s = solv_props.abraham_alpha
+                beta_s = solv_props.abraham_beta
+                solv_sigma = solv_props.kinetic_diameter_a
+                solv_rho = (solv_props.density_g_cm3 * 6.02214076e23) / (max(1.0, solv_props.molecular_weight) * 1e24)
+                refr_idx = solv_props.refractive_index
+                solvent_cache[solv_key] = (
+                    eps_solvent,
+                    s_vec,
+                    hbond_cap,
+                    eta_solv,
+                    alpha_s,
+                    beta_s,
+                    solv_sigma,
+                    solv_rho,
+                    refr_idx,
+                )
 
             if hasattr(task, "vdw_energy") and task.vdw_energy is not None:
                 vdw_solv = float(task.vdw_energy)
             else:
                 try:
-                    solv_props = get_solvent_properties(s_name)
-                    rho_s_a3 = (solv_props.density_g_cm3 * 6.02214076e23) / (
-                        max(1.0, solv_props.molecular_weight) * 1e24
-                    )
                     vdw_solv = mat.compute_solvation_in_solvent(
-                        solvent_sigma=solv_props.kinetic_diameter_a,
-                        solvent_rho=rho_s_a3,
-                        refractive_index=solv_props.refractive_index,
+                        solvent_sigma=solv_sigma,
+                        solvent_rho=solv_rho,
+                        refractive_index=refr_idx,
                         temp_k=temp_k,
                     )
                 except Exception:
                     vdw_solv = float(getattr(mat, "solvation_free_energy_kcal_mol", 0.0))
 
-            batch_s_vec[local_idx] = get_solvent_descriptors_vector(s_name)
-            solv_props = get_solvent_properties(s_name)
-            batch_hbond[local_idx] = solv_props.hbond_capacity
-            eta_solv = (
-                (np.pi / 6.0)
-                * solv_props.density_g_cm3
-                * 6.02214076e23
-                / (solv_props.molecular_weight * 1e24)
-                * (solv_props.kinetic_diameter_a**3)
-            )
+            batch_s_vec[local_idx] = s_vec
+            batch_hbond[local_idx] = hbond_cap
             batch_dg_self_assoc[local_idx] = compute_neat_liquid_self_association_correction(
                 solute_name=mat.name,
                 solvent_name=s_name,
-                alpha_s=solv_props.abraham_alpha,
-                beta_s=solv_props.abraham_beta,
+                alpha_s=alpha_s,
+                beta_s=beta_s,
                 packing_fraction=float(eta_solv),
                 temp_k=temp_k,
             )

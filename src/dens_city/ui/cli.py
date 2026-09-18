@@ -995,6 +995,18 @@ Execution Modes & Examples:
         default=False,
         help="Enable DEBUG=2 and write detailed per-material compiler logs to data/logs_<timestamp>/",
     )
+    perf_group.add_argument(
+        "--save-artifacts",
+        action="store_true",
+        default=None,
+        help="Write full per-material 3D trajectory (.xyz), flow weights (.npz), and cDFT density profiles to disk",
+    )
+    perf_group.add_argument(
+        "--no-save-artifacts",
+        action="store_false",
+        dest="save_artifacts",
+        help="Disable writing per-material trajectory and density profile files to disk (default for benchmarks)",
+    )
 
     return parser
 
@@ -1433,13 +1445,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     os.makedirs(out_dir, exist_ok=True)
     jsonl_log_path = os.path.join(out_dir, "pipeline_summary.jsonl")
 
-    # Auto-throttle batch size for EGNN to prevent GPU VRAM exhaustion from (B, 128, 128, 128) tensors
+    # Optimal batch size for EGNN to maximize GPU throughput while fitting within VRAM
     effective_engine = "egnn" if args.force_egnn else args.energy_engine
     if effective_engine in ("egnn", "auto") and "--batch-size" not in argv and "-b" not in argv:
-        args.batch_size = 32
+        args.batch_size = 64
         print(
             colored(
-                f"[ENGINE] Routing to {effective_engine.upper()} engine (auto-throttling batch size to 32 to optimize message passing VRAM)",
+                f"[ENGINE] Routing to {effective_engine.upper()} engine (setting batch size to 64 to maximize GPU throughput while respecting message passing VRAM)",
                 "cyan",
             )
         )
@@ -1450,6 +1462,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.debug:
         debug_log_dir = Path("data") / f"logs_{ts}"
         debug_log_dir.mkdir(parents=True, exist_ok=True)
+
+    is_large_benchmark = (
+        args.benchmark
+        or args.verify_solvatum
+        or args.verify_freesolv
+        or args.all_solvatum
+        or args.all_freesolv
+        or (args.materials == ["all"])
+    )
+    if args.save_artifacts is None:
+        effective_save_artifacts = False if is_large_benchmark else True
+    else:
+        effective_save_artifacts = bool(args.save_artifacts)
 
     if args.dataset == "solvatum":
         from dens_city.utils.benchmark_dataset import SolvatumDataset
@@ -1506,6 +1531,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 dielectric_constant=e.solvent_dielectric,
                 solute_id=e.solute_id,
                 solute_name=e.solute_name,
+                save_artifacts=effective_save_artifacts,
             )
             for e in entries
         ]
@@ -1540,6 +1566,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 energy_engine=args.energy_engine,
                 force_egnn=args.force_egnn,
                 solvent_name=target_solvent,
+                save_artifacts=effective_save_artifacts,
             )
             for m in materials
         ]
@@ -1588,7 +1615,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             tasks = tasks[completed_offset:]
 
     task_chunks = [tasks[i : i + args.batch_size] for i in range(0, len(tasks), args.batch_size)]
-    async_writer = AsyncArtifactWriter()
+    async_writer = AsyncArtifactWriter(enabled=effective_save_artifacts)
     prefetcher = AsyncBatchPrefetcher(
         task_chunks=task_chunks,
         batch_size=args.batch_size,
@@ -1644,7 +1671,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     try:
-        with open(out_dir / "batch_metadata.json", "w", encoding="utf-8") as f_meta:
+        with open(Path(out_dir) / "batch_metadata.json", "w", encoding="utf-8") as f_meta:
             json.dump(batch_metadata, f_meta, indent=2)
     except Exception as e:
         print(colored(f"  Warning saving batch_metadata.json: {e}", "yellow"))

@@ -162,6 +162,19 @@ class GeneralizedBornSolvation:
             x = x.reshape(1, -1, 3)
         B, N, _ = x.shape
 
+        if B > 1024:
+            desc_list = []
+            for b_start in range(0, B, 1024):
+                b_end = min(b_start + 1024, B)
+                desc_c = self.compute_solvent_descriptors(
+                    x=x[b_start:b_end],
+                    atomic_numbers=atomic_numbers[b_start:b_end],
+                    atom_mask=atom_mask[b_start:b_end] if atom_mask is not None else None,
+                    base_charges=base_charges[b_start:b_end] if base_charges is not None else None,
+                )
+                desc_list.append(desc_c)
+            return Tensor.cat(*desc_list, dim=0)
+
         if len(atomic_numbers.shape) == 1:
             atomic_numbers = atomic_numbers.reshape(B, N)
 

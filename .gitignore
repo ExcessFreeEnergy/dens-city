@@ -55,4 +55,7 @@ runs/
 docs/*
 !docs/HARNESS_MCP_SPEC.md
 
+# Scratch directory
+scratch/
+
 
