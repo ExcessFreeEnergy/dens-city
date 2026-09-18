@@ -207,7 +207,7 @@ uv run dens-city [MODE_SELECTOR] [OPTIONS...]
 - `--max-batches` : Maximum number of task batches to execute before halting (useful for profiling/validation).
 - `--workers`, `-w` : Concurrent worker processes (default: `min(4, CPU_COUNT)`).
 - `--timeout` : Maximum execution timeout per material in seconds (default: `180s`).
-- `--beam` : tinygrad compiler BEAM search optimization level (default: `0` to prevent JIT kernel exploration pauses on novel topologies).
+- `--beam` : tinygrad compiler BEAM search optimization level (default: `2`).
 - `--save-artifacts` : Persist full per-material 3D trajectory (`.xyz`), flow weights (`.npz`), and cDFT density profiles to disk (default: `False` to prevent disk bloat).
 - `--no-save-artifacts` : Explicitly disable writing per-material trajectory and density profiles to disk (default: `False`).
 - `--show-table`, `--verbose` : Display verbose row-by-row scrolling terminal table instead of the live TUI progress bar (default: `False`).

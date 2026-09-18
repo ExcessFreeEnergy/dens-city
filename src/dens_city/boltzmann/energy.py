@@ -661,9 +661,66 @@ class EGNNMicroscopicEnergy:
         )
         return q if is_batched else q.squeeze(0)
 
+    def reset_batch(self, batch: Any) -> None:
+        """
+        Re-binds molecular batch parameters in-place using .assign() without invalidating
+        the precompiled TinyJit execution graph.
+        """
+        self.batch = batch
+        if hasattr(batch, "batch_size"):
+            self.batch_size = batch.batch_size
+        if hasattr(batch, "n_particles"):
+            self.n_particles = batch.n_particles
+        if hasattr(batch, "atomic_numbers") and batch.atomic_numbers is not None:
+            if hasattr(self, "atomic_numbers") and self.atomic_numbers.shape == batch.atomic_numbers.shape:
+                self.atomic_numbers.assign(batch.atomic_numbers).realize()
+            else:
+                self.atomic_numbers = batch.atomic_numbers.realize()
+        if hasattr(batch, "atom_mask") and batch.atom_mask is not None:
+            if hasattr(self, "is_real_atom") and self.is_real_atom.shape == batch.atom_mask.shape:
+                self.is_real_atom.assign(batch.atom_mask).realize()
+            else:
+                self.is_real_atom = batch.atom_mask.realize()
+        if hasattr(batch, "molecule_mask") and batch.molecule_mask is not None:
+            if hasattr(self, "molecule_mask") and self.molecule_mask.shape == batch.molecule_mask.shape:
+                self.molecule_mask.assign(batch.molecule_mask).realize()
+            else:
+                self.molecule_mask = batch.molecule_mask.realize()
+        if hasattr(batch, "base_charges") and batch.base_charges is not None:
+            if self.base_charges is not None and self.base_charges.shape == batch.base_charges.shape:
+                self.base_charges.assign(batch.base_charges).realize()
+            else:
+                self.base_charges = batch.base_charges.realize()
+
     def __call__(self, pos: Tensor, shift: bool = True, regularize: bool = True) -> Tensor:
         """Computes total potential energy U(x) = U_egnn(x) + U_wall(z)."""
         u = self.compute_pair_energy(pos) + self.compute_wall_energy(pos)
         if regularize and self.e_high is not None:
             return regularize_energy(u, e_high=self.e_high, e_max=self.e_max)
         return u
+
+
+_GLOBAL_EGNN_ENERGY: Optional[EGNNMicroscopicEnergy] = None
+
+
+def get_or_create_egnn_energy(
+    material: Any,
+    egnn_ff: Optional[Any] = None,
+    batch_size: int = 64,
+    n_particles: int = 128,
+) -> EGNNMicroscopicEnergy:
+    """Returns a module-level cached singleton EGNNMicroscopicEnergy instance, reusing compiled JIT schedules."""
+    global _GLOBAL_EGNN_ENERGY
+    if (
+        _GLOBAL_EGNN_ENERGY is not None
+        and getattr(_GLOBAL_EGNN_ENERGY, "batch_size", None) == batch_size
+        and getattr(_GLOBAL_EGNN_ENERGY, "n_particles", None) == n_particles
+    ):
+        _GLOBAL_EGNN_ENERGY.reset_batch(material)
+        return _GLOBAL_EGNN_ENERGY
+
+    _GLOBAL_EGNN_ENERGY = EGNNMicroscopicEnergy(
+        material=material,
+        egnn_ff=egnn_ff,
+    )
+    return _GLOBAL_EGNN_ENERGY

@@ -52,6 +52,18 @@ def get_global_gb_solver(dielectric_constant: float) -> Any:
     return _GLOBAL_GB_SOLVERS[dielectric_constant]
 
 
+_GLOBAL_SOLVENT_CACHE: Dict[
+    Tuple[str, float], Tuple[float, np.ndarray, float, float, float, float, float, float, float, Optional[str]]
+] = {}
+_GLOBAL_SOLUTE_CONFORMER_CACHE: Dict[
+    Tuple[str, int, int],
+    Tuple[np.ndarray, np.ndarray, List[float], List[int], np.ndarray, np.ndarray, List[Tuple[int, int, str]]],
+] = {}
+_GLOBAL_SOLVATION_PAIR_CACHE: Dict[
+    Tuple[str, str, float],
+    Tuple[float, float],
+] = {}
+
 _GLOBAL_FLOW_GENERATOR: Optional[Any] = None
 
 
@@ -60,11 +72,11 @@ def get_or_create_flow_generator(energy_fn: Any, batch_size: int, n_atoms: int =
     global _GLOBAL_FLOW_GENERATOR
     from dens_city.boltzmann.bijectors import Base2CartesianFlow
 
-    dim = n_atoms * 3
+    expected_dim = 1 << ((n_atoms * 3 - 1).bit_length()) if n_atoms * 3 > 0 else 384
     if (
         _GLOBAL_FLOW_GENERATOR is not None
         and getattr(_GLOBAL_FLOW_GENERATOR, "batch_size", None) == batch_size
-        and getattr(_GLOBAL_FLOW_GENERATOR, "dim", None) == dim
+        and getattr(_GLOBAL_FLOW_GENERATOR, "dim", None) in (expected_dim, n_atoms * 3)
     ):
         _GLOBAL_FLOW_GENERATOR.reset_parameters(energy_fn=energy_fn)
         return _GLOBAL_FLOW_GENERATOR
@@ -818,6 +830,53 @@ class AsyncBatchPrefetcher:
                 eval_loocv=eval_loocv,
             )
 
+        # Background pre-warming of conformer and solvent caches during batch prefetch
+        for mat in loaded_materials:
+            n_sites_real = mat.num_sites
+            n_rot = getattr(mat, "num_rotatable_bonds", 0)
+            solute_key = (mat.name, n_sites_real, n_rot)
+            if solute_key not in _GLOBAL_SOLUTE_CONFORMER_CACHE:
+                x_ground = (
+                    np.array([[s.x, s.y, s.z] for s in mat.sites], dtype=np.float32)
+                    if mat.sites
+                    else np.zeros((max(1, n_sites_real), 3), dtype=np.float32)
+                )
+                z_list = (
+                    [getattr(s, "atomic_number", 6) for s in mat.sites] if mat.sites else [6] * max(1, n_sites_real)
+                )
+                bonds = getattr(mat, "bonds", [])
+                from dens_city.utils.materials import generate_conformer_rotamer_diversity
+
+                div_conf = generate_conformer_rotamer_diversity(
+                    coords=x_ground,
+                    atomic_numbers=z_list,
+                    bonds=bonds,
+                    n_rot=n_rot,
+                    n_conf=16,
+                    seed=42,
+                )
+                delta_e = compute_conformer_internal_energy_diffs(div_conf[:, :n_sites_real], mat)
+                bq_list = mat.base_charges or mat.compute_topological_base_charges(kappa=0.10, q_max=0.50)
+                z_np_arr = np.array(z_list, dtype=np.int32)
+                atom_counts = np.array(
+                    [
+                        float(np.sum(z_np_arr > 1)),
+                        float(np.sum(z_np_arr == 8)),
+                        float(np.sum(z_np_arr == 7)),
+                        float(np.sum(np.isin(z_np_arr, [9, 17, 35, 53]))),
+                    ],
+                    dtype=np.float32,
+                )
+                _GLOBAL_SOLUTE_CONFORMER_CACHE[solute_key] = (
+                    div_conf,
+                    delta_e,
+                    bq_list,
+                    z_list,
+                    atom_counts,
+                    x_ground,
+                    bonds,
+                )
+
         return PreparedMolecularBatch(
             tasks=chunk,
             batch_size=self.batch_size,
@@ -952,10 +1011,17 @@ def execute_prepared_batch(
         engine_type = "egnn"
 
     if engine_type == "egnn":
+        from dens_city.boltzmann.energy import get_or_create_egnn_energy
+
         energy_fn = (
             prepared_batch.energy_fn
             if (prepared_batch.energy_fn is not None and isinstance(prepared_batch.energy_fn, EGNNMicroscopicEnergy))
-            else EGNNMicroscopicEnergy(material=mol_batch, egnn_ff=get_global_egnn_model())
+            else get_or_create_egnn_energy(
+                material=mol_batch,
+                egnn_ff=get_global_egnn_model(),
+                batch_size=batch_size,
+                n_particles=128,
+            )
         )
     else:
         energy_fn = (
@@ -1117,14 +1183,6 @@ def execute_prepared_batch(
         get_solvent_properties,
     )
 
-    solvent_cache: Dict[
-        Tuple[str, float], Tuple[float, np.ndarray, float, float, float, float, float, float, float, Optional[str]]
-    ] = {}
-    solute_conformer_cache: Dict[
-        Tuple[str, int, int],
-        Tuple[np.ndarray, np.ndarray, List[float], List[int], np.ndarray],
-    ] = {}
-
     for local_idx, orig_idx in enumerate(task_indices):
         mat = loaded_materials[local_idx]
         task = batch_tasks[orig_idx]
@@ -1164,13 +1222,17 @@ def execute_prepared_batch(
                 np_dict=np_weights,
             )
 
-        # Conformer ensemble generation (s_fixed=16) with intra-batch caching
+        # Conformer ensemble generation (s_fixed=16) with persistent module caching
         n_sites_real = mat.num_sites
         n_rot = getattr(mat, "num_rotatable_bonds", 0)
         solute_key = (mat.name, n_sites_real, n_rot)
 
-        if solute_key in solute_conformer_cache:
-            div_conf, delta_e, bq_list, z_list, atom_counts = solute_conformer_cache[solute_key]
+        if solute_key in _GLOBAL_SOLUTE_CONFORMER_CACHE:
+            base_conf, base_delta_e, bq_list, z_list, atom_counts, x_ground, bonds = _GLOBAL_SOLUTE_CONFORMER_CACHE[
+                solute_key
+            ]
+            div_conf = base_conf.copy()
+            delta_e = base_delta_e.copy()
         else:
             x_ground = (
                 np.array([[s.x, s.y, s.z] for s in mat.sites], dtype=np.float32)
@@ -1188,27 +1250,6 @@ def execute_prepared_batch(
                 n_conf=s_fixed,
                 seed=42,
             )
-
-            if mat_coords is not None and len(mat_coords) > 0 and np.max(np.abs(mat_coords)) < 50.0:
-                n_flow = min(s_fixed // 4, len(mat_coords))
-                valid_bonds = (
-                    [(b[0], b[1]) for b in bonds if b[0] < n_sites_real and b[1] < n_sites_real] if bonds else []
-                )
-                if valid_bonds:
-                    b_arr = np.array(valid_bonds, dtype=np.int32)
-                    d0 = np.linalg.norm(x_ground[b_arr[:, 0]] - x_ground[b_arr[:, 1]], axis=-1)
-                    cand = mat_coords[:n_flow, :n_sites_real]
-                    dk = np.linalg.norm(cand[:, b_arr[:, 0]] - cand[:, b_arr[:, 1]], axis=-1)
-                    max_dev = np.max(np.abs(dk - d0), axis=-1)
-                    for k in range(n_flow):
-                        if max_dev[k] <= 0.35:
-                            slot = s_fixed - 1 - k
-                            div_conf[slot, :n_sites_real] = cand[k]
-                else:
-                    for k in range(n_flow):
-                        slot = s_fixed - 1 - k
-                        div_conf[slot, :n_sites_real] = mat_coords[k, :n_sites_real]
-
             delta_e = compute_conformer_internal_energy_diffs(div_conf[:, :n_sites_real], mat)
             bq_list = mat.base_charges or mat.compute_topological_base_charges(kappa=0.10, q_max=0.50)
             z_np_arr = np.array(z_list, dtype=np.int32)
@@ -1221,7 +1262,33 @@ def execute_prepared_batch(
                 ],
                 dtype=np.float32,
             )
-            solute_conformer_cache[solute_key] = (div_conf, delta_e, bq_list, z_list, atom_counts)
+            _GLOBAL_SOLUTE_CONFORMER_CACHE[solute_key] = (
+                div_conf.copy(),
+                delta_e.copy(),
+                bq_list,
+                z_list,
+                atom_counts,
+                x_ground,
+                bonds,
+            )
+
+        if mat_coords is not None and len(mat_coords) > 0 and np.max(np.abs(mat_coords)) < 50.0:
+            n_flow = min(s_fixed // 4, len(mat_coords))
+            valid_bonds = [(b[0], b[1]) for b in bonds if b[0] < n_sites_real and b[1] < n_sites_real] if bonds else []
+            if valid_bonds:
+                b_arr = np.array(valid_bonds, dtype=np.int32)
+                d0 = np.linalg.norm(x_ground[b_arr[:, 0]] - x_ground[b_arr[:, 1]], axis=-1)
+                cand = mat_coords[:n_flow, :n_sites_real]
+                dk = np.linalg.norm(cand[:, b_arr[:, 0]] - cand[:, b_arr[:, 1]], axis=-1)
+                max_dev = np.max(np.abs(dk - d0), axis=-1)
+                for k in range(n_flow):
+                    if max_dev[k] <= 0.35:
+                        slot = s_fixed - 1 - k
+                        div_conf[slot, :n_sites_real] = cand[k]
+            else:
+                for k in range(n_flow):
+                    slot = s_fixed - 1 - k
+                    div_conf[slot, :n_sites_real] = mat_coords[k, :n_sites_real]
 
         batch_x[local_idx, :, :n_sites_real] = div_conf[:, :n_sites_real]
         batch_z[local_idx, :n_sites_real] = z_list[:n_sites_real]
@@ -1243,7 +1310,7 @@ def execute_prepared_batch(
             batch_dg_self_assoc[local_idx] = 0.0
         else:
             solv_key = (s_name.lower(), round(temp_k, 2))
-            if solv_key in solvent_cache:
+            if solv_key in _GLOBAL_SOLVENT_CACHE:
                 (
                     eps_cached,
                     s_vec,
@@ -1255,7 +1322,7 @@ def execute_prepared_batch(
                     solv_rho,
                     refr_idx,
                     solv_smiles,
-                ) = solvent_cache[solv_key]
+                ) = _GLOBAL_SOLVENT_CACHE[solv_key]
                 eps_solvent = (
                     float(task.dielectric_constant)
                     if (hasattr(task, "dielectric_constant") and task.dielectric_constant is not None)
@@ -1283,7 +1350,7 @@ def execute_prepared_batch(
                 solv_rho = (solv_props.density_g_cm3 * 6.02214076e23) / (max(1.0, solv_props.molecular_weight) * 1e24)
                 refr_idx = solv_props.refractive_index
                 solv_smiles = getattr(solv_props, "smiles", None)
-                solvent_cache[solv_key] = (
+                _GLOBAL_SOLVENT_CACHE[solv_key] = (
                     eps_solvent,
                     s_vec,
                     hbond_cap,
@@ -1296,32 +1363,42 @@ def execute_prepared_batch(
                     solv_smiles,
                 )
 
-            if hasattr(task, "vdw_energy") and task.vdw_energy is not None:
-                vdw_solv = float(task.vdw_energy)
+            pair_key = (mat.name, s_name.lower(), round(temp_k, 2))
+            if pair_key in _GLOBAL_SOLVATION_PAIR_CACHE and (
+                not hasattr(task, "vdw_energy") or task.vdw_energy is None
+            ):
+                vdw_solv, dg_self_assoc = _GLOBAL_SOLVATION_PAIR_CACHE[pair_key]
             else:
-                try:
-                    vdw_solv = mat.compute_solvation_in_solvent(
-                        solvent_sigma=solv_sigma,
-                        solvent_rho=solv_rho,
-                        refractive_index=refr_idx,
-                        temp_k=temp_k,
-                    )
-                except Exception:
-                    vdw_solv = float(getattr(mat, "solvation_free_energy_kcal_mol", 0.0))
+                if hasattr(task, "vdw_energy") and task.vdw_energy is not None:
+                    vdw_solv = float(task.vdw_energy)
+                else:
+                    try:
+                        vdw_solv = mat.compute_solvation_in_solvent(
+                            solvent_sigma=solv_sigma,
+                            solvent_rho=solv_rho,
+                            refractive_index=refr_idx,
+                            temp_k=temp_k,
+                        )
+                    except Exception:
+                        vdw_solv = float(getattr(mat, "solvation_free_energy_kcal_mol", 0.0))
+
+                dg_self_assoc = compute_neat_liquid_self_association_correction(
+                    solute_name=mat.name,
+                    solvent_name=s_name,
+                    alpha_s=alpha_s,
+                    beta_s=beta_s,
+                    packing_fraction=float(eta_solv),
+                    temp_k=temp_k,
+                    solute=mat,
+                    solute_smiles=getattr(mat, "smiles", None),
+                    solvent_smiles=getattr(task, "solvent_smiles", None) or solv_smiles,
+                )
+                if not hasattr(task, "vdw_energy") or task.vdw_energy is None:
+                    _GLOBAL_SOLVATION_PAIR_CACHE[pair_key] = (vdw_solv, dg_self_assoc)
 
             batch_s_vec[local_idx, :7] = s_vec
             batch_hbond[local_idx] = hbond_cap
-            batch_dg_self_assoc[local_idx] = compute_neat_liquid_self_association_correction(
-                solute_name=mat.name,
-                solvent_name=s_name,
-                alpha_s=alpha_s,
-                beta_s=beta_s,
-                packing_fraction=float(eta_solv),
-                temp_k=temp_k,
-                solute=mat,
-                solute_smiles=getattr(mat, "smiles", None),
-                solvent_smiles=getattr(task, "solvent_smiles", None) or solv_smiles,
-            )
+            batch_dg_self_assoc[local_idx] = dg_self_assoc
 
         batch_dielectric[local_idx] = eps_solvent
         batch_vdw_solv[local_idx] = vdw_solv
