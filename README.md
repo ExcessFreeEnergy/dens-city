@@ -356,8 +356,8 @@ uv run dens-city --verify-freesolv --results-dir runs/batch_20260828
 | **Error Standard Deviation ($\sigma_{\rm err}$)** | `1.775 kcal/mol` | **`1.0268 kcal/mol`** | Narrow residual spread |
 | **Pearson Correlation ($R$)** | `0.710` | **`0.9074`** | High linear fidelity |
 | **Coefficient of Determination ($R^2$)** | `0.504` | **`0.8234`** | **63.4% More Variance Explained** |
-| **Total Benchmark Wall Time (5,952 pairs)** | ~80+ CPU hours (MD) | **`1136.49 seconds` (18.9 min)** | **>180x Throughput Acceleration** |
-| **Average Screening Throughput** | ~0.02 mol/s | **`5.24 molecules/second`** (0.191 s/pair) | Direct commodity GPU screening |
+| **Total Benchmark Wall Time (5,952 pairs)** | ~80+ CPU hours (MD) | **`148.05 seconds` (2.5 min)** | **>180x Throughput Acceleration** |
+| **Average Screening Throughput** | ~0.02 mol/s | **`40.20 molecules/second`** (0.025 s/pair) | Direct commodity GPU screening |
 <!-- SOLVATUM_BENCHMARK_TABLE_END -->
 
 ---
