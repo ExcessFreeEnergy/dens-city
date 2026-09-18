@@ -1002,8 +1002,8 @@ Execution Modes & Examples:
     perf_group.add_argument(
         "--beam",
         type=int,
-        default=0,
-        help="tinygrad compiler BEAM search optimization level (default: 0)",
+        default=2,
+        help="tinygrad compiler BEAM search optimization level (default: 2)",
     )
     perf_group.add_argument(
         "--benchmark",
@@ -1650,6 +1650,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
             tasks = tasks[completed_offset:]
 
+    prior_wall_time = 0.0
+    meta_file = Path(out_dir) / "batch_metadata.json"
+    if completed_offset > 0 and meta_file.exists():
+        try:
+            with open(meta_file, "r", encoding="utf-8") as f:
+                prior_meta = json.load(f)
+                prior_wall_time = float(prior_meta.get("total_wall_time_seconds", 0.0))
+        except Exception:
+            prior_wall_time = 0.0
+
     task_chunks = [tasks[i : i + args.batch_size] for i in range(0, len(tasks), args.batch_size)]
     if args.max_batches is not None:
         task_chunks = task_chunks[: args.max_batches]
@@ -1732,7 +1742,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         async_writer.flush()
         async_writer.close()
 
-    t_batch_total = time.perf_counter() - t_batch_start
+    t_batch_elapsed = time.perf_counter() - t_batch_start
+    newly_processed = max(1, len(results) - completed_offset)
+    slice_rate = newly_processed / max(t_batch_elapsed, 1e-6)
+
+    if completed_offset > 0:
+        if prior_wall_time > 0.0:
+            t_batch_total = prior_wall_time + t_batch_elapsed
+            effective_rate = len(results) / max(t_batch_total, 1e-6)
+        else:
+            # Estimate full run wall time based on observed throughput to prevent false 10x throughput spikes
+            t_batch_total = len(results) / slice_rate
+            effective_rate = slice_rate
+    else:
+        t_batch_total = t_batch_elapsed
+        effective_rate = len(results) / max(t_batch_total, 1e-6)
 
     n_success = sum(
         1 for r in results if r.status in [PipelineStatus.SUCCESS.value, PipelineStatus.SUCCESS_CDFT_ONLY.value]
@@ -1755,7 +1779,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "failed_materials": n_failed,
         "skipped_materials": n_skipped,
         "total_wall_time_seconds": float(t_batch_total),
-        "materials_per_second": float(len(results) / max(t_batch_total, 1e-6)),
+        "materials_per_second": float(effective_rate),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     try:

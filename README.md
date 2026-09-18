@@ -207,7 +207,7 @@ uv run dens-city [MODE_SELECTOR] [OPTIONS...]
 - `--max-batches` : Maximum number of task batches to execute before halting (useful for profiling/validation).
 - `--workers`, `-w` : Concurrent worker processes (default: `min(4, CPU_COUNT)`).
 - `--timeout` : Maximum execution timeout per material in seconds (default: `180s`).
-- `--beam` : tinygrad compiler BEAM search optimization level (default: `0` to prevent JIT kernel exploration pauses on novel topologies).
+- `--beam` : tinygrad compiler BEAM search optimization level (default: `2`).
 - `--save-artifacts` : Persist full per-material 3D trajectory (`.xyz`), flow weights (`.npz`), and cDFT density profiles to disk (default: `False` to prevent disk bloat).
 - `--no-save-artifacts` : Explicitly disable writing per-material trajectory and density profiles to disk (default: `False`).
 - `--show-table`, `--verbose` : Display verbose row-by-row scrolling terminal table instead of the live TUI progress bar (default: `False`).
@@ -429,8 +429,8 @@ uv run dens-city --wikiskill-consolidate
 | **Error Standard Deviation ($\sigma_{\rm err}$)** | `1.775 kcal/mol` | **`1.0268 kcal/mol`** | Narrow residual spread |
 | **Pearson Correlation ($R$)** | `0.710` | **`0.9074`** | High linear fidelity |
 | **Coefficient of Determination ($R^2$)** | `0.504` | **`0.8234`** | **63.4% More Variance Explained** |
-| **Total Benchmark Wall Time (5,952 pairs)** | ~80+ CPU hours (MD) | **`148.05 seconds` (2.5 min)** | **>180x Throughput Acceleration** |
-| **Average Screening Throughput** | ~0.02 mol/s | **`40.20 molecules/second`** (0.025 s/pair) | Direct commodity GPU screening |
+| **Total Benchmark Wall Time (5,952 pairs)** | ~80+ CPU hours (MD) | **`1,136.49 seconds` (18.9 min)** | **>250x Throughput Acceleration** |
+| **Average Screening Throughput** | ~0.02 mol/s | **`5.24 molecules/second`** (0.19 s/pair) | Direct commodity GPU screening |
 <!-- SOLVATUM_BENCHMARK_TABLE_END -->
 
 ---
