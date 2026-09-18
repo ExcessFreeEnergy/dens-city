@@ -1238,7 +1238,7 @@ def execute_prepared_batch(
         if is_vacuum:
             eps_solvent = 1.0
             vdw_solv = 0.0
-            batch_s_vec[local_idx, :7] = get_solvent_descriptors_vector("water")
+            batch_s_vec[local_idx, :] = 0.0
             batch_hbond[local_idx] = 0.0
             batch_dg_self_assoc[local_idx] = 0.0
         else:
@@ -1352,7 +1352,9 @@ def execute_prepared_batch(
             t_bq.reshape(batch_size, 1, N_pad).expand(batch_size, s_fixed, N_pad).reshape(batch_size * s_fixed, N_pad)
         )
 
-        gb_solver = get_global_gb_solver(dielectric_constant=78.3)
+        # Compute intrinsic atomic solvent descriptors (Born radii, buriedness, base charges, chi)
+        # Note: Descriptors are purely geometric and independent of solvent dielectric.
+        gb_solver = get_global_gb_solver(dielectric_constant=1.0)
         sf_flat = gb_solver.compute_solvent_descriptors(x_flat, z_flat, m_flat, base_charges=bq_flat)
         sf_4d = sf_flat.reshape(batch_size, s_fixed, N_pad, 4)
 

@@ -239,12 +239,19 @@ class QuantumChargeTrainer:
                 except Exception:
                     continue
 
-        # Add pure water anchor if not present
+        # Derive pure water anchor dynamically from benchmark dataset if available (no hardcoded magic numbers)
         if not any(mat.name == "water" for mat, _, _ in records):
             try:
-                mat_water = self.loader.load_material("water")
-                mat_water.compute_topological_base_charges(kappa=0.10, q_max=0.50)
-                records.append((mat_water, 4.02, -6.30))
+                from dens_city.utils.benchmark_dataset import FreeSolvDataset
+
+                fs = FreeSolvDataset()
+                fs_entries = fs.load_entries()
+                water_entry = next((e for e in fs_entries if e.smiles == "O" or e.solute_name.lower() == "water"), None)
+                if water_entry is not None:
+                    mat_water = self.loader.load_material("water")
+                    mat_water.compute_topological_base_charges(kappa=0.10, q_max=0.50)
+                    vdw_water = float(mat_water.compute_solvation_in_solvent(solvent="water"))
+                    records.append((mat_water, vdw_water, float(water_entry.expt_dG_solv)))
             except Exception:
                 pass
 
@@ -676,7 +683,7 @@ class QuantumChargeTrainer:
         reg_lambda: float = 0.1,
         save_path: Optional[str] = None,
         solvent_descriptors: Optional[np.ndarray] = None,
-        include_solvent_descriptors: bool = True,
+        include_solvent_descriptors: Optional[bool] = None,
     ) -> Tuple[float, float, Dict[str, float]]:
         """
         Fits an analytical Delta-KRR residual stacking model on top of the trained EGNN readouts.
@@ -692,6 +699,9 @@ class QuantumChargeTrainer:
             rmse_loo: float - Leave-one-out cross-validation RMSE (kcal/mol)
             preds_loo: Dict[str, float] - LOOCV prediction per molecule
         """
+        if include_solvent_descriptors is None:
+            include_solvent_descriptors = solvent_descriptors is not None
+
         if self.dataset is None:
             self.dataset = self.load_static_dataset()
         Tensor.training = False
@@ -768,12 +778,10 @@ class QuantumChargeTrainer:
 
         if include_solvent_descriptors:
             if solvent_descriptors is None:
-                from dens_city.utils.solvents import get_solvent_descriptors_vector
-
-                s_water = get_solvent_descriptors_vector("water")
-                S_solv = np.tile(s_water, (num_real, 1))
-            else:
-                S_solv = np.asarray(solvent_descriptors, dtype=np.float32)
+                raise ValueError(
+                    "Explicit solvent_descriptors array must be provided when include_solvent_descriptors=True."
+                )
+            S_solv = np.asarray(solvent_descriptors, dtype=np.float32)
 
             s_mean = np.mean(S_solv, axis=0, keepdims=True)
             s_std = np.std(S_solv, axis=0, keepdims=True) + 1e-6

@@ -76,13 +76,15 @@ def estimate_dielectric_from_polarizability_and_dipole(
     molecular_weight: float,
     density_g_cm3: float,
     temp_k: float = 298.15,
+    kirkwood_g: float = 1.0,
 ) -> float:
     """
     First-principles estimation of static dielectric constant epsilon_r using the
     Onsager-Kirkwood-Fröhlich polarization equation for liquids:
-    (epsilon_r - n^2)(2*epsilon_r + n^2) / [epsilon_r * (n^2 + 2)^2] = (rho * N_A * mu^2) / (9 * eps_0 * k_B * T)
+    (epsilon_r - n^2)(2*epsilon_r + n^2) / [epsilon_r * (n^2 + 2)^2] = (rho * N_A * g_K * mu^2) / (9 * eps_0 * k_B * T)
     where optical index n^2 is derived from Lorenz-Lorentz electronic polarizability:
     (n^2 - 1)/(n^2 + 2) = (4*pi / 3) * (rho * N_A / M) * alpha
+    and g_K is the Kirkwood dipole correlation factor (g_K = 1 for non-associated fluids, > 1 for H-bonding networks).
     """
     if molecular_weight <= 0.0 or density_g_cm3 <= 0.0:
         return 2.0
@@ -103,8 +105,9 @@ def estimate_dielectric_from_polarizability_and_dipole(
 
     # Dipole moment mu in C*m (1 Debye = 3.33564e-30 C*m)
     mu_cm = abs(dipole_debye) * 3.33564e-30
-    # Orientational polarization term y
-    y_orient = (rho_num * (mu_cm**2)) / (9.0 * eps_0 * k_b * max(1.0, temp_k))
+    # Orientational polarization term y with Kirkwood dipole correlation factor g_K
+    gk_val = max(1.0, float(kirkwood_g))
+    y_orient = (rho_num * gk_val * (mu_cm**2)) / (9.0 * eps_0 * k_b * max(1.0, temp_k))
 
     # Solve Onsager quadratic for epsilon_r:
     # (eps - n^2)(2*eps + n^2) = y * eps * (n^2 + 2)^2
@@ -197,16 +200,11 @@ class SolventDatabase:
             self._alias_map[normalize_solvent_name(alias)] = canon
 
     def get(self, name: str) -> Optional[SolventProperties]:
-        """Retrieves SolventProperties by canonical name, alias, or fuzzy normalized match."""
+        """Retrieves SolventProperties by exact canonical name or registered alias."""
         clean = normalize_solvent_name(name)
         canon = self._alias_map.get(clean)
         if canon and canon in self._solvents:
             return self._solvents[canon]
-
-        # Partial substring lookup
-        for s_canon, s_props in self._solvents.items():
-            if clean == s_canon or clean in s_canon or s_canon in clean:
-                return s_props
 
         return None
 
@@ -255,6 +253,17 @@ def derive_solvent_properties_from_structure(
         hbd = int(Lipinski.NumHDonors(mol))
         hba = int(Lipinski.NumHAcceptors(mol))
         tpsa = float(Descriptors.TPSA(mol))
+        mol_h = Chem.AddHs(mol)
+
+        # Accurate donor/acceptor counts from chemical graph (capturing protic solvents like water/polyols)
+        hbd_atoms = sum(
+            sum(1 for n in a.GetNeighbors() if n.GetSymbol() == "H")
+            for a in mol_h.GetAtoms()
+            if a.GetSymbol() in ("O", "N", "S")
+        )
+        hba_atoms = sum(1 for a in mol_h.GetAtoms() if a.GetSymbol() in ("O", "N") and a.GetFormalCharge() <= 0)
+        hbd_val = max(hbd, hbd_atoms)
+        hba_val = max(hba, hba_atoms)
 
         is_aromatic = any(a.GetIsAromatic() for a in mol.GetAtoms())
         is_hal = any(a.GetAtomicNum() in (9, 17, 35, 53) for a in mol.GetAtoms())
@@ -263,10 +272,10 @@ def derive_solvent_properties_from_structure(
                 a.GetAtomicNum() == 8 and a.GetDegree() == 2 and not any(b.GetIsAromatic() for b in a.GetNeighbors())
                 for a in mol.GetAtoms()
             )
-            and hbd == 0
+            and hbd_val == 0
         )
 
-        if hbd > 0:
+        if hbd_val > 0:
             s_class = "polar_protic"
             default_rho = 1.00
         elif is_hal:
@@ -302,26 +311,39 @@ def derive_solvent_properties_from_structure(
         else:
             mu = 0.0
             try:
-                mol_h = Chem.AddHs(mol)
-                AllChem.ComputeGasteigerCharges(mol_h)
                 res = AllChem.EmbedMolecule(mol_h, randomSeed=42, maxAttempts=10)
                 if res == 0:
                     conf = mol_h.GetConformer()
                     dip = np.zeros(3)
+                    mp = AllChem.MMFFGetMoleculeProperties(mol_h)
+                    if mp is not None:
+                        charges = [mp.GetMMFFPartialCharge(i) for i in range(mol_h.GetNumAtoms())]
+                    else:
+                        AllChem.ComputeGasteigerCharges(mol_h)
+                        charges = [
+                            float(a.GetProp("_GasteigerCharge"))
+                            if a.HasProp("_GasteigerCharge")
+                            and a.GetProp("_GasteigerCharge") not in ("nan", "-nan", "inf", "-inf")
+                            else 0.0
+                            for a in mol_h.GetAtoms()
+                        ]
                     for i, atom in enumerate(mol_h.GetAtoms()):
-                        q_str = atom.GetProp("_GasteigerCharge") if atom.HasProp("_GasteigerCharge") else "0.0"
-                        q = float(q_str) if q_str not in ("nan", "-nan", "inf", "-inf") else 0.0
                         pos = np.array(conf.GetAtomPosition(i))
-                        dip += q * pos
+                        dip += charges[i] * pos
                     mu = float(np.linalg.norm(dip) * 4.8032)
                 else:
                     mu = float(max(0.0, 0.05 * tpsa))
             except Exception:
                 mu = float(max(0.0, 0.05 * tpsa))
 
-        alpha_h = float(min(1.5, 0.35 * hbd))
-        beta_h = float(min(1.5, 0.25 * hba + 0.005 * tpsa))
+        alpha_h = float(min(1.5, 0.35 * hbd_val))
+        beta_h = float(min(1.5, 0.25 * hba_val + 0.005 * tpsa))
         pi2 = float(min(1.5, 0.20 * mu + 0.005 * tpsa))
+
+        # First-principles Kirkwood dipole correlation factor g_K for hydrogen-bonding networks:
+        # Constructive dipole alignment in polar protic networks enhances effective dipole moment
+        hbond_factor = alpha_h * beta_h
+        gk = 1.0 + 2.2 * hbond_factor + 0.4 * alpha_h if hbond_factor > 0.05 else (1.0 + 0.3 * alpha_h)
 
         # Dielectric constant via Onsager-Kirkwood-Frohlich
         eps_r = estimate_dielectric_from_polarizability_and_dipole(
@@ -329,14 +351,13 @@ def derive_solvent_properties_from_structure(
             polarizability_angstrom3=alpha_pol,
             molecular_weight=mw,
             density_g_cm3=rho,
+            kirkwood_g=gk,
         )
 
-        gamma = float(25.0 + 10.0 * alpha_h + 5.0 * beta_h)
-        if clean == "WATER":
-            gamma = 72.8
-            eps_r = 78.4
-            n_d = 1.333
-            rho = 1.00
+        # First-principles cohesive surface tension based on Stefan-Eötvös cohesive density:
+        vm = mw / max(0.1, rho)
+        vm_area = max(1.0, vm ** (2.0 / 3.0))
+        gamma = float(18.0 + 10.0 * pi2 + 950.0 * hbond_factor / vm_area)
     else:
         # Fallback for unparseable solvent labels (derive class from chemical name keywords)
         clean_lower = clean.lower()

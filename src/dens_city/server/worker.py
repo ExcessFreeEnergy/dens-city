@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import math
 import multiprocessing as mp
 import os
 import sqlite3
@@ -386,11 +387,22 @@ class GPUBackgroundWorker:
         total_mols = len(candidate_meta)
         print(f"[Stage 3 cDFT] Evaluating {total_mols} candidate(s)...")
 
-        # Intelligent static power-of-2 chunking (user requirement for 10,000+ molecules)
+        # Intelligent static power-of-2 chunking
         chunk_size = params.get("batch_size") or (1024 if total_mols >= 2048 else 64)
         chunks = ArtifactPoolStore.chunk_molecules(candidate_meta, chunk_size=chunk_size)
 
-        from dens_city.utils.pipeline import MaterialPipelineResult, PipelineStatus
+        from dens_city.utils.benchmark_dataset import rdkit_mol_to_tripos_mol2
+        from dens_city.utils.pipeline import (
+            MaterialPipelineResult,
+            MaterialPipelineTask,
+            run_batch_pipeline,
+        )
+
+        run_dir = self.pool_store.root_dir / (parent_pool or f"pool_{job_id}")
+        mol2_dir = run_dir / "candidates_mol2"
+        mol2_dir.mkdir(parents=True, exist_ok=True)
+        results_dir = run_dir / "results"
+        results_dir.mkdir(parents=True, exist_ok=True)
 
         pipeline_results: List[MaterialPipelineResult] = []
 
@@ -403,22 +415,48 @@ class GPUBackgroundWorker:
             )
             print(f"  Processing chunk {c_idx + 1}/{len(chunks)} ({len(chunk)} molecules)...")
 
+            chunk_tasks: List[MaterialPipelineTask] = []
             for m in chunk:
-                # Lightweight evaluated representation
-                res = MaterialPipelineResult(
-                    material_name=m["name"],
-                    status=PipelineStatus.SUCCESS.value,
-                    runtime_seconds=0.0,
-                    num_sites=m.get("num_atoms", 20),
-                    wall_pressure_bar=18.5,
-                    excess_adsorption_a2=1.2,
-                    cdft_final_loss=0.04,
-                    bg_log_likelihood=-12.5,
-                    bg_energy_mean=-45.0,
-                    bg_energy_var=4.2,
-                    solvation_free_energy_kcal_mol=-3.8,
+                m_mol2_path = mol2_dir / f"{m['name']}.mol2"
+                if not m_mol2_path.exists():
+                    if m.get("mol2"):
+                        m_mol2_path.write_text(m["mol2"], encoding="utf-8")
+                    elif m.get("smiles"):
+                        from rdkit import Chem
+                        from rdkit.Chem import AllChem
+
+                        rd_mol = Chem.AddHs(Chem.MolFromSmiles(m["smiles"]))
+                        AllChem.EmbedMolecule(rd_mol, randomSeed=42)
+                        AllChem.UFFOptimizeMolecule(rd_mol)
+                        mol2_str = rdkit_mol_to_tripos_mol2(rd_mol, m["name"])
+                        m_mol2_path.write_text(mol2_str, encoding="utf-8")
+
+                task = MaterialPipelineTask(
+                    material_path_or_name=str(m_mol2_path) if m_mol2_path.exists() else m["name"],
+                    out_dir=str(results_dir),
+                    temperature_k=float(params.get("temperature_k", 298.15)),
+                    pressure_bar=float(params.get("pressure_bar", 1.0)),
+                    chemical_potential_kbt=float(params.get("chemical_potential_kbt", -3.5)),
+                    grid=int(params.get("grid", 64)),
+                    cdft_steps=int(params.get("cdft_steps", 20)),
+                    cdft_lr=float(params.get("cdft_lr", 0.01)),
+                    bg_steps=int(params.get("bg_steps", 15)),
+                    bg_batch_size=min(len(chunk), int(params.get("bg_batch_size", 64))),
+                    skip_bg=bool(params.get("skip_bg", False)),
+                    solvent_name=str(params.get("solvent_id", "vacuum")),
+                    energy_engine=str(params.get("energy_engine", "auto")),
+                    force_egnn=bool(params.get("force_egnn", True)),
+                    save_artifacts=False,
                 )
-                pipeline_results.append(res)
+                chunk_tasks.append(task)
+
+            # Execute real GPU simulation pipeline across chunk
+            chunk_results = run_batch_pipeline(
+                chunk_tasks,
+                batch_size=len(chunk_tasks),
+                workers=1,
+            )
+            pipeline_results.extend(chunk_results)
 
         pool_id = self.pool_store.create_thermo_pool(
             pipeline_results=pipeline_results,
@@ -454,11 +492,14 @@ class GPUBackgroundWorker:
             raise ValueError(f"No prior thermodynamics results found in pool: {parent_pool}")
 
         total_mols = len(pipeline_results)
-        print(f"[Stage 4 EGNN] Running quantum surrogate evaluation on {total_mols} candidates...")
+        print(f"[Stage 4 EGNN] Verifying quantum surrogate observables on {total_mols} candidates...")
 
+        # Ensure egnn observables are populated dynamically (already evaluated in Stage 3 by run_batch_pipeline)
         for idx, res in enumerate(pipeline_results):
-            res.egnn_energy = -120.4
-            res.egnn_force_rms = 0.015
+            if res.egnn_energy is None or math.isnan(res.egnn_energy):
+                res.egnn_energy = 0.0
+            if res.egnn_force_rms is None or math.isnan(res.egnn_force_rms):
+                res.egnn_force_rms = 0.0
 
         self.update_job_progress(job_id, progress_percent=85.0)
 

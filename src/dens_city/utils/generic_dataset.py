@@ -429,8 +429,9 @@ class GenericSolvationDataset(BenchmarkDataset):
         # 1. Check if candidate .mol2 already exists on disk
         candidates = [
             self.repo_root / "data" / "test_data" / f"{solute_id}.mol2",
-            self.repo_root / "data" / "test_data" / "solvatum" / f"{solute_id}.mol2",
-            self.repo_root / "FreeSolv" / "mol2files_gaff" / f"{solute_id}.mol2",
+            self.file_path.parent / f"{solute_id}.mol2",
+            self.file_path.parent / "mol2" / f"{solute_id}.mol2",
+            self.file_path.parent / "mol2files" / f"{solute_id}.mol2",
         ]
         for p in candidates:
             if p.exists():
