@@ -827,6 +827,28 @@ class MaterialLoader:
             raise ValueError(f"No valid atom sites found in mol2 string for {identifier}")
 
         # Extract explicit dihedral quadruplets (a, b, c, d)
+        return cls._build_material_from_sites_and_bonds(
+            sites=sites,
+            bonds=bonds,
+            identifier=identifier,
+            temperature_k=temperature_k,
+            bulk_density_a3=bulk_density_a3,
+            pressure_bar=pressure_bar,
+            chemical_potential_kbt=chemical_potential_kbt,
+        )
+
+    @classmethod
+    def _build_material_from_sites_and_bonds(
+        cls,
+        sites: List[AtomSite],
+        bonds: List[Tuple[int, int, str]],
+        identifier: str = "dynamic_mol",
+        temperature_k: Optional[float] = None,
+        bulk_density_a3: Optional[float] = None,
+        pressure_bar: Optional[float] = None,
+        chemical_potential_kbt: Optional[float] = None,
+    ) -> Material:
+        """Helper to construct Material, compute dihedral quadruplets, and solve EOS states."""
         dihedral_quadruplets: List[Tuple[int, int, int, int]] = []
         if bonds:
             adj: Dict[int, List[int]] = {}
@@ -909,6 +931,139 @@ class MaterialLoader:
         mat.compute_bulk_pressure()
         mat.compute_topological_base_charges()
         return mat
+
+    @classmethod
+    def from_smiles(
+        cls,
+        smiles: str,
+        identifier: str = "smiles_mol",
+        temperature_k: Optional[float] = None,
+        bulk_density_a3: Optional[float] = None,
+        pressure_bar: Optional[float] = None,
+        chemical_potential_kbt: Optional[float] = None,
+    ) -> Material:
+        """
+        Instantiates a dens-city Material directly from a SMILES string,
+        generating 3D conformer coordinates via ETKDGv3 and MMFF94.
+        """
+        from rdkit import Chem
+
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            raise ValueError(f"Failed to parse SMILES string: '{smiles}'")
+        return cls.from_rdkit_mol(
+            mol,
+            identifier=identifier,
+            temperature_k=temperature_k,
+            bulk_density_a3=bulk_density_a3,
+            pressure_bar=pressure_bar,
+            chemical_potential_kbt=chemical_potential_kbt,
+        )
+
+    @classmethod
+    def from_rdkit_mol(
+        cls,
+        mol: Any,
+        identifier: str = "rdkit_mol",
+        temperature_k: Optional[float] = None,
+        bulk_density_a3: Optional[float] = None,
+        pressure_bar: Optional[float] = None,
+        chemical_potential_kbt: Optional[float] = None,
+    ) -> Material:
+        """
+        Instantiates a dens-city Material directly from an RDKit Mol object in memory.
+        Automatically generates 3D conformer coordinates via ETKDGv3 if absent, computes
+        van der Waals parameters, mass, and classifies molecular dimension.
+        """
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+
+        ff_db = cls.get_forcefield_database()
+
+        mol_3d = Chem.Mol(mol)
+        if mol_3d.GetNumConformers() == 0:
+            mol_3d = Chem.AddHs(mol_3d)
+            res = -1
+            try:
+                res = AllChem.EmbedMolecule(mol_3d, AllChem.ETKDGv3())
+            except Exception:
+                res = AllChem.EmbedMolecule(mol_3d, randomSeed=42)
+            if res != 0:
+                AllChem.EmbedMolecule(mol_3d, randomSeed=42)
+            try:
+                AllChem.MMFFOptimizeMolecule(mol_3d, maxIters=200)
+            except Exception:
+                pass
+        elif mol_3d.GetNumAtoms() > mol_3d.GetNumHeavyAtoms() and not any(
+            a.GetAtomicNum() == 1 for a in mol_3d.GetAtoms()
+        ):
+            mol_3d = Chem.AddHs(mol_3d, addCoords=True)
+
+        conf = mol_3d.GetConformer()
+        sites: List[AtomSite] = []
+        bonds: List[Tuple[int, int, str]] = []
+
+        try:
+            AllChem.ComputeGasteigerCharges(mol_3d)
+        except Exception:
+            pass
+
+        ptable = Chem.GetPeriodicTable()
+
+        for i, atom in enumerate(mol_3d.GetAtoms()):
+            pos = conf.GetAtomPosition(i)
+            at_num = atom.GetAtomicNum()
+            elem = atom.GetSymbol()
+            mass = float(ptable.GetAtomicWeight(at_num))
+            q_str = atom.GetProp("_GasteigerCharge") if atom.HasProp("_GasteigerCharge") else "0.0"
+            q = float(q_str) if q_str not in ("nan", "-nan", "inf", "-inf") else 0.0
+
+            ff_entry = None
+            if elem in ff_db:
+                ff_entry = ff_db[elem]
+            elif elem.lower() in ff_db:
+                ff_entry = ff_db[elem.lower()]
+            elif "C" in ff_db:
+                ff_entry = ff_db["C"]
+
+            if ff_entry is not None:
+                sigma = float(ff_entry.get("sigma", 3.4))
+                eps_k = float(ff_entry.get("epsilon_k", 50.0))
+            else:
+                sigma = 3.4
+                eps_k = 50.0
+
+            eps_kcal = eps_k * 1.987204e-3
+            site = AtomSite(
+                site_name=f"{elem}{i + 1}",
+                atom_type=elem,
+                x=float(pos.x),
+                y=float(pos.y),
+                z=float(pos.z),
+                charge=q,
+                sigma=sigma,
+                epsilon_kcal=eps_kcal,
+                epsilon_k=eps_k,
+                mass=mass,
+                atomic_number=at_num,
+            )
+            sites.append(site)
+
+        for b in mol_3d.GetBonds():
+            b_order = b.GetBondTypeAsDouble()
+            b_str = "1" if b_order == 1.0 else ("2" if b_order == 2.0 else ("3" if b_order == 3.0 else "ar"))
+            bonds.append((b.GetBeginAtomIdx(), b.GetEndAtomIdx(), b_str))
+
+        name = identifier or (mol_3d.GetProp("_Name") if mol_3d.HasProp("_Name") else "rdkit_mol")
+        return cls._build_material_from_sites_and_bonds(
+            sites=sites,
+            bonds=bonds,
+            identifier=name,
+            temperature_k=temperature_k,
+            bulk_density_a3=bulk_density_a3,
+            pressure_bar=pressure_bar,
+            chemical_potential_kbt=chemical_potential_kbt,
+        )
 
     @classmethod
     def from_raw_arrays(
@@ -1253,6 +1408,8 @@ def compute_neat_liquid_self_association_correction(
     packing_fraction: float,
     temp_k: float = 298.15,
     solute: Optional[Any] = None,
+    solute_smiles: Optional[str] = None,
+    solvent_smiles: Optional[str] = None,
 ) -> float:
     """
     Computes first-principles self-association free energy correction for neat protic liquids
@@ -1269,12 +1426,22 @@ def compute_neat_liquid_self_association_correction(
     s_clean = re.sub(r"[^\w]", "", solute_name.upper())
     solv_clean = re.sub(r"[^\w]", "", solvent_name.upper())
 
-    # Check if this is a neat fluid (solute matches solvent name or contains it)
-    is_neat = (
-        (s_clean == solv_clean)
-        or (len(solv_clean) > 4 and solv_clean in s_clean)
-        or (len(s_clean) > 4 and s_clean in solv_clean)
-    )
+    # Check if this is a neat fluid strictly (exact name match or canonical SMILES match)
+    is_neat = s_clean == solv_clean
+    if not is_neat:
+        smi_sol = solute_smiles or getattr(solute, "smiles", None)
+        smi_solv = solvent_smiles
+        if smi_sol and smi_solv:
+            try:
+                from rdkit import Chem
+
+                m1 = Chem.MolFromSmiles(smi_sol)
+                m2 = Chem.MolFromSmiles(smi_solv)
+                if m1 and m2:
+                    is_neat = Chem.MolToSmiles(m1, isomericSmiles=False) == Chem.MolToSmiles(m2, isomericSmiles=False)
+            except Exception:
+                pass
+
     if not is_neat:
         return 0.0
 

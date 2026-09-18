@@ -106,11 +106,12 @@ def estimate_dielectric_from_polarizability_and_dipole(
     y_orient = (rho_num * (mu_cm**2)) / (9.0 * eps_0 * k_b * max(1.0, temp_k))
 
     # Solve Onsager quadratic for epsilon_r:
-    # 2*eps^2 + eps*(n^2 - y*(n^2+2)^2) - n^4 = 0
+    # (eps - n^2)(2*eps + n^2) = y * eps * (n^2 + 2)^2
+    # 2*eps^2 - eps*[n^2 + y*(n^2+2)^2] - n^4 = 0
     c_term = y_orient * ((n2 + 2.0) ** 2)
-    b_term = n2 - c_term
-    disc = (b_term**2) + 8.0 * (n2**2)
-    eps_r = (-b_term + math.sqrt(max(0.0, disc))) / 4.0
+    b_prime = n2 + c_term
+    disc = (b_prime**2) + 8.0 * (n2**2)
+    eps_r = (b_prime + math.sqrt(max(0.0, disc))) / 4.0
     return max(1.8, min(250.0, float(eps_r)))
 
 
@@ -229,73 +230,163 @@ def derive_solvent_properties_from_structure(
 ) -> SolventProperties:
     """
     First-principles and QSPR dynamic derivation of solvent parameters for arbitrary/unlisted fluids.
-    Calculates dielectric constant via Onsager-Kirkwood-Fröhlich, refractive index via Lorentz-Lorenz,
-    and packing diameter via dynamic liquid volume.
+    Calculates dielectric constant via Onsager-Kirkwood-Fröhlich, refractive index via Lorentz-Lorenz
+    and RDKit Molar Refractivity, and Abraham hydrogen-bonding factors via molecular graph descriptors.
     """
     clean = normalize_solvent_name(name)
 
-    # Heuristic chemical property estimations if not provided
-    mw = molecular_weight if molecular_weight is not None else 100.0
-    rho = density_g_cm3 if density_g_cm3 is not None else 0.85
-    mu = dipole_moment_debye if dipole_moment_debye is not None else 0.0
-    alpha_pol = polarizability_a3 if polarizability_a3 is not None else (mw / 10.0)
+    mol = None
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import AllChem, Crippen, Descriptors, Lipinski
 
-    # Class classification heuristic from name patterns
-    s_class = "alkane_nonpolar"
-    alpha_h = 0.0
-    beta_h = 0.0
-    pi2 = 0.0
+        # Attempt parsing SMILES or InChI
+        mol = Chem.MolFromSmiles(name)
+        if mol is None:
+            mol = Chem.MolFromInchi(name)
+    except Exception:
+        mol = None
 
-    if any(k in clean for k in ("OL", "WATER", "ACID", "PHENOL", "GLYCOL")):
-        s_class = "polar_protic"
-        alpha_h = 0.35
-        beta_h = 0.45
-        pi2 = 0.50
-        mu = max(1.6, mu)
-    elif any(k in clean for k in ("FORMAMIDE", "DMSO", "SULFOXIDE", "NITRILE", "ACETONE", "PYRIDINE")):
-        s_class = "polar_aprotic"
-        beta_h = 0.65
-        pi2 = 0.85
-        mu = max(2.8, mu)
-    elif any(k in clean for k in ("BENZENE", "TOLUENE", "XYLENE", "NAPHTH")):
-        s_class = "aromatic"
-        pi2 = 0.50
-        mu = max(0.3, mu)
-    elif any(k in clean for k in ("CHLOR", "BROM", "IODO", "FLUOR")):
-        s_class = "chlorinated"
-        pi2 = 0.60
-        mu = max(1.2, mu)
-    elif any(k in clean for k in ("ETHER", "FURAN", "DIOXANE")):
-        s_class = "ether"
-        beta_h = 0.40
-        pi2 = 0.45
-        mu = max(1.2, mu)
+    if mol is not None:
+        mw = float(molecular_weight if molecular_weight is not None else Descriptors.ExactMolWt(mol))
+        mr = float(Crippen.MolMR(mol))
+        hbd = int(Lipinski.NumHDonors(mol))
+        hba = int(Lipinski.NumHAcceptors(mol))
+        tpsa = float(Descriptors.TPSA(mol))
 
-    # 1. Lorentz-Lorenz optical index n_D:
-    # (n^2 - 1) / (n^2 + 2) = (4*pi/3) * (rho * N_A / M) * alpha
-    n_a = 6.02214076e23
-    rho_num = (rho * 1e6 / mw) * n_a
-    p_elec = (4.0 * math.pi / 3.0) * rho_num * (max(0.1, alpha_pol) * 1e-30)
-    p_elec = min(0.85, max(0.01, p_elec))
-    n2 = (1.0 + 2.0 * p_elec) / max(1e-4, 1.0 - p_elec)
-    n_d = math.sqrt(n2)
+        is_aromatic = any(a.GetIsAromatic() for a in mol.GetAtoms())
+        is_hal = any(a.GetAtomicNum() in (9, 17, 35, 53) for a in mol.GetAtoms())
+        has_ether = (
+            any(
+                a.GetAtomicNum() == 8 and a.GetDegree() == 2 and not any(b.GetIsAromatic() for b in a.GetNeighbors())
+                for a in mol.GetAtoms()
+            )
+            and hbd == 0
+        )
 
-    # 2. Dielectric constant from Onsager-Kirkwood-Fröhlich
-    eps_r = estimate_dielectric_from_polarizability_and_dipole(
-        dipole_debye=mu,
-        polarizability_angstrom3=alpha_pol,
-        molecular_weight=mw,
-        density_g_cm3=rho,
-    )
+        if hbd > 0:
+            s_class = "polar_protic"
+            default_rho = 1.00
+        elif is_hal:
+            s_class = "chlorinated"
+            default_rho = 1.30
+        elif is_aromatic:
+            s_class = "aromatic"
+            default_rho = 0.88
+        elif tpsa > 15.0:
+            s_class = "polar_aprotic"
+            default_rho = 0.95
+        elif has_ether:
+            s_class = "ether"
+            default_rho = 0.75
+        else:
+            s_class = "alkane_nonpolar"
+            default_rho = 0.75
 
-    # 3. Cavitation surface tension estimation via Sugden parachor or class baseline
-    gamma = 25.0
-    if s_class == "polar_protic":
-        gamma = 28.0 if "WATER" not in clean else 72.8
-    elif s_class == "aromatic":
-        gamma = 29.0
-    elif s_class == "chlorinated":
-        gamma = 28.0
+        rho = float(density_g_cm3 if density_g_cm3 is not None else default_rho)
+
+        # Electronic polarizability from Molar Refractivity:
+        # MR = (4*pi / 3) * N_A * alpha => alpha (A^3) = (3 / (4*pi*N_A)) * MR approx 0.39643 * MR
+        alpha_pol = float(polarizability_a3 if polarizability_a3 is not None else (0.39643 * mr))
+
+        # Optical index from Lorenz-Lorentz:
+        # (n^2 - 1) / (n^2 + 2) = (MR * rho) / mw
+        fn = min(0.45, max(0.05, (mr * rho) / max(1.0, mw)))
+        n_d = math.sqrt((1.0 + 2.0 * fn) / max(1e-4, 1.0 - fn))
+
+        # Dipole moment estimation
+        if dipole_moment_debye is not None:
+            mu = float(dipole_moment_debye)
+        else:
+            mu = 0.0
+            try:
+                mol_h = Chem.AddHs(mol)
+                AllChem.ComputeGasteigerCharges(mol_h)
+                res = AllChem.EmbedMolecule(mol_h, randomSeed=42, maxAttempts=10)
+                if res == 0:
+                    conf = mol_h.GetConformer()
+                    dip = np.zeros(3)
+                    for i, atom in enumerate(mol_h.GetAtoms()):
+                        q_str = atom.GetProp("_GasteigerCharge") if atom.HasProp("_GasteigerCharge") else "0.0"
+                        q = float(q_str) if q_str not in ("nan", "-nan", "inf", "-inf") else 0.0
+                        pos = np.array(conf.GetAtomPosition(i))
+                        dip += q * pos
+                    mu = float(np.linalg.norm(dip) * 4.8032)
+                else:
+                    mu = float(max(0.0, 0.05 * tpsa))
+            except Exception:
+                mu = float(max(0.0, 0.05 * tpsa))
+
+        alpha_h = float(min(1.5, 0.35 * hbd))
+        beta_h = float(min(1.5, 0.25 * hba + 0.005 * tpsa))
+        pi2 = float(min(1.5, 0.20 * mu + 0.005 * tpsa))
+
+        # Dielectric constant via Onsager-Kirkwood-Frohlich
+        eps_r = estimate_dielectric_from_polarizability_and_dipole(
+            dipole_debye=mu,
+            polarizability_angstrom3=alpha_pol,
+            molecular_weight=mw,
+            density_g_cm3=rho,
+        )
+
+        gamma = float(25.0 + 10.0 * alpha_h + 5.0 * beta_h)
+        if clean == "WATER":
+            gamma = 72.8
+            eps_r = 78.4
+            n_d = 1.333
+            rho = 1.00
+    else:
+        # Fallback for unparseable solvent labels (derive class from chemical name keywords)
+        clean_lower = clean.lower()
+        if any(k in clean_lower for k in ("ether", "ox", "furan", "thf", "glyme", "dioxane")):
+            s_class = "ether"
+            default_rho = 0.75
+            default_gamma = 24.0
+        elif any(k in clean_lower for k in ("chloro", "bromo", "fluoro", "iodo", "halo")):
+            s_class = "chlorinated"
+            default_rho = 1.30
+            default_gamma = 27.0
+        elif any(k in clean_lower for k in ("benzene", "tolu", "xyl", "aromat")):
+            s_class = "aromatic"
+            default_rho = 0.88
+            default_gamma = 28.5
+        elif any(k in clean_lower for k in ("ol", "water", "acid", "amine")):
+            s_class = "polar_protic"
+            default_rho = 1.00
+            default_gamma = 30.0
+        elif any(k in clean_lower for k in ("nitrile", "sulfoxide", "formamide", "ketone", "one", "ester", "acetate")):
+            s_class = "polar_aprotic"
+            default_rho = 0.95
+            default_gamma = 26.0
+        else:
+            s_class = "alkane_nonpolar"
+            default_rho = 0.75
+            default_gamma = 22.0
+
+        mw = molecular_weight if molecular_weight is not None else 100.0
+        rho = density_g_cm3 if density_g_cm3 is not None else default_rho
+        if dipole_moment_debye is not None:
+            mu = float(dipole_moment_debye)
+        else:
+            default_mu_map = {
+                "ether": 1.2,
+                "chlorinated": 1.5,
+                "polar_protic": 1.7,
+                "polar_aprotic": 2.8,
+                "aromatic": 0.3,
+                "alkane_nonpolar": 0.0,
+            }
+            mu = default_mu_map.get(s_class, 0.0)
+        alpha_pol = polarizability_a3 if polarizability_a3 is not None else (mw / 10.0)
+        alpha_h, beta_h, pi2 = 0.0, 0.0, 0.0
+        n_d = 1.40
+        gamma = default_gamma
+        eps_r = estimate_dielectric_from_polarizability_and_dipole(
+            dipole_debye=mu,
+            polarizability_angstrom3=alpha_pol,
+            molecular_weight=mw,
+            density_g_cm3=rho,
+        )
 
     props = SolventProperties(
         name=clean,

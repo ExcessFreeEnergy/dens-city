@@ -150,6 +150,7 @@ class MaterialPipelineTask:
     solute_id: Optional[str] = None
     solute_name: Optional[str] = None
     save_artifacts: bool = True
+    eval_loocv: bool = False
 
 
 @dataclass
@@ -187,6 +188,7 @@ class MaterialPipelineResult:
     egnn_energy: Optional[float] = None
     egnn_force_rms: Optional[float] = None
     krr_residual_kcal_mol: Optional[float] = None
+    krr_loocv_residual_kcal_mol: Optional[float] = None
     krr_epistemic_density: Optional[float] = None
     artifact_dir: Optional[str] = None
     artifacts: List[str] = field(default_factory=list)
@@ -693,6 +695,7 @@ class PreparedMolecularBatch:
     batched_cdft: Optional[BatchedTinyCDFT] = None
     energy_fn: Optional[MicroscopicEnergy] = None
     t_assembly_start: float = field(default_factory=time.perf_counter)
+    eval_loocv: bool = False
 
 
 class AsyncBatchPrefetcher:
@@ -806,6 +809,7 @@ class AsyncBatchPrefetcher:
                     artifact_dir=mat_out_dir,
                 )
 
+        eval_loocv = any(getattr(t, "eval_loocv", False) for t in chunk)
         if not loaded_materials:
             return PreparedMolecularBatch(
                 tasks=chunk,
@@ -814,6 +818,7 @@ class AsyncBatchPrefetcher:
                 task_indices=[],
                 results_map=results_map,
                 t_assembly_start=t_start,
+                eval_loocv=eval_loocv,
             )
 
         return PreparedMolecularBatch(
@@ -823,6 +828,7 @@ class AsyncBatchPrefetcher:
             task_indices=task_indices,
             results_map=results_map,
             t_assembly_start=t_start,
+            eval_loocv=eval_loocv,
         )
 
     def __iter__(self):
@@ -1103,7 +1109,7 @@ def execute_prepared_batch(
     batch_dielectric = np.ones(batch_size, dtype=np.float32)
     batch_hbond = np.zeros(batch_size, dtype=np.float32)
     batch_s_vec = np.zeros((batch_size, 8), dtype=np.float32)
-    batch_phys_desc = np.zeros((batch_size, 8), dtype=np.float32)
+    batch_atom_counts = np.zeros((batch_size, 4), dtype=np.float32)
     batch_vdw_solv = np.zeros(batch_size, dtype=np.float32)
     batch_dg_self_assoc = np.zeros(batch_size, dtype=np.float32)
 
@@ -1290,11 +1296,12 @@ def execute_prepared_batch(
         batch_vdw_solv[local_idx] = vdw_solv
 
         z_np_arr = np.array(z_list, dtype=np.int32)
-        n_heavy = float(np.sum(z_np_arr > 1))
-        n_o = float(np.sum(z_np_arr == 8))
-        n_n = float(np.sum(z_np_arr == 7))
-        n_hal = float(np.sum(np.isin(z_np_arr, [9, 17, 35, 53])))
-        batch_phys_desc[local_idx, :6] = [n_heavy, n_o, n_n, n_hal, 0.0, vdw_solv]
+        batch_atom_counts[local_idx] = [
+            float(np.sum(z_np_arr > 1)),
+            float(np.sum(z_np_arr == 8)),
+            float(np.sum(z_np_arr == 7)),
+            float(np.sum(np.isin(z_np_arr, [9, 17, 35, 53]))),
+        ]
 
     # Vectorized GPU Evaluation (Single fused pass across all batch slots)
     if run_egnn_readouts and len(loaded_materials) > 0:
@@ -1355,16 +1362,24 @@ def execute_prepared_batch(
             molecule_mask=t_mol_mask,
         )
 
-        from dens_city.boltzmann.train_charges import predict_krr_residual_tensor
+        from dens_city.boltzmann.train_charges import (
+            assemble_physical_descriptor_tensor,
+            predict_krr_residual_tensor,
+        )
 
-        d_phys_base = Tensor(batch_phys_desc, dtype=dtypes.float32)
-        gb_mean_col = gb_mean_t.reshape(batch_size, 1)
-        d_phys_t = Tensor.cat(d_phys_base[:, :4], gb_mean_col, d_phys_base[:, 5:], dim=1)
+        d_phys_t = assemble_physical_descriptor_tensor(
+            batch_atom_counts=batch_atom_counts,
+            gb_mean_tensor=gb_mean_t,
+            batch_vdw_solv=batch_vdw_solv,
+            batch_size=batch_size,
+        )
 
+        eval_loocv = getattr(prepared_batch, "eval_loocv", False)
         krr_res_t, krr_density_t = predict_krr_residual_tensor(
             z_mol=h_mol_mean_t,
             d_phys=d_phys_t,
             s_solv=batch_s_vec,
+            eval_loocv=eval_loocv,
         )
 
         Tensor.realize(total_solv_t, gb_mean_t, q_mean_t, h_mol_mean_t, u_egnn_t, f_egnn_t, krr_res_t, krr_density_t)
@@ -1450,6 +1465,7 @@ def execute_prepared_batch(
             egnn_energy=egnn_energy_val,
             egnn_force_rms=egnn_force_rms_val,
             krr_residual_kcal_mol=krr_res_val,
+            krr_loocv_residual_kcal_mol=krr_res_val if getattr(prepared_batch, "eval_loocv", False) else None,
             krr_epistemic_density=krr_density_val,
             solvent_name=getattr(task, "solvent_name", "vacuum") if task else "vacuum",
             solvent_dielectric=float(batch_dielectric[local_idx]),
@@ -1535,6 +1551,7 @@ def process_batched_materials(
     else:
         energy_fn = MicroscopicEnergy(material=mol_batch, pad_to_128=True)
 
+    eval_loocv = any(getattr(t, "eval_loocv", False) for t in batch_tasks)
     prepared = PreparedMolecularBatch(
         tasks=batch_tasks,
         batch_size=batch_size,
@@ -1545,5 +1562,6 @@ def process_batched_materials(
         batched_cdft=batched_cdft,
         energy_fn=energy_fn,
         t_assembly_start=t_start,
+        eval_loocv=eval_loocv,
     )
     return execute_prepared_batch(prepared, async_writer=async_writer)

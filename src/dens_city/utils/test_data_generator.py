@@ -431,7 +431,8 @@ def generate_test_data(
     target_dir = Path(dest_dir) if dest_dir else root / "data" / "test_data"
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    dataset_clean = dataset.lower().strip()
+    dataset_str = dataset or "freesolv"
+    dataset_clean = dataset_str.lower().strip()
     is_solvatum = populate_entire_solvatum or dataset_clean in ("solvatum", "all")
     is_freesolv = populate_entire_freesolv or dataset_clean in ("freesolv", "all")
 

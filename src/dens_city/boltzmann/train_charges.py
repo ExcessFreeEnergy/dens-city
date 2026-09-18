@@ -38,6 +38,56 @@ from dens_city.utils.materials import MaterialLoader
 PHYSICAL_DESCRIPTOR_WEIGHT: float = 2.0
 SOLVENT_DESCRIPTOR_WEIGHT: float = 2.5
 
+# ==============================================================================
+# Canonical Physical Descriptor & KRR Tensor Schema
+# ==============================================================================
+Z_FEATURE_DIM: int = 384
+D_REAL_DIM: int = 6
+D_PADDED_DIM: int = 8
+S_REAL_DIM: int = 7
+S_PADDED_DIM: int = 8
+KRR_PAD_TAIL_DIM: int = 112
+KRR_TOTAL_PADDED_DIM: int = 512  # 384 + 8 + 8 + 112 = 512 (2^9)
+
+D_PAD_DIM: int = D_PADDED_DIM - D_REAL_DIM  # 2
+S_PAD_DIM: int = S_PADDED_DIM - S_REAL_DIM  # 1
+
+# Physical descriptor indices:
+# 0: n_heavy
+# 1: n_oxygen
+# 2: n_nitrogen
+# 3: n_halogen
+# 4: born_electrostatic
+# 5: vdw_cavitation_dispersion
+D_IDX_HEAVY: int = 0
+D_IDX_OXYGEN: int = 1
+D_IDX_NITROGEN: int = 2
+D_IDX_HALOGEN: int = 3
+D_IDX_BORN: int = 4
+D_IDX_VDW: int = 5
+
+
+def assemble_physical_descriptor_tensor(
+    batch_atom_counts: np.ndarray,
+    gb_mean_tensor: Tensor,
+    batch_vdw_solv: np.ndarray | Tensor,
+    batch_size: int,
+) -> Tensor:
+    """
+    Constructs the standardized (B, 8) physical descriptor device tensor cleanly
+    without in-place slicing hacks or dummy column zero-overwrites.
+    Schema: [n_heavy, n_o, n_n, n_hal, gb_mean, vdw_solv, 0.0, 0.0]
+    """
+    gb_col = gb_mean_tensor.reshape(batch_size, 1)
+    vdw_t = (
+        Tensor(batch_vdw_solv, dtype=dtypes.float32).reshape(batch_size, 1)
+        if not isinstance(batch_vdw_solv, Tensor)
+        else batch_vdw_solv.reshape(batch_size, 1)
+    )
+    atom_t = Tensor(batch_atom_counts, dtype=dtypes.float32)
+    pad_col = Tensor.zeros(batch_size, D_PAD_DIM, dtype=dtypes.float32)
+    return Tensor.cat(atom_t, gb_col, vdw_t, pad_col, dim=1)
+
 
 @dataclass
 class ChargeTrainingConfig:
@@ -151,10 +201,9 @@ class QuantumChargeTrainer:
                     mat = dataset_provider.get_material(entry.solute_id) or self.loader.load_material(entry.solute_id)
                     if mat is None or mat.num_sites == 0:
                         continue
-                    mat.compute_topological_base_charges(kappa=0.10, q_max=0.50)
                     vdw = float(
-                        entry.calc_dG_solv
-                        if entry.calc_dG_solv is not None
+                        mat.compute_solvation_in_solvent(solvent="water")
+                        if hasattr(mat, "compute_solvation_in_solvent")
                         else getattr(mat, "solvation_free_energy_kcal_mol", 0.0)
                     )
                     expt = float(entry.expt_dG_solv)
@@ -1164,19 +1213,33 @@ def load_krr_device_tensors(
     n_padded = ((n_train_real + 15) // 16) * 16  # 5472 (multiple of 16 for optimal SIMD/warp alignment)
 
     # Pad features to pure power-of-2 (512 features: 384 + 8 + 8 + 112)
-    z_train_pad = np.zeros((n_padded, 512), dtype=np.float32)
-    z_train_pad[:n_train_real, :384] = z_train_raw[:, :384]
-    z_train_pad[:n_train_real, 384:390] = z_train_raw[:, 384:390]
-    z_train_pad[:n_train_real, 392:399] = z_train_raw[:, 390:397]
+    z_train_pad = np.zeros((n_padded, KRR_TOTAL_PADDED_DIM), dtype=np.float32)
+    z_train_pad[:n_train_real, :Z_FEATURE_DIM] = z_train_raw[:, :Z_FEATURE_DIM]
+    z_train_pad[
+        :n_train_real,
+        Z_FEATURE_DIM : Z_FEATURE_DIM + D_REAL_DIM,
+    ] = z_train_raw[:, Z_FEATURE_DIM : Z_FEATURE_DIM + D_REAL_DIM]
+    z_train_pad[
+        :n_train_real,
+        Z_FEATURE_DIM + D_PADDED_DIM : Z_FEATURE_DIM + D_PADDED_DIM + S_REAL_DIM,
+    ] = z_train_raw[:, Z_FEATURE_DIM + D_REAL_DIM : Z_FEATURE_DIM + D_REAL_DIM + S_REAL_DIM]
     z_train_sq_pad = np.sum(z_train_pad**2, axis=1, keepdims=True).T.astype(np.float32)  # (1, N_padded)
 
     alpha_pad = np.zeros((n_padded, 1), dtype=np.float32)
     alpha_pad[:n_train_real, :] = alpha_raw
 
+    diag_a_inv_tensor = None
+    if "diag_a_inv" in w_dict:
+        diag_a_inv_raw = np.asarray(w_dict["diag_a_inv"], dtype=np.float32).reshape(-1, 1)
+        diag_a_inv_pad = np.zeros((n_padded, 1), dtype=np.float32)
+        diag_a_inv_pad[:n_train_real, :] = diag_a_inv_raw
+        diag_a_inv_tensor = Tensor(diag_a_inv_pad, dtype=dtypes.float32).realize()
+
     device_dict = {
         "z_train": Tensor(z_train_pad, dtype=dtypes.float32).realize(),
         "z_train_sq": Tensor(z_train_sq_pad, dtype=dtypes.float32).realize(),
         "alpha": Tensor(alpha_pad, dtype=dtypes.float32).realize(),
+        "diag_a_inv": diag_a_inv_tensor,
         "z_mean": Tensor(z_mean, dtype=dtypes.float32).realize(),
         "z_std": Tensor(z_std, dtype=dtypes.float32).realize(),
         "d_mean": Tensor(d_mean, dtype=dtypes.float32).realize(),
@@ -1185,7 +1248,7 @@ def load_krr_device_tensors(
         "s_std": Tensor(s_std, dtype=dtypes.float32).realize(),
         "sigma": sigma,
         "n_train_real": n_train_real,
-        "n_features": 512,
+        "n_features": KRR_TOTAL_PADDED_DIM,
     }
     _KRR_DEVICE_CACHE[p_str] = device_dict
     return device_dict
@@ -1196,17 +1259,20 @@ def predict_krr_residual_tensor(
     d_phys: Tensor,
     s_solv: Optional[Union[str, np.ndarray, Tensor]] = None,
     weights: Union[str, Path, Dict[str, np.ndarray]] = "data/checkpoints/krr_residual_weights.npz",
+    eval_loocv: bool = False,
 ) -> Tuple[Tensor, Tensor]:
     """
     Pure tinygrad GPU tensor kernel predicting Delta-KRR residual and epistemic similarity density.
     Operates directly on device buffers with zero CPU host synchronization stalls.
     Guarantees strict power-of-2 dimension alignments (512 features, N % 16 == 0) for vectorized float4 loads.
+    Optionally applies exact Sherman-Morrison Leave-One-Out Cross-Validation (LOOCV) out-of-fold correction.
 
     Args:
         z_mol: Tensor shape (B, 384) or (384,)
         d_phys: Tensor shape (B, 6), (B, 8), (6,), or (8,)
         s_solv: Solvent name string, numpy array (B, 7/8), or Tensor (B, 7/8)
         weights: Checkpoint path or dictionary
+        eval_loocv: If True, subtracts alpha_j / [A^-1]_jj for matched training points (d2 < 1e-4) to report true LOOCV error
 
     Returns:
         (pred_tensor, epistemic_density_tensor): Each of shape (B, 1)
@@ -1247,12 +1313,12 @@ def predict_krr_residual_tensor(
 
     # Standardize features (extract real 6 and 7 active channels)
     z_norm = (z_q - dev["z_mean"]) / dev["z_std"]
-    d_norm = (d_q[:, :6] - dev["d_mean"]) / dev["d_std"]
-    s_norm = (s_t[:, :7] - dev["s_mean"]) / dev["s_std"]
+    d_norm = (d_q[:, :D_REAL_DIM] - dev["d_mean"]) / dev["d_std"]
+    s_norm = (s_t[:, :S_REAL_DIM] - dev["s_mean"]) / dev["s_std"]
 
-    pad_d = Tensor.zeros(b_sz, 2, dtype=dtypes.float32)
-    pad_s = Tensor.zeros(b_sz, 1, dtype=dtypes.float32)
-    pad_tail = Tensor.zeros(b_sz, 112, dtype=dtypes.float32)
+    pad_d = Tensor.zeros(b_sz, D_PAD_DIM, dtype=dtypes.float32)
+    pad_s = Tensor.zeros(b_sz, S_PAD_DIM, dtype=dtypes.float32)
+    pad_tail = Tensor.zeros(b_sz, KRR_PAD_TAIL_DIM, dtype=dtypes.float32)
 
     # Padded feature tensor: 384 + 6 + 2 + 7 + 1 + 112 = 512 (power-of-2: 2^9)
     z_comb = Tensor.cat(
@@ -1270,8 +1336,17 @@ def predict_krr_residual_tensor(
     d2 = (q_sq + dev["z_train_sq"] - 2.0 * z_comb.matmul(dev["z_train"].transpose())).maximum(0.0)  # (B, N_padded)
     k_mat = (-d2 / (2.0 * (dev["sigma"] ** 2))).exp()  # (B, N_padded)
 
-    # Linear dual regression prediction and epistemic density metric
+    # Linear dual regression prediction
     pred = k_mat.matmul(dev["alpha"])  # (B, 1)
+
+    # Sherman-Morrison Leave-One-Out Cross-Validation (LOOCV) correction:
+    # If query matches training sample j (d2 < 1e-4), subtract alpha_j / [A^-1]_jj to obtain out-of-fold prediction.
+    if eval_loocv and dev.get("diag_a_inv") is not None:
+        match_mask = (d2 < 1e-4).cast(dtypes.float32)  # (B, N_padded)
+        loocv_term = dev["alpha"] / dev["diag_a_inv"].maximum(1e-8)  # (N_padded, 1)
+        loocv_corr = match_mask.matmul(loocv_term)  # (B, 1)
+        pred = pred - loocv_corr
+
     density = k_mat[:, : dev["n_train_real"]].sum(axis=1, keepdim=True)  # (B, 1)
     return pred, density
 
@@ -1630,6 +1705,7 @@ def recalibrate_universal_krr(
     save_dict = {
         "alpha": alpha.astype(np.float32),
         "z_train": Z_comb.astype(np.float32),
+        "diag_a_inv": diag_A_inv.astype(np.float32),
         "z_mean": z_mean.astype(np.float32),
         "z_std": z_std.astype(np.float32),
         "d_mean": d_mean.astype(np.float32),

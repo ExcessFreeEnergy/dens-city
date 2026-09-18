@@ -350,9 +350,8 @@ Execution Modes & Examples:
     mode_group.add_argument(
         "--verify-dataset",
         type=str,
-        choices=["freesolv", "solvatum"],
         default=None,
-        help="Validate simulation results against specified dataset ('freesolv' or 'solvatum')",
+        help="Validate simulation results against specified dataset ('freesolv', 'solvatum', or file path)",
     )
     mode_group.add_argument(
         "--solvatum-ratchet-gate",
@@ -922,9 +921,14 @@ Execution Modes & Examples:
     data_group.add_argument(
         "--dataset",
         type=str,
-        choices=["freesolv", "solvatum", "all"],
-        default="freesolv",
-        help="Benchmark dataset target: 'freesolv' (642 aqueous molecules) or 'solvatum' (~6,200 multi-solvent pairs across 146 solvents)",
+        default=None,
+        help="Benchmark dataset target: 'freesolv', 'solvatum', or path to arbitrary .sdf, .csv, .tsv, .jsonl file",
+    )
+    data_group.add_argument(
+        "--eval-loocv",
+        action="store_true",
+        default=False,
+        help="Enable exact Leave-One-Out Cross-Validation (LOOCV) evaluation for KRR residuals on training benchmark samples",
     )
     data_group.add_argument(
         "--all-solvatum",
@@ -1394,7 +1398,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             dest_dir=target_dir,
             populate_entire_freesolv=args.all_freesolv and not is_solvatum,
             populate_entire_solvatum=is_solvatum,
-            dataset=args.dataset if not args.all_solvatum else "solvatum",
+            dataset=(args.dataset or "freesolv") if not args.all_solvatum else "solvatum",
         )
         return 0
 
@@ -1404,11 +1408,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.verify_freesolv or args.verify_solvatum or args.verify_dataset:
         from dens_city.utils.verification import verify_pipeline_against_dataset
 
-        target_dataset = (
-            "solvatum"
-            if args.verify_solvatum or args.verify_dataset == "solvatum" or args.dataset == "solvatum"
-            else "freesolv"
-        )
+        if args.verify_dataset:
+            target_dataset = args.verify_dataset
+        elif args.verify_solvatum or (args.dataset and "solvatum" in args.dataset.lower()):
+            target_dataset = "solvatum"
+        else:
+            target_dataset = "freesolv"
+
         is_pop_all = args.all_solvatum or args.all_freesolv
         engine_choice = args.energy_engine if ("--energy-engine" in argv or "-e" in argv) else "auto"
         return verify_pipeline_against_dataset(
@@ -1421,6 +1427,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             energy_engine=engine_choice,
             force_egnn=args.force_egnn,
             batch_size=args.batch_size if ("-b" in argv or "--batch-size" in argv) else None,
+            eval_loocv=args.eval_loocv,
         )
 
     # =========================================================================
@@ -1491,15 +1498,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     effective_save_artifacts = bool(args.save_artifacts)
 
-    if args.dataset == "solvatum":
-        from dens_city.utils.benchmark_dataset import SolvatumDataset
+    if args.dataset:
+        from dens_city.utils.benchmark_dataset import get_benchmark_dataset
 
-        sdf_path = Path(args.database) if args.database else Path("Solvatum/solvatum/data/solvatum.sdf")
-        if not sdf_path.exists():
-            alt = Path("solvatum/data/solvatum.sdf")
-            if alt.exists():
-                sdf_path = alt
-        ds = SolvatumDataset(db_path=sdf_path)
+        ds = get_benchmark_dataset(args.dataset, db_path=args.database)
         entries = ds.load_entries()
         if args.materials and args.materials != ["all"]:
             req_set = {m.lower().replace("_", "").replace("-", "") for m in args.materials}
@@ -1508,21 +1510,22 @@ def main(argv: Optional[List[str]] = None) -> int:
                 for e in entries
                 if e.solute_id.lower() in req_set
                 or e.solute_name.lower().replace("_", "").replace("-", "") in req_set
-                or f"solvatum_{e.solute_id}".lower() in req_set
+                or f"{ds.name}_{e.solute_id}".lower() in req_set
             ]
 
         unique_ids = list(set(e.solute_id for e in entries))
         solute_mats = {sid: ds.get_material(sid) for sid in unique_ids}
 
-        def _resolve_task_name(sid: str) -> str:
+        def _resolve_task_name(sid: str, sname: str) -> str:
             m = solute_mats.get(sid)
             if m is not None and m.name:
                 return m.name
-            return f"solvatum_{sid}"
+            clean_name = re.sub(r"[^\w\-]", "_", sname).strip("_").lower()
+            return f"{ds.name}_{sid}_{clean_name}"
 
         tasks = [
             MaterialPipelineTask(
-                material_path_or_name=_resolve_task_name(e.solute_id),
+                material_path_or_name=_resolve_task_name(e.solute_id, e.solute_name),
                 material_obj=solute_mats.get(e.solute_id),
                 out_dir=out_dir,
                 temperature_k=args.temp,
@@ -1546,6 +1549,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 dielectric_constant=e.solvent_dielectric,
                 solute_id=e.solute_id,
                 solute_name=e.solute_name,
+                eval_loocv=args.eval_loocv,
                 save_artifacts=effective_save_artifacts,
             )
             for e in entries
@@ -1581,6 +1585,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 energy_engine=args.energy_engine,
                 force_egnn=args.force_egnn,
                 solvent_name=target_solvent,
+                eval_loocv=args.eval_loocv,
                 save_artifacts=effective_save_artifacts,
             )
             for m in materials
