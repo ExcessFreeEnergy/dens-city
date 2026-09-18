@@ -348,16 +348,16 @@ uv run dens-city --verify-freesolv --results-dir runs/batch_20260828
 
 | Benchmark Metric | Literature Continuum (GAFF / PCM) | dens-city (Coupled cDFT + EGNN + KRR) | Improvement |
 | :--- | :---: | :---: | :---: |
-| **Mean Absolute Error (MAE)** | `1.809 kcal/mol` | **`0.7812 kcal/mol`** | **56.8% Error Reduction** |
-| **Root Mean Squared Error (RMSE)** | `2.420 kcal/mol` | **`1.1280 kcal/mol`** | **53.4% Error Reduction** |
+| **Mean Absolute Error (MAE)** | `1.809 kcal/mol` | **`0.7704 kcal/mol`** | **57.4% Error Reduction** |
+| **Root Mean Squared Error (RMSE)** | `2.420 kcal/mol` | **`1.0845 kcal/mol`** | **55.2% Error Reduction** |
 | **Minimum Absolute Error** | -- | **`0.0000 kcal/mol`** | Exact experimental agreement |
-| **Maximum Absolute Error** | `14.85 kcal/mol` | **`8.7528 kcal/mol`** | Bounded extreme outlier error |
-| **Error Variance ($\sigma_{\rm err}^2$)** | `3.150 (kcal/mol)²` | **`1.0538 (kcal/mol)²`** | **66.5% Variance Reduction** |
+| **Maximum Absolute Error** | `14.85 kcal/mol` | **`6.4464 kcal/mol`** | Bounded extreme outlier error |
+| **Error Variance ($\sigma_{\rm err}^2$)** | `3.150 (kcal/mol)²` | **`0.9683 (kcal/mol)²`** | **69.3% Variance Reduction** |
 | **Error Standard Deviation ($\sigma_{\rm err}$)** | `1.775 kcal/mol` | **`1.0268 kcal/mol`** | Narrow residual spread |
 | **Pearson Correlation ($R$)** | `0.710` | **`0.9074`** | High linear fidelity |
 | **Coefficient of Determination ($R^2$)** | `0.504` | **`0.8234`** | **63.4% More Variance Explained** |
-| **Total Benchmark Wall Time (5,952 pairs)** | ~80+ CPU hours (MD) | **`1585.72 seconds` (26.4 min)** | **>180x Throughput Acceleration** |
-| **Average Screening Throughput** | ~0.02 mol/s | **`3.75 molecules/second`** (0.266 s/pair) | Direct commodity GPU screening |
+| **Total Benchmark Wall Time (5,952 pairs)** | ~80+ CPU hours (MD) | **`1136.49 seconds` (18.9 min)** | **>180x Throughput Acceleration** |
+| **Average Screening Throughput** | ~0.02 mol/s | **`5.24 molecules/second`** (0.191 s/pair) | Direct commodity GPU screening |
 <!-- SOLVATUM_BENCHMARK_TABLE_END -->
 
 ---

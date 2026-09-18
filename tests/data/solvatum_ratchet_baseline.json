@@ -1,19 +1,19 @@
 {
   "benchmark": "solvatum",
   "total_materials": 5952,
-  "total_wall_time_seconds": 1585.717026860977,
-  "materials_per_second": 3.753507025009591,
-  "mae_kcal_mol": 0.7812435700249045,
-  "rmse_kcal_mol": 1.1280362960933816,
-  "mean_signed_bias_kcal_mol": -0.4675996418082863,
-  "max_absolute_error_kcal_mol": 8.752767962507384,
-  "error_variance": 1.0538164602848374,
+  "total_wall_time_seconds": 1136.4886675730231,
+  "materials_per_second": 5.237183765950367,
+  "mae_kcal_mol": 0.7703790244523969,
+  "rmse_kcal_mol": 1.084457053033497,
+  "mean_signed_bias_kcal_mol": -0.4557652919194001,
+  "max_absolute_error_kcal_mol": 6.4463743391553345,
+  "error_variance": 0.9683250985557208,
   "error_std_dev": 1.0268394621020984,
   "pearson_r": 0.9074231943663245,
   "r2": 0.8234168536739842,
   "max_allowed_slowdown_ratio": 1.1,
-  "last_updated_timestamp": "2026-09-18T06:13:47.077441+00:00",
-  "source_results_dir": "runs/solvatum_ratchet_20260918_054717",
+  "last_updated_timestamp": "2026-09-18T18:25:37.996288+00:00",
+  "source_results_dir": "runs/solvatum_ratchet_20260918_180638",
   "ratchet_history": [
     {
       "timestamp": "2026-09-17T16:55:52Z",
@@ -30,6 +30,14 @@
       "mae_kcal_mol": 0.7812435700249045,
       "rmse_kcal_mol": 1.1280362960933816,
       "note": "Ratcheted: speed 1656.11s -> 1585.72s, MAE 0.7814 -> 0.7812, RMSE 1.1284 -> 1.1280"
+    },
+    {
+      "timestamp": "2026-09-18T18:25:37.996288+00:00",
+      "commit": "c5b0958",
+      "total_wall_time_seconds": 1136.4886675730231,
+      "mae_kcal_mol": 0.7703790244523969,
+      "rmse_kcal_mol": 1.084457053033497,
+      "note": "Ratcheted: speed 1585.72s -> 1136.49s, MAE 0.7812 -> 0.7704, RMSE 1.1280 -> 1.0845"
     }
   ]
 }
