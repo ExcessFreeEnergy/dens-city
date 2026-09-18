@@ -3,6 +3,11 @@ dens-city: High-Performance Molecular Classical Density Functional Theory (cDFT)
 Powered by pure tinygrad tensor operations, autograd variational optimization, and JIT compilation.
 """
 
+import os
+
+# Prevent premature Tinygrad HCQ device hang watchdog timeouts during heavy compilation / large polyatomic batches
+os.environ.setdefault("HCQDEV_WAIT_TIMEOUT_MS", "300000")
+
 
 def _patch_tinygrad_nv_overflow():
     try:

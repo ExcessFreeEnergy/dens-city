@@ -160,7 +160,7 @@ def test_static_dataset_and_sequential_jit_eval():
     assert static_ds.coords_ensemble.shape == (static_ds.total_padded_molecules, static_ds.s_conformers, expected_N, 3)
 
     # Test KRR LOOCV analytical fit
-    mae_loo, rmse_loo, preds_loo = trainer.fit_krr_head(sigma=12.0, reg_lambda=1e-4)
+    mae_loo, rmse_loo, preds_loo = trainer.fit_krr_head(sigma=12.0, reg_lambda=1e-4, save_path=None)
     assert mae_loo > 0.0, f"Expected positive LOOCV MAE, got {mae_loo}"
     assert rmse_loo >= mae_loo
     assert len(preds_loo) == static_ds.num_real_molecules

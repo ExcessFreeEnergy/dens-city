@@ -625,7 +625,7 @@ class QuantumChargeTrainer:
         self,
         sigma: float = 10.0,
         reg_lambda: float = 0.1,
-        save_path: Optional[str] = "data/checkpoints/krr_residual_weights.npz",
+        save_path: Optional[str] = None,
         solvent_descriptors: Optional[np.ndarray] = None,
         include_solvent_descriptors: bool = True,
     ) -> Tuple[float, float, Dict[str, float]]:

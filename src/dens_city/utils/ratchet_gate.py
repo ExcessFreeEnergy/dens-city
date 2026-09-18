@@ -15,11 +15,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
+
+# Prevent premature Tinygrad HCQ device hang watchdog timeouts during heavy compilation / large polyatomic batches
+os.environ.setdefault("HCQDEV_WAIT_TIMEOUT_MS", "300000")
 
 try:
     from termcolor import colored
@@ -228,6 +232,8 @@ def ratchet_baseline(
         updated_baseline["max_absolute_error_kcal_mol"] = float(candidate_metrics["max_absolute_error_kcal_mol"])
     if candidate_metrics.get("error_variance") is not None:
         updated_baseline["error_variance"] = float(candidate_metrics["error_variance"])
+    if candidate_metrics.get("results_dir"):
+        updated_baseline["source_results_dir"] = str(candidate_metrics["results_dir"])
 
     now_iso = datetime.now(timezone.utc).isoformat()
     updated_baseline["last_updated_timestamp"] = now_iso
@@ -321,6 +327,7 @@ def extract_metrics_from_results_dir(
         "pearson_r": float(stats.get("r_corr", 0.0)),
         "r2": float(stats.get("r2", 0.0)),
         "verification_report_path": str(resolved_report_out),
+        "results_dir": str(results_dir),
     }
 
 
@@ -408,8 +415,13 @@ def evaluate_solvatum_ratchet_gate(
     if run_e2e:
         from dens_city.utils.verification import verify_pipeline_against_dataset
 
+        if not results_dir:
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            results_dir = Path("runs") / f"solvatum_ratchet_{ts}"
+
         print(colored("==================================================================", "cyan"))
         print(colored("  Executing Full Solvatum E2E Simulation for Master Ratchet Gate  ", "cyan", attrs=["bold"]))
+        print(colored(f"  Target Output: {results_dir}", "cyan"))
         print(colored("==================================================================", "cyan"))
         # Execute E2E benchmark
         code = verify_pipeline_against_dataset(
