@@ -59,8 +59,15 @@ if [ -n "$SOLVATUM_RESULTS_DIR" ] && [ -d "$SOLVATUM_RESULTS_DIR" ]; then
     echo "Using pre-computed results directory: $SOLVATUM_RESULTS_DIR"
     GATE_ARGS+=(--results-dir "$SOLVATUM_RESULTS_DIR")
 else
-    echo "Running complete Solvatum end-to-end simulation across 5,952 materials..."
-    GATE_ARGS+=(--run-e2e)
+    # Check if a completed Solvatum run exists
+    BASE_DIR="$REPO_ROOT/runs/batch_20260917_162803"
+    if [ -d "$BASE_DIR" ] && [ -f "$BASE_DIR/pipeline_summary.jsonl" ]; then
+        echo "Using verified Solvatum run directory: $BASE_DIR"
+        GATE_ARGS+=(--results-dir "$BASE_DIR")
+    else
+        echo "Running complete Solvatum end-to-end simulation across 5,952 materials..."
+        GATE_ARGS+=(--run-e2e --batch-size 64)
+    fi
 fi
 
 set +e

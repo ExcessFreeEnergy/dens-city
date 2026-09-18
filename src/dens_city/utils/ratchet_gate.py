@@ -392,7 +392,7 @@ def evaluate_solvatum_ratchet_gate(
     baseline_path: Optional[Path | str] = None,
     auto_ratchet: bool = True,
     report_out: Optional[Path | str] = None,
-    batch_size: int = 512,
+    batch_size: int = 64,
 ) -> Tuple[bool, Dict[str, Any], str]:
     """
     Executes the Solvatum E2E Ratchet Gate.
@@ -515,8 +515,8 @@ def main() -> int:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=512,
-        help="Batch size if running e2e simulation (default: 512).",
+        default=64,
+        help="Batch size if running e2e simulation (default: 64).",
     )
 
     args = parser.parse_args()

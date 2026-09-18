@@ -1416,7 +1416,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             baseline_path=args.database,
             auto_ratchet=not args.no_ratchet,
             report_out=args.report_out,
-            batch_size=args.batch_size if ("-b" in argv or "--batch-size" in argv) else 512,
+            batch_size=args.batch_size if ("-b" in argv or "--batch-size" in argv) else 64,
         )
         return 0 if passed else 1
 
