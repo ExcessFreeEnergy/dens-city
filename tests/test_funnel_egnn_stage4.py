@@ -5,7 +5,10 @@ multi-chunk graph severing, and quantum Pareto ranking.
 """
 
 import numpy as np
+import pytest
 from tinygrad import Tensor
+
+pytestmark = pytest.mark.gpu
 
 from dens_city.boltzmann.egnn import EGNNForceField
 from dens_city.utils.funnel_ranker import FunnelRanker

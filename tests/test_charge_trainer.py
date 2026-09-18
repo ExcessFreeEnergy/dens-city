@@ -3,7 +3,10 @@ Unit tests for QuantumChargeTrainer, trunk-freezing rule, and autograd gradient 
 """
 
 import numpy as np
+import pytest
 from tinygrad import Tensor, nn
+
+pytestmark = pytest.mark.gpu
 
 from dens_city.boltzmann.train_charges import PreprocessedBatch, QuantumChargeTrainer
 

@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.gpu
+
 from dens_city.utils.benchmark_dataset import (
     RT_LN10_KCAL_MOL,
     FreeSolvDataset,

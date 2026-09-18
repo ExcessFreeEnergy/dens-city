@@ -1008,6 +1008,8 @@ def execute_prepared_batch(
     # Check if skip_bg
     all_skip_bg = all(t.skip_bg for t in batch_tasks)
     if all_skip_bg:
+        t_batch_elapsed = time.perf_counter() - t_start
+        t_total_per_mat = t_batch_elapsed / max(1, len(loaded_materials))
         for local_idx, orig_idx in enumerate(task_indices):
             mat = loaded_materials[local_idx]
             task = batch_tasks[orig_idx]
@@ -1015,7 +1017,7 @@ def execute_prepared_batch(
             results_map[orig_idx] = MaterialPipelineResult(
                 material_name=mat.name,
                 status=PipelineStatus.SUCCESS_CDFT_ONLY.value,
-                runtime_seconds=time.perf_counter() - t_start,
+                runtime_seconds=t_total_per_mat,
                 cdft_runtime_seconds=t_cdft_per_mat,
                 num_sites=mat.num_sites,
                 temperature_k=mat.temperature_k,
@@ -1382,6 +1384,11 @@ def execute_prepared_batch(
         krr_res_np = np.zeros((batch_size, 1), dtype=np.float32)
         krr_density_np = np.zeros((batch_size, 1), dtype=np.float32)
 
+    t_batch_elapsed = time.perf_counter() - t_start
+    n_mats = max(1, len(loaded_materials))
+    t_total_per_mat = t_batch_elapsed / n_mats
+    t_bg_per_mat = t_bg / n_mats
+
     for local_idx, orig_idx in enumerate(task_indices):
         mat = loaded_materials[local_idx]
         task = batch_tasks[orig_idx]
@@ -1421,9 +1428,9 @@ def execute_prepared_batch(
             status=PipelineStatus.SUCCESS.value,
             solute_id=getattr(task, "solute_id", None),
             solute_name=getattr(task, "solute_name", None),
-            runtime_seconds=time.perf_counter() - t_start,
+            runtime_seconds=t_total_per_mat,
             cdft_runtime_seconds=t_cdft_per_mat,
-            bg_runtime_seconds=t_bg,
+            bg_runtime_seconds=t_bg_per_mat,
             num_sites=mat.num_sites,
             temperature_k=mat.temperature_k,
             bulk_density_a3=mat.bulk_density_a3,

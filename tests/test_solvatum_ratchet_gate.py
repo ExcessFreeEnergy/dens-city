@@ -184,3 +184,41 @@ def test_extract_metrics_from_baseline_results_dir():
     assert metrics["mae_kcal_mol"] == pytest.approx(0.7814, rel=1e-2)
     assert metrics["rmse_kcal_mol"] == pytest.approx(1.1284, rel=1e-2)
     assert metrics["total_materials"] == 5952
+
+
+def test_update_readme_benchmark_table_roundtrip(tmp_path):
+    """Verify that update_readme_benchmark_table accurately replaces sentinel block in markdown."""
+    from dens_city.utils.ratchet_gate import (
+        README_SENTINEL_END,
+        README_SENTINEL_START,
+        update_readme_benchmark_table,
+    )
+
+    fake_readme = tmp_path / "README.md"
+    fake_readme.write_text(
+        f"Header\n\n{README_SENTINEL_START}\nOld Table\n{README_SENTINEL_END}\n\nFooter\n",
+        encoding="utf-8",
+    )
+
+    baseline_data = {
+        "total_wall_time_seconds": 1500.0,
+        "mae_kcal_mol": 0.7500,
+        "rmse_kcal_mol": 1.1000,
+        "min_absolute_error_kcal_mol": 0.0,
+        "max_absolute_error_kcal_mol": 8.5,
+        "error_variance": 1.0,
+        "error_std_dev": 1.0,
+        "pearson_r": 0.91,
+        "r2": 0.83,
+        "materials_per_second": 3.968,
+    }
+
+    success = update_readme_benchmark_table(baseline_data, fake_readme)
+    assert success is True
+
+    new_content = fake_readme.read_text(encoding="utf-8")
+    assert "Header" in new_content
+    assert "Footer" in new_content
+    assert "1500.00 seconds" in new_content
+    assert "0.7500 kcal/mol" in new_content
+    assert "Old Table" not in new_content

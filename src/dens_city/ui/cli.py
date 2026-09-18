@@ -155,6 +155,9 @@ def print_banner(
         print(f"  Benchmark Profiler: {colored('ACTIVE (Measuring per-material throughput)', 'green')}")
     print(f"  Artifact Output   : {out_dir}")
     print("=" * 88)
+
+
+def print_table_header() -> None:
     print(f"{'Material':<20} | {'Sites':<5} | {'cDFT (s)':<8} | {'BG (s)':<8} | {'P_wall (bar)':<12} | {'Status':<16}")
     print("-" * 88)
 
@@ -170,8 +173,16 @@ def print_result_row(res: MaterialPipelineResult) -> None:
     }
     col = status_colors.get(res.status, "white")
     status_str = colored(res.status, col)
-    cdft_t_str = f"{res.cdft_runtime_seconds:6.2f}" if res.cdft_runtime_seconds > 0 else "  --  "
-    bg_t_str = f"{res.bg_runtime_seconds:6.2f}" if res.bg_runtime_seconds > 0 else "  --  "
+    cdft_t_str = (
+        f"{res.cdft_runtime_seconds:6.3f}s"
+        if res.cdft_runtime_seconds >= 0.005
+        else (f"{res.cdft_runtime_seconds * 1000:5.1f}ms" if res.cdft_runtime_seconds > 0 else "  --  ")
+    )
+    bg_t_str = (
+        f"{res.bg_runtime_seconds:6.3f}s"
+        if res.bg_runtime_seconds >= 0.005
+        else (f"{res.bg_runtime_seconds * 1000:5.1f}ms" if res.bg_runtime_seconds > 0 else "  --  ")
+    )
     p_wall_str = (
         f"{res.wall_pressure_bar:10.2f}"
         if res.status in [PipelineStatus.SUCCESS.value, PipelineStatus.SUCCESS_CDFT_ONLY.value]
@@ -1013,6 +1024,13 @@ Execution Modes & Examples:
         dest="save_artifacts",
         help="Disable writing per-material trajectory and density profile files to disk (default: False)",
     )
+    perf_group.add_argument(
+        "--show-table",
+        "--verbose",
+        action="store_true",
+        default=False,
+        help="Display verbose row-by-row scrolling terminal table instead of the live TUI progress bar (default: False)",
+    )
 
     return parser
 
@@ -1622,23 +1640,73 @@ def main(argv: Optional[List[str]] = None) -> int:
         energy_engine=args.energy_engine,
     ).start()
 
+    show_table = getattr(args, "show_table", False)
+    if show_table:
+        print_table_header()
+
+    from tqdm import tqdm
+
+    total_tasks = sum(len(c) for c in task_chunks)
+    total_chunks = len(task_chunks)
+
+    pbar = (
+        None
+        if show_table
+        else tqdm(
+            total=total_tasks,
+            desc="Simulating materials",
+            unit="mol",
+            dynamic_ncols=True,
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]",
+        )
+    )
+
     try:
         with open(jsonl_log_path, "a", encoding="utf-8") as jsonl_file:
-            for prepared_batch in prefetcher:
+            for chunk_idx, prepared_batch in enumerate(prefetcher):
+                t_chunk_0 = time.perf_counter()
                 chunk_results = execute_prepared_batch(
                     prepared_batch=prepared_batch,
                     async_writer=async_writer,
                 )
+                t_chunk = time.perf_counter() - t_chunk_0
+                chunk_success = 0
                 for res in chunk_results:
                     results.append(res)
-                    print_result_row(res)
+                    if res.status in [PipelineStatus.SUCCESS.value, PipelineStatus.SUCCESS_CDFT_ONLY.value]:
+                        chunk_success += 1
+                    if show_table:
+                        print_result_row(res)
                     jsonl_file.write(json.dumps(res.to_dict()) + "\n")
                     jsonl_file.flush()
+
+                if pbar is not None:
+                    avg_cdft = (
+                        sum(r.cdft_runtime_seconds for r in chunk_results) / len(chunk_results)
+                        if chunk_results
+                        else 0.0
+                    )
+                    avg_bg = (
+                        sum(r.bg_runtime_seconds for r in chunk_results) / len(chunk_results) if chunk_results else 0.0
+                    )
+                    mols_chunk = len(chunk_results)
+                    pbar.set_postfix(
+                        {
+                            "Batch": f"{chunk_idx + 1}/{total_chunks}",
+                            "cDFT": f"{avg_cdft * 1000:4.0f}ms" if avg_cdft < 0.01 else f"{avg_cdft:4.2f}s",
+                            "BG": f"{avg_bg:4.2f}s",
+                            "Rate": f"{mols_chunk / max(1e-4, t_chunk):4.1f} mol/s",
+                            "Pass": f"{chunk_success}/{mols_chunk}",
+                        }
+                    )
+                    pbar.update(len(chunk_results))
 
                 # Clean out GPU memory before advancing to next batch
                 del chunk_results, prepared_batch
                 clean_device_memory()
     finally:
+        if pbar is not None:
+            pbar.close()
         prefetcher.close()
         async_writer.flush()
         async_writer.close()

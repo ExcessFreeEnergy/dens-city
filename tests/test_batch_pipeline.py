@@ -7,6 +7,9 @@ multi-frame XYZ trajectory export, state serialization, and process pool executi
 from pathlib import Path
 
 import numpy as np
+import pytest
+
+pytestmark = pytest.mark.gpu
 
 from dens_city.utils.pipeline import (
     AsyncBatchPrefetcher,

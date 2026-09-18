@@ -13,7 +13,10 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import pytest
 from tinygrad import Tensor, dtypes
+
+pytestmark = pytest.mark.gpu
 
 from dens_city.boltzmann.bijectors import Base2CartesianFlow
 from dens_city.boltzmann.egnn import EGNNForceField, EGNNLayer

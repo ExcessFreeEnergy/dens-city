@@ -14,7 +14,10 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+import pytest
 from tinygrad import Tensor
+
+pytestmark = pytest.mark.gpu
 
 from dens_city.boltzmann.energy import MicroscopicEnergy
 from dens_city.ui.cli import discover_materials, main, parse_materials_arg

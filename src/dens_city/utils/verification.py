@@ -339,7 +339,7 @@ def verify_and_generate_report(
         status = r.get("status", "UNKNOWN")
 
         report_lines.append(
-            f"| {idx:02d} | `{name}` | {sites}/128 | {cdft_t:5.2f} | {bg_t:5.2f} | {tot_t:5.2f} | {p_wall:+10.2f} | **{status}** |"
+            f"| {idx:02d} | `{name}` | {sites}/128 | {cdft_t:6.3f} | {bg_t:6.3f} | {tot_t:6.3f} | {p_wall:+10.2f} | **{status}** |"
         )
 
     report_lines.append("")
@@ -698,7 +698,7 @@ def verify_and_generate_solvatum_report(
         tot_t = r.get("runtime_seconds", 0.0)
         status = r.get("status", "UNKNOWN")
         report_lines.append(
-            f"| {idx:02d} | `{m_name}` | {sites}/128 | {cdft_t:5.2f} | {bg_t:5.2f} | {tot_t:5.2f} | **{status}** |"
+            f"| {idx:02d} | `{m_name}` | {sites}/128 | {cdft_t:6.3f} | {bg_t:6.3f} | {tot_t:6.3f} | **{status}** |"
         )
 
     report_lines.append("")
