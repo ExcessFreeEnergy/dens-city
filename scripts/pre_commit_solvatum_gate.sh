@@ -65,7 +65,7 @@ fi
 
 # Ensure Tinygrad hardware queue watchdog allows full graph compilation on large polyatomics
 export HCQDEV_WAIT_TIMEOUT_MS="${HCQDEV_WAIT_TIMEOUT_MS:-300000}"
-export BEAM="${BEAM:-2}"
+export BEAM="${BEAM:-0}"
 
 set +e
 $PYTHON_BIN -m dens_city.utils.ratchet_gate "${GATE_ARGS[@]}"
