@@ -186,6 +186,77 @@ class FreeSolvDataset(BenchmarkDataset):
         return count
 
 
+def rdkit_mol_to_tripos_mol2(mol: Any, name: str) -> str:
+    """
+    Converts an RDKit 3D molecule directly to Tripos .mol2 string with
+    physically verified Sybyl/GAFF atom types adhering to pattern_tripos_mol2_forcefield_derivation.
+    """
+    conf = mol.GetConformer()
+    num_atoms = mol.GetNumAtoms()
+    num_bonds = mol.GetNumBonds()
+
+    lines = [
+        "@<TRIPOS>MOLECULE",
+        name,
+        f"{num_atoms:5d} {num_bonds:5d}     0     0     0",
+        "SMALL",
+        "NO_CHARGES",
+        "",
+        "",
+        "@<TRIPOS>ATOM",
+    ]
+
+    for i, atom in enumerate(mol.GetAtoms()):
+        pos = conf.GetAtomPosition(i)
+        sym = atom.GetSymbol()
+        # Resolve Sybyl / GAFF atom type
+        if sym == "C":
+            atype = (
+                "ca"
+                if atom.GetIsAromatic()
+                else (
+                    "c3"
+                    if str(atom.GetHybridization()) == "SP3"
+                    else ("c2" if str(atom.GetHybridization()) == "SP2" else "c1")
+                )
+            )
+        elif sym == "N":
+            atype = "na" if atom.GetIsAromatic() else ("n3" if str(atom.GetHybridization()) == "SP3" else "n2")
+        elif sym == "O":
+            if atom.GetIsAromatic():
+                atype = "oa"
+            elif any(nbr.GetSymbol() == "H" for nbr in atom.GetNeighbors()):
+                atype = "oh"
+            elif len(atom.GetNeighbors()) >= 2:
+                atype = "os"
+            else:
+                atype = "o"
+        elif sym == "H":
+            nbrs = atom.GetNeighbors()
+            if nbrs and nbrs[0].GetIsAromatic():
+                atype = "ha"
+            elif nbrs and nbrs[0].GetSymbol() in ("O", "N", "S"):
+                atype = "ho" if nbrs[0].GetSymbol() == "O" else ("hn" if nbrs[0].GetSymbol() == "N" else "hs")
+            else:
+                atype = "hc"
+        elif sym in ("F", "Cl", "Br", "I"):
+            atype = sym.lower()
+        elif sym == "S":
+            atype = "ss" if atom.GetIsAromatic() else "s"
+        else:
+            atype = sym
+
+        lines.append(f"{i + 1:5d} {sym}{i + 1:<4} {pos.x:10.4f} {pos.y:10.4f} {pos.z:10.4f} {atype:<4} 1 <1> 0.0000")
+
+    lines.append("@<TRIPOS>BOND")
+    for i, bond in enumerate(mol.GetBonds()):
+        b_ar = bond.GetIsAromatic()
+        b_type = "ar" if b_ar else str(int(bond.GetBondTypeAsDouble()))
+        lines.append(f"{i + 1:5d} {bond.GetBeginAtomIdx() + 1:5d} {bond.GetEndAtomIdx() + 1:5d} {b_type}")
+
+    return "\n".join(lines) + "\n"
+
+
 class SolvatumDataset(BenchmarkDataset):
     """Solv@TUM (Solvatum) database: 658 solutes across 146 non-aqueous liquid solvents (~5,952 pairs)."""
 
@@ -216,76 +287,7 @@ class SolvatumDataset(BenchmarkDataset):
 
     @staticmethod
     def _rdkit_mol_to_tripos_mol2(mol: Any, name: str) -> str:
-        """
-        Converts an RDKit 3D molecule directly to Tripos .mol2 string with
-        physically verified Sybyl/GAFF atom types adhering to pattern_tripos_mol2_forcefield_derivation.
-        """
-        conf = mol.GetConformer()
-        num_atoms = mol.GetNumAtoms()
-        num_bonds = mol.GetNumBonds()
-
-        lines = [
-            "@<TRIPOS>MOLECULE",
-            name,
-            f"{num_atoms:5d} {num_bonds:5d}     0     0     0",
-            "SMALL",
-            "NO_CHARGES",
-            "",
-            "",
-            "@<TRIPOS>ATOM",
-        ]
-
-        for i, atom in enumerate(mol.GetAtoms()):
-            pos = conf.GetAtomPosition(i)
-            sym = atom.GetSymbol()
-            # Resolve Sybyl / GAFF atom type
-            if sym == "C":
-                atype = (
-                    "ca"
-                    if atom.GetIsAromatic()
-                    else (
-                        "c3"
-                        if str(atom.GetHybridization()) == "SP3"
-                        else ("c2" if str(atom.GetHybridization()) == "SP2" else "c1")
-                    )
-                )
-            elif sym == "N":
-                atype = "na" if atom.GetIsAromatic() else ("n3" if str(atom.GetHybridization()) == "SP3" else "n2")
-            elif sym == "O":
-                if atom.GetIsAromatic():
-                    atype = "oa"
-                elif any(nbr.GetSymbol() == "H" for nbr in atom.GetNeighbors()):
-                    atype = "oh"
-                elif len(atom.GetNeighbors()) >= 2:
-                    atype = "os"
-                else:
-                    atype = "o"
-            elif sym == "H":
-                nbrs = atom.GetNeighbors()
-                if nbrs and nbrs[0].GetIsAromatic():
-                    atype = "ha"
-                elif nbrs and nbrs[0].GetSymbol() in ("O", "N", "S"):
-                    atype = "ho" if nbrs[0].GetSymbol() == "O" else ("hn" if nbrs[0].GetSymbol() == "N" else "hs")
-                else:
-                    atype = "hc"
-            elif sym in ("F", "Cl", "Br", "I"):
-                atype = sym.lower()
-            elif sym == "S":
-                atype = "ss" if atom.GetIsAromatic() else "s"
-            else:
-                atype = sym
-
-            lines.append(
-                f"{i + 1:5d} {sym}{i + 1:<4} {pos.x:10.4f} {pos.y:10.4f} {pos.z:10.4f} {atype:<4} 1 <1> 0.0000"
-            )
-
-        lines.append("@<TRIPOS>BOND")
-        for i, bond in enumerate(mol.GetBonds()):
-            b_ar = bond.GetIsAromatic()
-            b_type = "ar" if b_ar else str(int(bond.GetBondTypeAsDouble()))
-            lines.append(f"{i + 1:5d} {bond.GetBeginAtomIdx() + 1:5d} {bond.GetEndAtomIdx() + 1:5d} {b_type}")
-
-        return "\n".join(lines) + "\n"
+        return rdkit_mol_to_tripos_mol2(mol, name)
 
     def load_entries(self) -> List[SolvationBenchmarkEntry]:
         if self._entries is not None:
@@ -465,5 +467,20 @@ def get_benchmark_dataset(
         return SolvatumDataset(db_path=d_path, repo_root=root)
     elif name_clean in ("freesolv", "aqueous", "default"):
         return FreeSolvDataset(db_path=d_path, repo_root=root)
-    else:
-        raise ValueError(f"Unknown benchmark dataset: '{dataset_name}'. Must be 'freesolv' or 'solvatum'.")
+
+    # Check if dataset_name is a path to a file, or db_path is given
+    target_path = d_path or Path(dataset_name)
+    if not target_path.is_absolute():
+        if (root / target_path).exists():
+            target_path = root / target_path
+        elif Path(dataset_name).exists():
+            target_path = Path(dataset_name).resolve()
+
+    if target_path.exists():
+        from dens_city.utils.generic_dataset import GenericSolvationDataset
+
+        return GenericSolvationDataset(file_path=target_path, repo_root=root)
+
+    raise ValueError(
+        f"Unknown benchmark dataset: '{dataset_name}'. Must be 'freesolv', 'solvatum', or a path to a valid .sdf, .csv, .tsv, or .jsonl file."
+    )

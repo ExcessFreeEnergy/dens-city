@@ -8,7 +8,10 @@ from __future__ import annotations
 import time
 
 import numpy as np
+import pytest
 from tinygrad import Tensor
+
+pytestmark = pytest.mark.gpu
 
 from dens_city.boltzmann.egnn import EGNNForceField
 from dens_city.boltzmann.energy import MicroscopicEnergy

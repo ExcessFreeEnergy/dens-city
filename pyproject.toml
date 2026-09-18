@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "GPL-3.0-or-later" }
 authors = [
-    { name = "dens-city contributors" },
+    { name = "ExcessFreeEnergy" },
 ]
 dependencies = [
     "tinygrad>=0.13.0",
@@ -19,6 +19,7 @@ dependencies = [
     "pyyaml>=6.0",
     "tqdm>=4.66.0",
     "pytest>=7.4.0",
+    "pytest-xdist>=3.5.0",
     "pytest-benchmark>=4.0.0",
     "matplotlib>=3.7.0",
     "ruff>=0.4.0",
@@ -48,6 +49,10 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+markers = [
+    "gpu: tests requiring Tinygrad GPU execution, neural network training, or JIT benchmarks",
+    "cpu: fast CPU unit tests safe for high-concurrency parallelization",
+]
 
 [tool.ruff]
 line-length = 120

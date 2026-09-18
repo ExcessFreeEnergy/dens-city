@@ -155,6 +155,9 @@ def print_banner(
         print(f"  Benchmark Profiler: {colored('ACTIVE (Measuring per-material throughput)', 'green')}")
     print(f"  Artifact Output   : {out_dir}")
     print("=" * 88)
+
+
+def print_table_header() -> None:
     print(f"{'Material':<20} | {'Sites':<5} | {'cDFT (s)':<8} | {'BG (s)':<8} | {'P_wall (bar)':<12} | {'Status':<16}")
     print("-" * 88)
 
@@ -170,8 +173,16 @@ def print_result_row(res: MaterialPipelineResult) -> None:
     }
     col = status_colors.get(res.status, "white")
     status_str = colored(res.status, col)
-    cdft_t_str = f"{res.cdft_runtime_seconds:6.2f}" if res.cdft_runtime_seconds > 0 else "  --  "
-    bg_t_str = f"{res.bg_runtime_seconds:6.2f}" if res.bg_runtime_seconds > 0 else "  --  "
+    cdft_t_str = (
+        f"{res.cdft_runtime_seconds:6.3f}s"
+        if res.cdft_runtime_seconds >= 0.005
+        else (f"{res.cdft_runtime_seconds * 1000:5.1f}ms" if res.cdft_runtime_seconds > 0 else "  --  ")
+    )
+    bg_t_str = (
+        f"{res.bg_runtime_seconds:6.3f}s"
+        if res.bg_runtime_seconds >= 0.005
+        else (f"{res.bg_runtime_seconds * 1000:5.1f}ms" if res.bg_runtime_seconds > 0 else "  --  ")
+    )
     p_wall_str = (
         f"{res.wall_pressure_bar:10.2f}"
         if res.status in [PipelineStatus.SUCCESS.value, PipelineStatus.SUCCESS_CDFT_ONLY.value]
@@ -339,9 +350,8 @@ Execution Modes & Examples:
     mode_group.add_argument(
         "--verify-dataset",
         type=str,
-        choices=["freesolv", "solvatum"],
         default=None,
-        help="Validate simulation results against specified dataset ('freesolv' or 'solvatum')",
+        help="Validate simulation results against specified dataset ('freesolv', 'solvatum', or file path)",
     )
     mode_group.add_argument(
         "--solvatum-ratchet-gate",
@@ -911,9 +921,14 @@ Execution Modes & Examples:
     data_group.add_argument(
         "--dataset",
         type=str,
-        choices=["freesolv", "solvatum", "all"],
-        default="freesolv",
-        help="Benchmark dataset target: 'freesolv' (642 aqueous molecules) or 'solvatum' (~6,200 multi-solvent pairs across 146 solvents)",
+        default=None,
+        help="Benchmark dataset target: 'freesolv', 'solvatum', or path to arbitrary .sdf, .csv, .tsv, .jsonl file",
+    )
+    data_group.add_argument(
+        "--eval-loocv",
+        action="store_true",
+        default=False,
+        help="Enable exact Leave-One-Out Cross-Validation (LOOCV) evaluation for KRR residuals on training benchmark samples",
     )
     data_group.add_argument(
         "--all-solvatum",
@@ -980,8 +995,8 @@ Execution Modes & Examples:
     perf_group.add_argument(
         "--beam",
         type=int,
-        default=0,
-        help="tinygrad compiler BEAM search optimization level (default: 0)",
+        default=2,
+        help="tinygrad compiler BEAM search optimization level (default: 2)",
     )
     perf_group.add_argument(
         "--benchmark",
@@ -996,16 +1011,29 @@ Execution Modes & Examples:
         help="Enable DEBUG=2 and write detailed per-material compiler logs to data/logs_<timestamp>/",
     )
     perf_group.add_argument(
+        "--max-batches",
+        type=int,
+        default=None,
+        help="Maximum number of batches to execute before halting (useful for profiling/validation)",
+    )
+    perf_group.add_argument(
         "--save-artifacts",
         action="store_true",
-        default=None,
-        help="Write full per-material 3D trajectory (.xyz), flow weights (.npz), and cDFT density profiles to disk",
+        default=False,
+        help="Write full per-material 3D trajectory (.xyz), flow weights (.npz), and cDFT density profiles to disk (default: False)",
     )
     perf_group.add_argument(
         "--no-save-artifacts",
         action="store_false",
         dest="save_artifacts",
-        help="Disable writing per-material trajectory and density profile files to disk (default for benchmarks)",
+        help="Disable writing per-material trajectory and density profile files to disk (default: False)",
+    )
+    perf_group.add_argument(
+        "--show-table",
+        "--verbose",
+        action="store_true",
+        default=False,
+        help="Display verbose row-by-row scrolling terminal table instead of the live TUI progress bar (default: False)",
     )
 
     return parser
@@ -1370,7 +1398,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             dest_dir=target_dir,
             populate_entire_freesolv=args.all_freesolv and not is_solvatum,
             populate_entire_solvatum=is_solvatum,
-            dataset=args.dataset if not args.all_solvatum else "solvatum",
+            dataset=(args.dataset or "freesolv") if not args.all_solvatum else "solvatum",
         )
         return 0
 
@@ -1380,11 +1408,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.verify_freesolv or args.verify_solvatum or args.verify_dataset:
         from dens_city.utils.verification import verify_pipeline_against_dataset
 
-        target_dataset = (
-            "solvatum"
-            if args.verify_solvatum or args.verify_dataset == "solvatum" or args.dataset == "solvatum"
-            else "freesolv"
-        )
+        if args.verify_dataset:
+            target_dataset = args.verify_dataset
+        elif args.verify_solvatum or (args.dataset and "solvatum" in args.dataset.lower()):
+            target_dataset = "solvatum"
+        else:
+            target_dataset = "freesolv"
+
         is_pop_all = args.all_solvatum or args.all_freesolv
         engine_choice = args.energy_engine if ("--energy-engine" in argv or "-e" in argv) else "auto"
         return verify_pipeline_against_dataset(
@@ -1397,6 +1427,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             energy_engine=engine_choice,
             force_egnn=args.force_egnn,
             batch_size=args.batch_size if ("-b" in argv or "--batch-size" in argv) else None,
+            eval_loocv=args.eval_loocv,
         )
 
     # =========================================================================
@@ -1465,28 +1496,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         debug_log_dir = Path("data") / f"logs_{ts}"
         debug_log_dir.mkdir(parents=True, exist_ok=True)
 
-    is_large_benchmark = (
-        args.benchmark
-        or args.verify_solvatum
-        or args.verify_freesolv
-        or args.all_solvatum
-        or args.all_freesolv
-        or (args.materials == ["all"])
-    )
-    if args.save_artifacts is None:
-        effective_save_artifacts = False if is_large_benchmark else True
-    else:
-        effective_save_artifacts = bool(args.save_artifacts)
+    effective_save_artifacts = bool(args.save_artifacts)
 
-    if args.dataset == "solvatum":
-        from dens_city.utils.benchmark_dataset import SolvatumDataset
+    if args.dataset:
+        from dens_city.utils.benchmark_dataset import get_benchmark_dataset
 
-        sdf_path = Path(args.database) if args.database else Path("Solvatum/solvatum/data/solvatum.sdf")
-        if not sdf_path.exists():
-            alt = Path("solvatum/data/solvatum.sdf")
-            if alt.exists():
-                sdf_path = alt
-        ds = SolvatumDataset(db_path=sdf_path)
+        ds = get_benchmark_dataset(args.dataset, db_path=args.database)
         entries = ds.load_entries()
         if args.materials and args.materials != ["all"]:
             req_set = {m.lower().replace("_", "").replace("-", "") for m in args.materials}
@@ -1495,21 +1510,22 @@ def main(argv: Optional[List[str]] = None) -> int:
                 for e in entries
                 if e.solute_id.lower() in req_set
                 or e.solute_name.lower().replace("_", "").replace("-", "") in req_set
-                or f"solvatum_{e.solute_id}".lower() in req_set
+                or f"{ds.name}_{e.solute_id}".lower() in req_set
             ]
 
         unique_ids = list(set(e.solute_id for e in entries))
         solute_mats = {sid: ds.get_material(sid) for sid in unique_ids}
 
-        def _resolve_task_name(sid: str) -> str:
+        def _resolve_task_name(sid: str, sname: str) -> str:
             m = solute_mats.get(sid)
             if m is not None and m.name:
                 return m.name
-            return f"solvatum_{sid}"
+            clean_name = re.sub(r"[^\w\-]", "_", sname).strip("_").lower()
+            return f"{ds.name}_{sid}_{clean_name}"
 
         tasks = [
             MaterialPipelineTask(
-                material_path_or_name=_resolve_task_name(e.solute_id),
+                material_path_or_name=_resolve_task_name(e.solute_id, e.solute_name),
                 material_obj=solute_mats.get(e.solute_id),
                 out_dir=out_dir,
                 temperature_k=args.temp,
@@ -1533,6 +1549,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 dielectric_constant=e.solvent_dielectric,
                 solute_id=e.solute_id,
                 solute_name=e.solute_name,
+                eval_loocv=args.eval_loocv,
                 save_artifacts=effective_save_artifacts,
             )
             for e in entries
@@ -1568,6 +1585,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 energy_engine=args.energy_engine,
                 force_egnn=args.force_egnn,
                 solvent_name=target_solvent,
+                eval_loocv=args.eval_loocv,
                 save_artifacts=effective_save_artifacts,
             )
             for m in materials
@@ -1617,6 +1635,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             tasks = tasks[completed_offset:]
 
     task_chunks = [tasks[i : i + args.batch_size] for i in range(0, len(tasks), args.batch_size)]
+    if args.max_batches is not None:
+        task_chunks = task_chunks[: args.max_batches]
     async_writer = AsyncArtifactWriter(enabled=effective_save_artifacts)
     prefetcher = AsyncBatchPrefetcher(
         task_chunks=task_chunks,
@@ -1625,23 +1645,73 @@ def main(argv: Optional[List[str]] = None) -> int:
         energy_engine=args.energy_engine,
     ).start()
 
+    show_table = getattr(args, "show_table", False)
+    if show_table:
+        print_table_header()
+
+    from tqdm import tqdm
+
+    total_tasks = sum(len(c) for c in task_chunks)
+    total_chunks = len(task_chunks)
+
+    pbar = (
+        None
+        if show_table
+        else tqdm(
+            total=total_tasks,
+            desc="Simulating materials",
+            unit="mol",
+            dynamic_ncols=True,
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]",
+        )
+    )
+
     try:
         with open(jsonl_log_path, "a", encoding="utf-8") as jsonl_file:
-            for prepared_batch in prefetcher:
+            for chunk_idx, prepared_batch in enumerate(prefetcher):
+                t_chunk_0 = time.perf_counter()
                 chunk_results = execute_prepared_batch(
                     prepared_batch=prepared_batch,
                     async_writer=async_writer,
                 )
+                t_chunk = time.perf_counter() - t_chunk_0
+                chunk_success = 0
                 for res in chunk_results:
                     results.append(res)
-                    print_result_row(res)
+                    if res.status in [PipelineStatus.SUCCESS.value, PipelineStatus.SUCCESS_CDFT_ONLY.value]:
+                        chunk_success += 1
+                    if show_table:
+                        print_result_row(res)
                     jsonl_file.write(json.dumps(res.to_dict()) + "\n")
                     jsonl_file.flush()
+
+                if pbar is not None:
+                    avg_cdft = (
+                        sum(r.cdft_runtime_seconds for r in chunk_results) / len(chunk_results)
+                        if chunk_results
+                        else 0.0
+                    )
+                    avg_bg = (
+                        sum(r.bg_runtime_seconds for r in chunk_results) / len(chunk_results) if chunk_results else 0.0
+                    )
+                    mols_chunk = len(chunk_results)
+                    pbar.set_postfix(
+                        {
+                            "Batch": f"{chunk_idx + 1}/{total_chunks}",
+                            "cDFT": f"{avg_cdft * 1000:4.0f}ms" if avg_cdft < 0.01 else f"{avg_cdft:4.2f}s",
+                            "BG": f"{avg_bg:4.2f}s",
+                            "Rate": f"{mols_chunk / max(1e-4, t_chunk):4.1f} mol/s",
+                            "Pass": f"{chunk_success}/{mols_chunk}",
+                        }
+                    )
+                    pbar.update(len(chunk_results))
 
                 # Clean out GPU memory before advancing to next batch
                 del chunk_results, prepared_batch
                 clean_device_memory()
     finally:
+        if pbar is not None:
+            pbar.close()
         prefetcher.close()
         async_writer.flush()
         async_writer.close()

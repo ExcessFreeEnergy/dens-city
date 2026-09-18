@@ -24,7 +24,7 @@ def test_krr_checkpoint_loaded_on_device():
     assert "z_train" in dev
     assert "alpha" in dev
     assert "z_train_sq" in dev
-    assert dev["z_train"].shape[1] == 397
+    assert dev["z_train"].shape[1] == 512
     assert dev["alpha"].shape[1] == 1
     assert isinstance(dev["z_train"], Tensor)
     assert isinstance(dev["alpha"], Tensor)

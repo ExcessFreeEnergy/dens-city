@@ -150,6 +150,7 @@ class MaterialPipelineTask:
     solute_id: Optional[str] = None
     solute_name: Optional[str] = None
     save_artifacts: bool = True
+    eval_loocv: bool = False
 
 
 @dataclass
@@ -187,6 +188,7 @@ class MaterialPipelineResult:
     egnn_energy: Optional[float] = None
     egnn_force_rms: Optional[float] = None
     krr_residual_kcal_mol: Optional[float] = None
+    krr_loocv_residual_kcal_mol: Optional[float] = None
     krr_epistemic_density: Optional[float] = None
     artifact_dir: Optional[str] = None
     artifacts: List[str] = field(default_factory=list)
@@ -387,11 +389,8 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
 
         # Determine effective engine: classical, electronegativity, egnn, auto
         effective_engine = task.energy_engine
-        if getattr(task, "force_egnn", False):
+        if getattr(task, "force_egnn", False) or effective_engine == "auto":
             effective_engine = "egnn"
-        elif effective_engine == "auto":
-            has_hetero = any(getattr(s, "atomic_number", 6) not in (1, 6) for s in material.sites)
-            effective_engine = "egnn" if has_hetero else "electronegativity"
 
         # Microscopic Hamiltonian: Classical or EGNN MLFF
         if effective_engine == "egnn":
@@ -693,6 +692,7 @@ class PreparedMolecularBatch:
     batched_cdft: Optional[BatchedTinyCDFT] = None
     energy_fn: Optional[MicroscopicEnergy] = None
     t_assembly_start: float = field(default_factory=time.perf_counter)
+    eval_loocv: bool = False
 
 
 class AsyncBatchPrefetcher:
@@ -806,6 +806,7 @@ class AsyncBatchPrefetcher:
                     artifact_dir=mat_out_dir,
                 )
 
+        eval_loocv = any(getattr(t, "eval_loocv", False) for t in chunk)
         if not loaded_materials:
             return PreparedMolecularBatch(
                 tasks=chunk,
@@ -814,6 +815,7 @@ class AsyncBatchPrefetcher:
                 task_indices=[],
                 results_map=results_map,
                 t_assembly_start=t_start,
+                eval_loocv=eval_loocv,
             )
 
         return PreparedMolecularBatch(
@@ -823,6 +825,7 @@ class AsyncBatchPrefetcher:
             task_indices=task_indices,
             results_map=results_map,
             t_assembly_start=t_start,
+            eval_loocv=eval_loocv,
         )
 
     def __iter__(self):
@@ -945,11 +948,8 @@ def execute_prepared_batch(
         batch_tasks[0].energy_engine if batch_tasks and hasattr(batch_tasks[0], "energy_engine") else "classical"
     )
     force_egnn = any(getattr(t, "force_egnn", False) for t in batch_tasks)
-    if force_egnn:
+    if force_egnn or engine_type == "auto":
         engine_type = "egnn"
-    elif engine_type == "auto":
-        any_hetero = any(any(getattr(s, "atomic_number", 6) not in (1, 6) for s in m.sites) for m in loaded_materials)
-        engine_type = "egnn" if any_hetero else "electronegativity"
 
     if engine_type == "egnn":
         energy_fn = (
@@ -1008,6 +1008,8 @@ def execute_prepared_batch(
     # Check if skip_bg
     all_skip_bg = all(t.skip_bg for t in batch_tasks)
     if all_skip_bg:
+        t_batch_elapsed = time.perf_counter() - t_start
+        t_total_per_mat = t_batch_elapsed / max(1, len(loaded_materials))
         for local_idx, orig_idx in enumerate(task_indices):
             mat = loaded_materials[local_idx]
             task = batch_tasks[orig_idx]
@@ -1015,7 +1017,7 @@ def execute_prepared_batch(
             results_map[orig_idx] = MaterialPipelineResult(
                 material_name=mat.name,
                 status=PipelineStatus.SUCCESS_CDFT_ONLY.value,
-                runtime_seconds=time.perf_counter() - t_start,
+                runtime_seconds=t_total_per_mat,
                 cdft_runtime_seconds=t_cdft_per_mat,
                 num_sites=mat.num_sites,
                 temperature_k=mat.temperature_k,
@@ -1088,12 +1090,9 @@ def execute_prepared_batch(
 
     s_fixed = 16
     N_pad = 128
-    batch_has_hetero = any(any(getattr(s, "atomic_number", 6) not in (1, 6) for s in m.sites) for m in loaded_materials)
-    run_egnn_readouts = (
-        force_egnn
-        or engine_type in ("egnn", "electronegativity")
-        or (engine_type == "auto" and (batch_has_hetero or any(m.num_sites > 1 for m in loaded_materials)))
-    )
+    # Unconditional unified readout graph: evaluates all batch slots (monoatomics and polyatomics alike)
+    # ensuring Batch 0 compiles the entire thermodynamic readout graph with zero hybrid batch spikes
+    run_egnn_readouts = True
 
     batch_x = np.zeros((batch_size, s_fixed, N_pad, 3), dtype=np.float32)
     batch_z = np.zeros((batch_size, N_pad), dtype=np.float32)
@@ -1103,8 +1102,8 @@ def execute_prepared_batch(
     batch_delta_e = np.zeros((batch_size, s_fixed), dtype=np.float32)
     batch_dielectric = np.ones(batch_size, dtype=np.float32)
     batch_hbond = np.zeros(batch_size, dtype=np.float32)
-    batch_s_vec = np.zeros((batch_size, 7), dtype=np.float32)
-    batch_phys_desc = np.zeros((batch_size, 6), dtype=np.float32)
+    batch_s_vec = np.zeros((batch_size, 8), dtype=np.float32)
+    batch_atom_counts = np.zeros((batch_size, 4), dtype=np.float32)
     batch_vdw_solv = np.zeros(batch_size, dtype=np.float32)
     batch_dg_self_assoc = np.zeros(batch_size, dtype=np.float32)
 
@@ -1119,7 +1118,11 @@ def execute_prepared_batch(
     )
 
     solvent_cache: Dict[
-        Tuple[str, float], Tuple[float, np.ndarray, float, float, float, float, float, float, float]
+        Tuple[str, float], Tuple[float, np.ndarray, float, float, float, float, float, float, float, Optional[str]]
+    ] = {}
+    solute_conformer_cache: Dict[
+        Tuple[str, int, int],
+        Tuple[np.ndarray, np.ndarray, List[float], List[int], np.ndarray],
     ] = {}
 
     for local_idx, orig_idx in enumerate(task_indices):
@@ -1161,52 +1164,71 @@ def execute_prepared_batch(
                 np_dict=np_weights,
             )
 
-        # Conformer ensemble generation (s_fixed=16)
+        # Conformer ensemble generation (s_fixed=16) with intra-batch caching
         n_sites_real = mat.num_sites
         n_rot = getattr(mat, "num_rotatable_bonds", 0)
-        x_ground = (
-            np.array([[s.x, s.y, s.z] for s in mat.sites], dtype=np.float32)
-            if mat.sites
-            else np.zeros((max(1, n_sites_real), 3), dtype=np.float32)
-        )
-        z_list = [getattr(s, "atomic_number", 6) for s in mat.sites] if mat.sites else [6] * max(1, n_sites_real)
-        bonds = getattr(mat, "bonds", [])
+        solute_key = (mat.name, n_sites_real, n_rot)
 
-        div_conf = generate_conformer_rotamer_diversity(
-            coords=x_ground,
-            atomic_numbers=z_list,
-            bonds=bonds,
-            n_rot=n_rot,
-            n_conf=s_fixed,
-            seed=42 + local_idx,
-        )
+        if solute_key in solute_conformer_cache:
+            div_conf, delta_e, bq_list, z_list, atom_counts = solute_conformer_cache[solute_key]
+        else:
+            x_ground = (
+                np.array([[s.x, s.y, s.z] for s in mat.sites], dtype=np.float32)
+                if mat.sites
+                else np.zeros((max(1, n_sites_real), 3), dtype=np.float32)
+            )
+            z_list = [getattr(s, "atomic_number", 6) for s in mat.sites] if mat.sites else [6] * max(1, n_sites_real)
+            bonds = getattr(mat, "bonds", [])
 
-        if mat_coords is not None and len(mat_coords) > 0 and np.max(np.abs(mat_coords)) < 50.0:
-            n_flow = min(s_fixed // 4, len(mat_coords))
-            valid_bonds = [(b[0], b[1]) for b in bonds if b[0] < n_sites_real and b[1] < n_sites_real] if bonds else []
-            if valid_bonds:
-                b_arr = np.array(valid_bonds, dtype=np.int32)
-                d0 = np.linalg.norm(x_ground[b_arr[:, 0]] - x_ground[b_arr[:, 1]], axis=-1)
-                cand = mat_coords[:n_flow, :n_sites_real]
-                dk = np.linalg.norm(cand[:, b_arr[:, 0]] - cand[:, b_arr[:, 1]], axis=-1)
-                max_dev = np.max(np.abs(dk - d0), axis=-1)
-                for k in range(n_flow):
-                    if max_dev[k] <= 0.35:
+            div_conf = generate_conformer_rotamer_diversity(
+                coords=x_ground,
+                atomic_numbers=z_list,
+                bonds=bonds,
+                n_rot=n_rot,
+                n_conf=s_fixed,
+                seed=42,
+            )
+
+            if mat_coords is not None and len(mat_coords) > 0 and np.max(np.abs(mat_coords)) < 50.0:
+                n_flow = min(s_fixed // 4, len(mat_coords))
+                valid_bonds = (
+                    [(b[0], b[1]) for b in bonds if b[0] < n_sites_real and b[1] < n_sites_real] if bonds else []
+                )
+                if valid_bonds:
+                    b_arr = np.array(valid_bonds, dtype=np.int32)
+                    d0 = np.linalg.norm(x_ground[b_arr[:, 0]] - x_ground[b_arr[:, 1]], axis=-1)
+                    cand = mat_coords[:n_flow, :n_sites_real]
+                    dk = np.linalg.norm(cand[:, b_arr[:, 0]] - cand[:, b_arr[:, 1]], axis=-1)
+                    max_dev = np.max(np.abs(dk - d0), axis=-1)
+                    for k in range(n_flow):
+                        if max_dev[k] <= 0.35:
+                            slot = s_fixed - 1 - k
+                            div_conf[slot, :n_sites_real] = cand[k]
+                else:
+                    for k in range(n_flow):
                         slot = s_fixed - 1 - k
-                        div_conf[slot, :n_sites_real] = cand[k]
-            else:
-                for k in range(n_flow):
-                    slot = s_fixed - 1 - k
-                    div_conf[slot, :n_sites_real] = mat_coords[k, :n_sites_real]
+                        div_conf[slot, :n_sites_real] = mat_coords[k, :n_sites_real]
 
-        delta_e = compute_conformer_internal_energy_diffs(div_conf[:, :n_sites_real], mat)
+            delta_e = compute_conformer_internal_energy_diffs(div_conf[:, :n_sites_real], mat)
+            bq_list = mat.base_charges or mat.compute_topological_base_charges(kappa=0.10, q_max=0.50)
+            z_np_arr = np.array(z_list, dtype=np.int32)
+            atom_counts = np.array(
+                [
+                    float(np.sum(z_np_arr > 1)),
+                    float(np.sum(z_np_arr == 8)),
+                    float(np.sum(z_np_arr == 7)),
+                    float(np.sum(np.isin(z_np_arr, [9, 17, 35, 53]))),
+                ],
+                dtype=np.float32,
+            )
+            solute_conformer_cache[solute_key] = (div_conf, delta_e, bq_list, z_list, atom_counts)
 
         batch_x[local_idx, :, :n_sites_real] = div_conf[:, :n_sites_real]
         batch_z[local_idx, :n_sites_real] = z_list[:n_sites_real]
-        bq_list = mat.base_charges or mat.compute_topological_base_charges(kappa=0.10, q_max=0.50)
         batch_bq[local_idx, :n_sites_real] = bq_list[:n_sites_real]
         batch_mask[local_idx, :n_sites_real, :] = 1.0
         batch_delta_e[local_idx] = delta_e
+        batch_atom_counts[local_idx] = atom_counts
 
         # Solvent parameters & nonpolar free energy
         s_name = getattr(task, "solvent_name", None) or "vacuum"
@@ -1216,15 +1238,24 @@ def execute_prepared_batch(
         if is_vacuum:
             eps_solvent = 1.0
             vdw_solv = 0.0
-            batch_s_vec[local_idx] = get_solvent_descriptors_vector("water")
+            batch_s_vec[local_idx, :7] = get_solvent_descriptors_vector("water")
             batch_hbond[local_idx] = 0.0
             batch_dg_self_assoc[local_idx] = 0.0
         else:
             solv_key = (s_name.lower(), round(temp_k, 2))
             if solv_key in solvent_cache:
-                eps_cached, s_vec, hbond_cap, eta_solv, alpha_s, beta_s, solv_sigma, solv_rho, refr_idx = solvent_cache[
-                    solv_key
-                ]
+                (
+                    eps_cached,
+                    s_vec,
+                    hbond_cap,
+                    eta_solv,
+                    alpha_s,
+                    beta_s,
+                    solv_sigma,
+                    solv_rho,
+                    refr_idx,
+                    solv_smiles,
+                ) = solvent_cache[solv_key]
                 eps_solvent = (
                     float(task.dielectric_constant)
                     if (hasattr(task, "dielectric_constant") and task.dielectric_constant is not None)
@@ -1251,6 +1282,7 @@ def execute_prepared_batch(
                 solv_sigma = solv_props.kinetic_diameter_a
                 solv_rho = (solv_props.density_g_cm3 * 6.02214076e23) / (max(1.0, solv_props.molecular_weight) * 1e24)
                 refr_idx = solv_props.refractive_index
+                solv_smiles = getattr(solv_props, "smiles", None)
                 solvent_cache[solv_key] = (
                     eps_solvent,
                     s_vec,
@@ -1261,6 +1293,7 @@ def execute_prepared_batch(
                     solv_sigma,
                     solv_rho,
                     refr_idx,
+                    solv_smiles,
                 )
 
             if hasattr(task, "vdw_energy") and task.vdw_energy is not None:
@@ -1276,7 +1309,7 @@ def execute_prepared_batch(
                 except Exception:
                     vdw_solv = float(getattr(mat, "solvation_free_energy_kcal_mol", 0.0))
 
-            batch_s_vec[local_idx] = s_vec
+            batch_s_vec[local_idx, :7] = s_vec
             batch_hbond[local_idx] = hbond_cap
             batch_dg_self_assoc[local_idx] = compute_neat_liquid_self_association_correction(
                 solute_name=mat.name,
@@ -1285,17 +1318,13 @@ def execute_prepared_batch(
                 beta_s=beta_s,
                 packing_fraction=float(eta_solv),
                 temp_k=temp_k,
+                solute=mat,
+                solute_smiles=getattr(mat, "smiles", None),
+                solvent_smiles=getattr(task, "solvent_smiles", None) or solv_smiles,
             )
 
         batch_dielectric[local_idx] = eps_solvent
         batch_vdw_solv[local_idx] = vdw_solv
-
-        z_np_arr = np.array(z_list, dtype=np.int32)
-        n_heavy = float(np.sum(z_np_arr > 1))
-        n_o = float(np.sum(z_np_arr == 8))
-        n_n = float(np.sum(z_np_arr == 7))
-        n_hal = float(np.sum(np.isin(z_np_arr, [9, 17, 35, 53])))
-        batch_phys_desc[local_idx] = [n_heavy, n_o, n_n, n_hal, 0.0, vdw_solv]
 
     # Vectorized GPU Evaluation (Single fused pass across all batch slots)
     if run_egnn_readouts and len(loaded_materials) > 0:
@@ -1307,6 +1336,8 @@ def execute_prepared_batch(
         t_delta_e = Tensor(batch_delta_e, dtype=dtypes.float32)
         t_diel = Tensor(batch_dielectric, dtype=dtypes.float32)
         t_hbond = Tensor(batch_hbond, dtype=dtypes.float32)
+
+        Tensor.realize(t_x, t_z, t_bq, t_mask, t_mol_mask, t_delta_e, t_diel, t_hbond)
 
         x_flat = t_x.reshape(batch_size * s_fixed, N_pad, 3)
         z_flat = (
@@ -1356,16 +1387,24 @@ def execute_prepared_batch(
             molecule_mask=t_mol_mask,
         )
 
-        from dens_city.boltzmann.train_charges import predict_krr_residual_tensor
+        from dens_city.boltzmann.train_charges import (
+            assemble_physical_descriptor_tensor,
+            predict_krr_residual_tensor,
+        )
 
-        d_phys_base = Tensor(batch_phys_desc, dtype=dtypes.float32)
-        gb_mean_col = gb_mean_t.reshape(batch_size, 1)
-        d_phys_t = Tensor.cat(d_phys_base[:, :4], gb_mean_col, d_phys_base[:, 5:6], dim=1)
+        d_phys_t = assemble_physical_descriptor_tensor(
+            batch_atom_counts=batch_atom_counts,
+            gb_mean_tensor=gb_mean_t,
+            batch_vdw_solv=batch_vdw_solv,
+            batch_size=batch_size,
+        )
 
+        eval_loocv = getattr(prepared_batch, "eval_loocv", False)
         krr_res_t, krr_density_t = predict_krr_residual_tensor(
             z_mol=h_mol_mean_t,
             d_phys=d_phys_t,
             s_solv=batch_s_vec,
+            eval_loocv=eval_loocv,
         )
 
         Tensor.realize(total_solv_t, gb_mean_t, q_mean_t, h_mol_mean_t, u_egnn_t, f_egnn_t, krr_res_t, krr_density_t)
@@ -1384,6 +1423,11 @@ def execute_prepared_batch(
         f_egnn_np = np.zeros((batch_size, N_pad, 3), dtype=np.float32)
         krr_res_np = np.zeros((batch_size, 1), dtype=np.float32)
         krr_density_np = np.zeros((batch_size, 1), dtype=np.float32)
+
+    t_batch_elapsed = time.perf_counter() - t_start
+    n_mats = max(1, len(loaded_materials))
+    t_total_per_mat = t_batch_elapsed / n_mats
+    t_bg_per_mat = t_bg / n_mats
 
     for local_idx, orig_idx in enumerate(task_indices):
         mat = loaded_materials[local_idx]
@@ -1424,9 +1468,9 @@ def execute_prepared_batch(
             status=PipelineStatus.SUCCESS.value,
             solute_id=getattr(task, "solute_id", None),
             solute_name=getattr(task, "solute_name", None),
-            runtime_seconds=time.perf_counter() - t_start,
+            runtime_seconds=t_total_per_mat,
             cdft_runtime_seconds=t_cdft_per_mat,
-            bg_runtime_seconds=t_bg,
+            bg_runtime_seconds=t_bg_per_mat,
             num_sites=mat.num_sites,
             temperature_k=mat.temperature_k,
             bulk_density_a3=mat.bulk_density_a3,
@@ -1446,6 +1490,7 @@ def execute_prepared_batch(
             egnn_energy=egnn_energy_val,
             egnn_force_rms=egnn_force_rms_val,
             krr_residual_kcal_mol=krr_res_val,
+            krr_loocv_residual_kcal_mol=krr_res_val if getattr(prepared_batch, "eval_loocv", False) else None,
             krr_epistemic_density=krr_density_val,
             solvent_name=getattr(task, "solvent_name", "vacuum") if task else "vacuum",
             solvent_dielectric=float(batch_dielectric[local_idx]),
@@ -1520,17 +1565,15 @@ def process_batched_materials(
         batch_tasks[0].energy_engine if batch_tasks and hasattr(batch_tasks[0], "energy_engine") else "classical"
     )
     force_egnn = any(getattr(t, "force_egnn", False) for t in batch_tasks)
-    if force_egnn:
+    if force_egnn or engine_type == "auto":
         engine_type = "egnn"
-    elif engine_type == "auto":
-        any_hetero = any(any(getattr(s, "atomic_number", 6) not in (1, 6) for s in m.sites) for m in loaded_materials)
-        engine_type = "egnn" if any_hetero else "electronegativity"
 
     if engine_type == "egnn":
         energy_fn = EGNNMicroscopicEnergy(material=mol_batch, egnn_ff=get_global_egnn_model())
     else:
         energy_fn = MicroscopicEnergy(material=mol_batch, pad_to_128=True)
 
+    eval_loocv = any(getattr(t, "eval_loocv", False) for t in batch_tasks)
     prepared = PreparedMolecularBatch(
         tasks=batch_tasks,
         batch_size=batch_size,
@@ -1541,5 +1584,6 @@ def process_batched_materials(
         batched_cdft=batched_cdft,
         energy_fn=energy_fn,
         t_assembly_start=t_start,
+        eval_loocv=eval_loocv,
     )
     return execute_prepared_batch(prepared, async_writer=async_writer)

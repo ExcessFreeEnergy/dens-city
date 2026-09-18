@@ -328,11 +328,29 @@ class BoltzmannGenerator:
             self.batch = getattr(energy_fn, "batch", None)
             self.is_batched_generator = self.batch is not None
             if self.is_batched_generator:
-                self.beta = self.batch.beta.realize()
-                self.molecule_mask = self.batch.molecule_mask.realize()
-                self.conditioning = self.batch.conditioning.realize()
-                self.batch_size = self.batch.batch_size
-            self.train_step = None
+                if hasattr(self, "beta") and self.beta is not None and self.beta.shape == self.batch.beta.shape:
+                    self.beta.assign(self.batch.beta).realize()
+                else:
+                    self.beta = self.batch.beta.realize()
+                if (
+                    hasattr(self, "molecule_mask")
+                    and self.molecule_mask is not None
+                    and self.molecule_mask.shape == self.batch.molecule_mask.shape
+                ):
+                    self.molecule_mask.assign(self.batch.molecule_mask).realize()
+                else:
+                    self.molecule_mask = self.batch.molecule_mask.realize()
+                if (
+                    hasattr(self, "conditioning")
+                    and self.conditioning is not None
+                    and self.conditioning.shape == self.batch.conditioning.shape
+                ):
+                    self.conditioning.assign(self.batch.conditioning).realize()
+                else:
+                    self.conditioning = self.batch.conditioning.realize()
+                if self.batch_size != self.batch.batch_size:
+                    self.batch_size = self.batch.batch_size
+                    self.train_step = None
 
     def train(
         self,

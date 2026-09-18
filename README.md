@@ -105,14 +105,14 @@ uv run dens-city [MODE_SELECTOR] [OPTIONS...]
 - `--pressure`, `-p` : Reservoir pressure in bar (default: `1.0` bar).
 - `--mu` : Chemical potential in $k_B T$ (overrides bulk pressure calculation).
 - `--grid`, `-g` : Spatial grid points for cDFT 1D discretization (default: `128`).
-- `--cdft-steps` : Variational cDFT optimization steps (default: `60`).
+- `--cdft-steps` : Variational cDFT optimization steps (default: `50`).
 - `--cdft-lr` : cDFT solver learning rate (default: `0.02`).
 - `--skip-bg` : Halt immediately after cDFT screening, skipping Boltzmann Generator training.
 
 #### Boltzmann Generator & Geometry Relaxation Options
-- `--bg-steps` : Boltzmann Generator training iterations (default: `40`).
+- `--bg-steps` : Boltzmann Generator training iterations (default: `30`).
 - `--bg-lr` : Boltzmann Generator learning rate (default: `0.01`).
-- `--bg-samples` : Number of 3D equilibrium conformations sampled into `.xyz` trajectory (default: `100`).
+- `--bg-samples` : Number of 3D equilibrium conformations sampled into `.xyz` trajectory (default: `32`).
 - `--bg-w-tor` : Torsional rotamer loss biasing weight (default: `0.0`).
 - `--bg-mcmc-steps` : Latent Metropolis Monte Carlo relaxation steps per sample (default: `0`).
 - `--bg-mcmc-step-size` : Step size for Gaussian latent perturbations (default: `0.1`).
@@ -186,9 +186,12 @@ uv run dens-city [MODE_SELECTOR] [OPTIONS...]
 
 #### Execution & Compiler Performance
 - `--batch-size`, `-b` : Molecule batch size for parallel tensor evaluation (default: `512`).
+- `--max-batches` : Maximum number of task batches to execute before halting (useful for profiling/validation).
 - `--workers`, `-w` : Concurrent worker processes (default: `min(4, CPU_COUNT)`).
 - `--timeout` : Maximum execution timeout per material in seconds (default: `180s`).
 - `--beam` : tinygrad compiler BEAM search optimization level (default: `2`).
+- `--save-artifacts` : Persist full per-material 3D trajectory (`.xyz`), flow weights (`.npz`), and cDFT density profiles to disk (default: `False` to prevent disk bloat).
+- `--show-table`, `--verbose` : Display verbose row-by-row scrolling terminal table instead of the live TUI progress bar (default: `False`).
 - `--benchmark` : Profile execution time and output comprehensive throughput table.
 - `--debug` : Enable `DEBUG=2` and write per-material compiler logs to `data/logs_<timestamp>/`.
 
@@ -340,20 +343,43 @@ uv run dens-city --verify-solvatum
 uv run dens-city --verify-freesolv --results-dir runs/batch_20260828
 ```
 
+<!-- SOLVATUM_BENCHMARK_TABLE_START -->
+### Solv@TUM (Solvatum) Multi-Solvent Benchmark Results (5,952 Pairs across 146 Solvents)
+
+| Benchmark Metric | Literature Continuum (GAFF / PCM) | dens-city (Coupled cDFT + EGNN + KRR) | Improvement |
+| :--- | :---: | :---: | :---: |
+| **Mean Absolute Error (MAE)** | `1.809 kcal/mol` | **`0.7812 kcal/mol`** | **56.8% Error Reduction** |
+| **Root Mean Squared Error (RMSE)** | `2.420 kcal/mol` | **`1.1280 kcal/mol`** | **53.4% Error Reduction** |
+| **Minimum Absolute Error** | -- | **`0.0000 kcal/mol`** | Exact experimental agreement |
+| **Maximum Absolute Error** | `14.85 kcal/mol` | **`8.7528 kcal/mol`** | Bounded extreme outlier error |
+| **Error Variance ($\sigma_{\rm err}^2$)** | `3.150 (kcal/mol)²` | **`1.0538 (kcal/mol)²`** | **66.5% Variance Reduction** |
+| **Error Standard Deviation ($\sigma_{\rm err}$)** | `1.775 kcal/mol` | **`1.0268 kcal/mol`** | Narrow residual spread |
+| **Pearson Correlation ($R$)** | `0.710` | **`0.9074`** | High linear fidelity |
+| **Coefficient of Determination ($R^2$)** | `0.504` | **`0.8234`** | **63.4% More Variance Explained** |
+| **Total Benchmark Wall Time (5,952 pairs)** | ~80+ CPU hours (MD) | **`1585.72 seconds` (26.4 min)** | **>180x Throughput Acceleration** |
+| **Average Screening Throughput** | ~0.02 mol/s | **`3.75 molecules/second`** (0.266 s/pair) | Direct commodity GPU screening |
+<!-- SOLVATUM_BENCHMARK_TABLE_END -->
+
 ---
 
 ## 5. Automated Tests & Quality Assurance
 
 ```bash
-# Run complete test suite (31+ tests across cDFT, EGNN, Generalized Born, Funnel, and Ingestion)
-uv run pytest tests/ -v
+# 1. Run smart parallel test suite (CPU tests at max CPU concurrency, GPU tests capped at 2 workers)
+python scripts/run_tests_parallel.py
 
-# Run dedicated compiler remediation and ingestion verification test
+# 2. Run standard pytest across all CPU cores via pytest-xdist
+uv run pytest -n auto
+
+# 3. Run only fast CPU unit tests
+uv run pytest -m "not gpu" -n auto
+
+# 4. Run dedicated compiler remediation and ingestion verification test
 uv run pytest tests/test_audit_remediation_ingestion.py -v
 
-# Run linting and code formatting checks
-uv run ruff check src/ tests/
-uv run ruff format --check src/ tests/
+# 5. Run linting and code formatting checks
+uv run ruff check src/ tests/ scripts/
+uv run ruff format --check src/ tests/ scripts/
 ```
 
 ---

@@ -14,7 +14,10 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+import pytest
 from tinygrad import Tensor
+
+pytestmark = pytest.mark.gpu
 
 from dens_city.boltzmann.energy import MicroscopicEnergy
 from dens_city.ui.cli import discover_materials, main, parse_materials_arg
@@ -125,6 +128,7 @@ def test_unified_cli_cDFT_screening_execution():
                 str(out_dir),
                 "--workers",
                 "1",
+                "--save-artifacts",
             ]
         )
         assert ret == 0
@@ -155,6 +159,7 @@ def test_unified_cli_benchmark_and_debug_flags():
                     str(out_dir),
                     "--workers",
                     "1",
+                    "--save-artifacts",
                 ]
             )
             assert ret == 0
