@@ -1028,6 +1028,8 @@ def execute_prepared_batch(
     cdft_losses = batched_cdft.solve(steps=batch_tasks[0].cdft_steps if batch_tasks else 50, verbose=False)
     t_cdft_total = time.perf_counter() - t_c0
     t_cdft_per_mat = t_cdft_total / max(1, len(loaded_materials))
+    if os.environ.get("PIPELINE_VERBOSE", "0") == "1":
+        print(f"      [1/4 cDFT] Solved {len(loaded_materials)} materials in {t_cdft_total:.2f}s", flush=True)
 
     cdft_profiles = batched_cdft.get_density_profiles()
     cdft_pressures = batched_cdft.get_wall_contact_pressures()
@@ -1128,12 +1130,17 @@ def execute_prepared_batch(
             patience=3,
         )
         bg_loss = bg_losses[-1] if bg_losses else 0.0
+        t_bg = time.perf_counter() - t_bg_start
+        if os.environ.get("PIPELINE_VERBOSE", "0") == "1":
+            print(
+                f"      [2/4 Boltzmann Flow] Trained {calibrated_steps} steps (loss={bg_loss:.2f}) in {t_bg:.2f}s",
+                flush=True,
+            )
 
         stacked_samples = generator.sample_coords(n_samples=bg_samples)
         mean_energies = np.zeros(len(loaded_materials), dtype=np.float32)
         var_energies = np.zeros(len(loaded_materials), dtype=np.float32)
         mean_log_pxs = np.zeros(len(loaded_materials), dtype=np.float32)
-        t_bg = time.perf_counter() - t_bg_start
 
         # 3. Extract Per-Material Trajectories and Dispatch Async Writes
         if any(getattr(t, "save_artifacts", False) for t in batch_tasks):
@@ -1497,6 +1504,11 @@ def execute_prepared_batch(
         krr_density_np = np.zeros((batch_size, 1), dtype=np.float32)
 
     t_batch_elapsed = time.perf_counter() - t_start
+    if os.environ.get("PIPELINE_VERBOSE", "0") == "1":
+        print(
+            f"      [3/3 Readouts] Evaluated EGNN energy, forces & Delta-KRR LOOCV in {t_batch_elapsed - t_bg:.2f}s",
+            flush=True,
+        )
     n_mats = max(1, len(loaded_materials))
     t_total_per_mat = t_batch_elapsed / n_mats
     t_bg_per_mat = t_bg / n_mats
