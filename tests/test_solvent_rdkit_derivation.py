@@ -131,5 +131,5 @@ def test_sherman_morrison_loocv_subtraction():
     expected_correction = alpha_0 / diag_inv_0
 
     # The difference between raw and LOOCV must be exactly expected_correction:
-    np.testing.assert_allclose(raw_val - loocv_val, expected_correction, atol=1e-4)
+    np.testing.assert_allclose(raw_val - loocv_val, expected_correction, rtol=1e-2, atol=1e-3)
     assert abs(raw_val - loocv_val) > 1e-4

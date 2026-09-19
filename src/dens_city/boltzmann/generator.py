@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from tinygrad import Tensor, TinyJit, dtypes, nn
-from tinygrad.helpers import getenv, trange
+from tinygrad.helpers import Context, getenv, trange
 
 from dens_city.boltzmann.bijectors import (
     Base2CartesianFlow,
@@ -77,6 +77,9 @@ class BoltzmannGenerator:
             else:
                 self.dihedral_quadruplets = None
 
+        # Realize all flow weights and biases on device
+        Tensor.realize(*nn.state.get_parameters(self.flow))
+
         if self.prior is not None:
             raw_pool = self.prior.sample(n_samples=max(4096, self.batch_size * 16))
             if self.is_base2_cartesian or self.is_composite:
@@ -89,9 +92,6 @@ class BoltzmannGenerator:
                 self.origin_pool = raw_pool.reshape(-1, self.dim).realize()
         else:
             self.origin_pool = None
-
-        # Realize all flow weights and biases on device
-        Tensor.realize(*nn.state.get_parameters(self.flow))
 
         # Optimizer over all flow parameters
         opt_type = nn.optim.Muon if getenv("MUON") else nn.optim.SGD if getenv("SGD") else nn.optim.Adam
@@ -261,6 +261,7 @@ class BoltzmannGenerator:
 
         return loss_batch.mean()
 
+    @Context(TRAINING=1)
     def _train_step(self, origin_pool: Optional[Tensor] = None) -> Tensor:
         """
         Executes a single JIT-compiled gradient descent step on the flow parameters.

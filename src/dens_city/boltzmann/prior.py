@@ -55,8 +55,8 @@ class CDFTBaseDistribution:
         self.cdf = np.concatenate([[0.0], cdf])
 
         # Precompute tinygrad tensors for vectorized differentiable log_prob and pure tensor sampling
-        self.rho_tensor = Tensor(self.rho_np.astype(np.float32), dtype=dtypes.float32)
-        self.cdf_tensor = Tensor(self.cdf.astype(np.float32), dtype=dtypes.float32)
+        self.rho_tensor = Tensor(self.rho_np.astype(np.float32), dtype=dtypes.float32).realize()
+        self.cdf_tensor = Tensor(self.cdf.astype(np.float32), dtype=dtypes.float32).realize()
 
     def sample(self, n_samples: int = 1, as_4channel: bool = False) -> Tensor:
         """

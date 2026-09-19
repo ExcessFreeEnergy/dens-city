@@ -14,6 +14,7 @@ from typing import Callable, List, Optional, Tuple, Union
 
 import numpy as np
 from tinygrad import Tensor, TinyJit, dtypes, nn
+from tinygrad.helpers import TRAINING
 
 
 class EGNNLayer:
@@ -907,7 +908,7 @@ class EGNNForceField:
 
         q_shift = (q_sum - q_target) / num_real
         q_masked = ((q_raw - q_shift) * atom_mask).reshape(B, N) * molecule_mask.reshape(B, 1)
-        q_final = q_masked if Tensor.training else q_masked.realize()
+        q_final = q_masked if bool(TRAINING) else q_masked.realize()
 
         Tensor.realize(u_total, forces, q_final)
         for p in nn.state.get_parameters(self):

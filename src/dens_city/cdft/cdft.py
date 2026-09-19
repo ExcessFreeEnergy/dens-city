@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import numpy as np
 from tinygrad import GlobalCounters, Tensor, TinyJit, dtypes, nn
-from tinygrad.helpers import getenv, trange
+from tinygrad.helpers import Context, getenv, trange
 
 from dens_city.cdft.kernels import KernelBuilder
 
@@ -148,6 +148,7 @@ class TinyCDFT:
 
         return f_ideal + f_ext + f_fmt + f_att + f_mu
 
+    @Context(TRAINING=1)
     def _train_step(self) -> Tensor:
         """
         Pure JIT-compiled optimization step.
@@ -642,6 +643,7 @@ class BatchedTinyCDFT:
         n_active = self.molecule_mask.sum().maximum(1.0)
         return omega_b.sum() / n_active
 
+    @Context(TRAINING=1)
     def _train_step(self) -> Tensor:
         Tensor.training = True
         self.opt.zero_grad()

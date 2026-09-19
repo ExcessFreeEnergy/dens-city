@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Optional
 
 from tinygrad import Tensor, dtypes
+from tinygrad.helpers import TRAINING
 
 
 def _build_bondi_radii_table() -> list[float]:
@@ -142,7 +143,7 @@ class GeneralizedBornSolvation:
         # 5. Effective Born radius alpha_i >= rho_i (Hawkins/Grycuk descreening up to 30 Å)
         alpha_i = rho_i * (1.0 + integral_i) * atom_mask
         alpha_out = alpha_i.maximum(rho_i).minimum(30.0 * atom_mask)
-        return alpha_out if Tensor.training else alpha_out.realize()
+        return alpha_out if bool(TRAINING) else alpha_out.realize()
 
     def compute_solvent_descriptors(
         self,
@@ -207,7 +208,7 @@ class GeneralizedBornSolvation:
 
         # Stack into (B, N, 4)
         descriptors = Tensor.cat(alpha_i * 0.2, beta_i, bq, chi_i, dim=-1) * atom_mask
-        return descriptors if Tensor.training else descriptors.realize()
+        return descriptors if bool(TRAINING) else descriptors.realize()
 
     def compute_solvation_free_energy(
         self,
@@ -291,4 +292,4 @@ class GeneralizedBornSolvation:
 
         # Total Born Solvation Free Energy in kcal/mol
         total_gb_kcal = -eps_factor * COULOMB_KCAL_A * (self_energy + pair_energy)
-        return total_gb_kcal if Tensor.training else total_gb_kcal.realize()
+        return total_gb_kcal if bool(TRAINING) else total_gb_kcal.realize()

@@ -28,6 +28,11 @@ def _patch_tinygrad_nv_overflow():
 
 _patch_tinygrad_nv_overflow()
 
+from tinygrad import Tensor
+
+if not hasattr(Tensor, "training"):
+    Tensor.training = False
+
 from dens_city.cdft import KernelBuilder, TinyCDFT
 from dens_city.utils.materials import Material, MaterialLoader
 from dens_city.utils.pipeline import (

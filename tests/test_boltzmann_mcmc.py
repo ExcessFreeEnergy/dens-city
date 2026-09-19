@@ -116,14 +116,14 @@ def test_composite_flow_mcmc_relaxation():
         material=water,
         box_size=(30.0, 30.0, 30.0),
         r_cut=10.0,
-        pad_to_128=False,
+        pad_to_power_of_2=False,
     )
-    flow = CompositeFlow(n_atoms=energy_fn.n_particles, n_layers=4, hidden_dim=32)
+    flow = CompositeFlow(n_atoms=3, n_layers=4, hidden_dim=32)
     generator = BoltzmannGenerator(
         flow=flow,
         energy_fn=energy_fn,
         temperature_k=300.0,
-        learning_rate=0.01,
+        learning_rate=0.001,
     )
 
     generator.train(steps=5, batch_size=16)
@@ -131,7 +131,7 @@ def test_composite_flow_mcmc_relaxation():
     samples, stats = generator.sample_relaxed(
         n_samples=4,
         mcmc_steps=2,
-        mcmc_step_size=0.1,
+        mcmc_step_size=0.05,
         return_stats=True,
     )
     assert samples.shape == (4, 3, 3)

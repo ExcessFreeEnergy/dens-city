@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from tinygrad import GlobalCounters, Tensor, TinyJit, dtypes, nn
-from tinygrad.helpers import colored
+from tinygrad.helpers import Context, colored
 
 from dens_city.boltzmann.egnn import EGNNForceField
 from dens_city.cdft.generalized_born import GeneralizedBornSolvation
@@ -390,6 +390,7 @@ class QuantumChargeTrainer:
         return batches
 
     @TinyJit
+    @Context(TRAINING=1)
     def _train_step_p1(
         self,
         coords: Tensor,
@@ -483,6 +484,7 @@ class QuantumChargeTrainer:
         return loss, mae_metric, max_dq_metric
 
     @TinyJit
+    @Context(TRAINING=1)
     def _train_step_p2(
         self,
         coords: Tensor,
@@ -864,102 +866,105 @@ class QuantumChargeTrainer:
         max_dq = self.config.max_delta_q
         max_vdw = self.config.max_delta_vdw
 
-        Tensor.training = True
-        for b in batches:
-            self.opt_head.zero_grad()
-            if phase == 2:
-                self.opt_trunk.zero_grad()
+        with Context(TRAINING=1):
+            Tensor.training = True
+            for b in batches:
+                self.opt_head.zero_grad()
+                if phase == 2:
+                    self.opt_trunk.zero_grad()
 
-            b_size, n_atoms, _ = b.atom_mask.shape
-            valid_mol = (b.atom_mask.sum(axis=(1, 2)) > 0).cast(dtypes.float32)
-            num_valid_mols = valid_mol.sum().maximum(1.0)
+                b_size, n_atoms, _ = b.atom_mask.shape
+                valid_mol = (b.atom_mask.sum(axis=(1, 2)) > 0).cast(dtypes.float32)
+                num_valid_mols = valid_mol.sum().maximum(1.0)
 
-            if phase == 1 and b.cached_h is not None:
-                node_inputs = Tensor.cat(b.cached_h, b.cached_solvent_features, dim=-1)
-                delta_q_raw = self.ff.charge_mlp[0](node_inputs)
-                delta_q_raw = self.ff.charge_mlp[1](delta_q_raw)
-                delta_q_raw = self.ff.charge_mlp[2](delta_q_raw)
-                delta_q = max_dq * (delta_q_raw / max_dq).tanh() * b.atom_mask
+                if phase == 1 and b.cached_h is not None:
+                    node_inputs = Tensor.cat(b.cached_h, b.cached_solvent_features, dim=-1)
+                    delta_q_raw = self.ff.charge_mlp[0](node_inputs)
+                    delta_q_raw = self.ff.charge_mlp[1](delta_q_raw)
+                    delta_q_raw = self.ff.charge_mlp[2](delta_q_raw)
+                    delta_q = max_dq * (delta_q_raw / max_dq).tanh() * b.atom_mask
 
-                q_raw = (b.base_charges.reshape(b_size, n_atoms, 1) + delta_q) * b.atom_mask
-                num_real = b.atom_mask.sum(axis=1, keepdim=True).maximum(1.0)
-                q_sum = q_raw.sum(axis=1, keepdim=True)
-                q_shift = (q_sum - b.total_charges) / num_real
-                q_pred = ((q_raw - q_shift) * b.atom_mask).reshape(b_size, n_atoms)
+                    q_raw = (b.base_charges.reshape(b_size, n_atoms, 1) + delta_q) * b.atom_mask
+                    num_real = b.atom_mask.sum(axis=1, keepdim=True).maximum(1.0)
+                    q_sum = q_raw.sum(axis=1, keepdim=True)
+                    q_shift = (q_sum - b.total_charges) / num_real
+                    q_pred = ((q_raw - q_shift) * b.atom_mask).reshape(b_size, n_atoms)
 
-                delta_vdw_raw = self.ff.vdw_mlp[0](node_inputs)
-                delta_vdw_raw = self.ff.vdw_mlp[1](delta_vdw_raw)
-                delta_vdw_raw = self.ff.vdw_mlp[2](delta_vdw_raw)
-                delta_vdw_atomic = max_vdw * (delta_vdw_raw / max_vdw).tanh() * b.atom_mask
-                delta_vdw_mol_atomic = delta_vdw_atomic.sum(axis=(1, 2))
+                    delta_vdw_raw = self.ff.vdw_mlp[0](node_inputs)
+                    delta_vdw_raw = self.ff.vdw_mlp[1](delta_vdw_raw)
+                    delta_vdw_raw = self.ff.vdw_mlp[2](delta_vdw_raw)
+                    delta_vdw_atomic = max_vdw * (delta_vdw_raw / max_vdw).tanh() * b.atom_mask
+                    delta_vdw_mol_atomic = delta_vdw_atomic.sum(axis=(1, 2))
 
-                # Multi-scale graph pooling & cooperative readout in Phase 1
-                mean_pool = (b.cached_h * b.atom_mask).sum(axis=1) / num_real.reshape(b_size, 1)
-                h_masked = b.cached_h * b.atom_mask - (1.0 - b.atom_mask) * 1e4
-                max_pool = h_masked.max(axis=1)
-                h_diff = (b.cached_h - mean_pool.reshape(b_size, 1, self.config.hidden_dim)) * b.atom_mask
-                var_pool = (h_diff * h_diff).sum(axis=1) / num_real.reshape(b_size, 1)
-                std_pool = (var_pool + 1e-6).sqrt()
-                graph_features = Tensor.cat(mean_pool, max_pool, std_pool, dim=-1)
-                delta_coop_raw = self.ff.global_mlp[0](graph_features)
-                delta_coop_raw = self.ff.global_mlp[1](delta_coop_raw)
-                delta_coop_raw = self.ff.global_mlp[2](delta_coop_raw).reshape(b_size)
-                delta_g_coop = self.ff.max_delta_global * (delta_coop_raw / self.ff.max_delta_global).tanh()
-                delta_vdw_mol = delta_vdw_mol_atomic + delta_g_coop
-            else:
-                q_pred, delta_vdw_mol, delta_vdw_atomic = self.ff.compute_solvation_readouts(
+                    # Multi-scale graph pooling & cooperative readout in Phase 1
+                    mean_pool = (b.cached_h * b.atom_mask).sum(axis=1) / num_real.reshape(b_size, 1)
+                    h_masked = b.cached_h * b.atom_mask - (1.0 - b.atom_mask) * 1e4
+                    max_pool = h_masked.max(axis=1)
+                    h_diff = (b.cached_h - mean_pool.reshape(b_size, 1, self.config.hidden_dim)) * b.atom_mask
+                    var_pool = (h_diff * h_diff).sum(axis=1) / num_real.reshape(b_size, 1)
+                    std_pool = (var_pool + 1e-6).sqrt()
+                    graph_features = Tensor.cat(mean_pool, max_pool, std_pool, dim=-1)
+                    delta_coop_raw = self.ff.global_mlp[0](graph_features)
+                    delta_coop_raw = self.ff.global_mlp[1](delta_coop_raw)
+                    delta_coop_raw = self.ff.global_mlp[2](delta_coop_raw).reshape(b_size)
+                    delta_g_coop = self.ff.max_delta_global * (delta_coop_raw / self.ff.max_delta_global).tanh()
+                    delta_vdw_mol = delta_vdw_mol_atomic + delta_g_coop
+                else:
+                    q_pred, delta_vdw_mol, delta_vdw_atomic = self.ff.compute_solvation_readouts(
+                        x=b.coords,
+                        atomic_numbers=b.atomic_numbers,
+                        atom_mask=b.atom_mask,
+                        total_charge=b.total_charges,
+                        base_charges=b.base_charges,
+                        solvent_features=b.cached_solvent_features,
+                        detach_trunk=False,
+                    )
+                    delta_q = (q_pred - b.base_charges) * b.atom_mask.reshape(b_size, n_atoms)
+
+                dg_gb = self.gb.compute_solvation_free_energy(
                     x=b.coords,
+                    charges=q_pred,
                     atomic_numbers=b.atomic_numbers,
                     atom_mask=b.atom_mask,
-                    total_charge=b.total_charges,
-                    base_charges=b.base_charges,
-                    solvent_features=b.cached_solvent_features,
-                    detach_trunk=False,
+                    dielectric_constant=self.config.dielectric_constant,
                 )
-                delta_q = (q_pred - b.base_charges) * b.atom_mask.reshape(b_size, n_atoms)
+                dg_calc = b.vdw_energies + delta_vdw_mol + dg_gb
+                err = (dg_calc - b.expt_energies) * valid_mol
 
-            dg_gb = self.gb.compute_solvation_free_energy(
-                x=b.coords,
-                charges=q_pred,
-                atomic_numbers=b.atomic_numbers,
-                atom_mask=b.atom_mask,
-                dielectric_constant=self.config.dielectric_constant,
-            )
-            dg_calc = b.vdw_energies + delta_vdw_mol + dg_gb
-            err = (dg_calc - b.expt_energies) * valid_mol
+                abs_err = err.abs() * valid_mol
+                huber_terms = (abs_err <= delta).where(0.5 * err * err, delta * (abs_err - 0.5 * delta)) * valid_mol
+                huber_loss = huber_terms.sum() / num_valid_mols
 
-            abs_err = err.abs() * valid_mol
-            huber_terms = (abs_err <= delta).where(0.5 * err * err, delta * (abs_err - 0.5 * delta)) * valid_mol
-            huber_loss = huber_terms.sum() / num_valid_mols
-
-            num_real_total = b.atom_mask.sum().maximum(1.0)
-            l2_q = lambda_l2 * (delta_q * delta_q).sum() / num_real_total
-            l2_vdw = lambda_vdw * (delta_vdw_atomic * delta_vdw_atomic).sum() / num_real_total
-            l2_coop = (
-                getattr(self.config, "lambda_global", 0.0005) * (delta_vdw_mol * delta_vdw_mol).sum() / num_valid_mols
-            )
-
-            loss = (huber_loss + l2_q + l2_vdw + l2_coop).reshape(())
-            mae_metric = abs_err.sum() / num_valid_mols
-            max_dq_metric = delta_q.abs().max()
-
-            loss.backward()
-
-            if phase == 1:
-                Tensor.realize(loss, mae_metric, max_dq_metric, *self.opt_head.schedule_step())
-            else:
-                Tensor.realize(
-                    loss, mae_metric, max_dq_metric, *self.opt_head.schedule_step(), *self.opt_trunk.schedule_step()
+                num_real_total = b.atom_mask.sum().maximum(1.0)
+                l2_q = lambda_l2 * (delta_q * delta_q).sum() / num_real_total
+                l2_vdw = lambda_vdw * (delta_vdw_atomic * delta_vdw_atomic).sum() / num_real_total
+                l2_coop = (
+                    getattr(self.config, "lambda_global", 0.0005)
+                    * (delta_vdw_mol * delta_vdw_mol).sum()
+                    / num_valid_mols
                 )
 
-            self.opt_head.zero_grad()
-            if phase == 2:
-                self.opt_trunk.zero_grad()
+                loss = (huber_loss + l2_q + l2_vdw + l2_coop).reshape(())
+                mae_metric = abs_err.sum() / num_valid_mols
+                max_dq_metric = delta_q.abs().max()
 
-            b_len = len(b.material_names)
-            total_loss += float(loss.item()) * b_len
-            total_mae += float(mae_metric.item()) * b_len
-            total_max_dq = max(total_max_dq, float(max_dq_metric.item()))
+                loss.backward()
+
+                if phase == 1:
+                    Tensor.realize(loss, mae_metric, max_dq_metric, *self.opt_head.schedule_step())
+                else:
+                    Tensor.realize(
+                        loss, mae_metric, max_dq_metric, *self.opt_head.schedule_step(), *self.opt_trunk.schedule_step()
+                    )
+
+                self.opt_head.zero_grad()
+                if phase == 2:
+                    self.opt_trunk.zero_grad()
+
+                b_len = len(b.material_names)
+                total_loss += float(loss.item()) * b_len
+                total_mae += float(mae_metric.item()) * b_len
+                total_max_dq = max(total_max_dq, float(max_dq_metric.item()))
             total_molecules += b_len
 
         avg_loss = total_loss / max(1, total_molecules)
