@@ -153,8 +153,7 @@ class MaterialPipelineTask:
     debug: bool = False
     debug_log_path: Optional[str] = None
     r_cut: Optional[float] = None
-    energy_engine: str = "classical"  # "classical", "electronegativity", "egnn", "auto"
-    force_egnn: bool = False
+    energy_engine: str = "classical"  # "classical" (GAFF baseline) or "egnn" (7-layer MLFF)
     material_obj: Optional[Material] = None
     solvent_name: str = "vacuum"
     dielectric_constant: Optional[float] = None
@@ -399,12 +398,9 @@ def process_material_task(task: MaterialPipelineTask) -> MaterialPipelineResult:
         box_xy = (30.0, 30.0)
         box_size_3d = (30.0, 30.0, slit_w)
 
-        # Determine effective engine: classical, electronegativity, egnn, auto
-        effective_engine = task.energy_engine
-        if getattr(task, "force_egnn", False) or effective_engine == "auto":
-            effective_engine = "egnn"
+        # Microscopic Hamiltonian: EGNN MLFF (default) or classical GAFF
+        effective_engine = task.energy_engine if task.energy_engine in ("classical", "egnn") else "egnn"
 
-        # Microscopic Hamiltonian: Classical or EGNN MLFF
         if effective_engine == "egnn":
             energy_fn = EGNNMicroscopicEnergy(
                 material=material,
@@ -1003,11 +999,8 @@ def execute_prepared_batch(
         )
     )
 
-    engine_type = (
-        batch_tasks[0].energy_engine if batch_tasks and hasattr(batch_tasks[0], "energy_engine") else "classical"
-    )
-    force_egnn = any(getattr(t, "force_egnn", False) for t in batch_tasks)
-    if force_egnn or engine_type == "auto":
+    engine_type = batch_tasks[0].energy_engine if batch_tasks and hasattr(batch_tasks[0], "energy_engine") else "egnn"
+    if engine_type != "classical":
         engine_type = "egnn"
 
     if engine_type == "egnn":
@@ -1640,11 +1633,8 @@ def process_batched_materials(
         n_grid=128,
         learning_rate=batch_tasks[0].cdft_lr if batch_tasks else 0.02,
     )
-    engine_type = (
-        batch_tasks[0].energy_engine if batch_tasks and hasattr(batch_tasks[0], "energy_engine") else "classical"
-    )
-    force_egnn = any(getattr(t, "force_egnn", False) for t in batch_tasks)
-    if force_egnn or engine_type == "auto":
+    engine_type = batch_tasks[0].energy_engine if batch_tasks and hasattr(batch_tasks[0], "energy_engine") else "egnn"
+    if engine_type != "classical":
         engine_type = "egnn"
 
     if engine_type == "egnn":

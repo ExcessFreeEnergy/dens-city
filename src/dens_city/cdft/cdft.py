@@ -108,19 +108,6 @@ class TinyCDFT:
         """
         return (self.psi).exp() * self.bulk_density
 
-    def compute_electrostatic_potential(self, charge_density: Tensor, dielectric_constant: float = 1.0) -> Tensor:
-        r"""
-        Solves 1D Poisson boundary value problem using exact Dirichlet Green's matrix G:
-        \phi(z) = G * \rho_q(z) where \phi(0) = \phi(L_z) = 0.
-        """
-        g_matrix = KernelBuilder.build_coulomb_1d_greens_matrix(
-            self.n_grid, self.dz_val, dielectric_constant=dielectric_constant
-        ).realize()
-        g_mat_2d = g_matrix.reshape(self.n_grid, self.n_grid)
-        rho_q_vec = charge_density.reshape(self.n_grid, 1)
-        phi_vec = g_mat_2d.matmul(rho_q_vec)
-        return phi_vec.reshape(1, 1, self.n_grid, 1)
-
     def grand_potential(self) -> Tensor:
         r"""
         Evaluates the grand potential functional Omega[rho] / (k_B * T):

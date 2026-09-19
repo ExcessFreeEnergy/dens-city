@@ -1,5 +1,5 @@
 """
-Unit and integration tests for Stage 4 EGNN Quantum-Surrogate Filter.
+Unit and integration tests for EGNN Quantum MLFF Filter.
 Validates single-pass autograd conservative force extraction, E(n) invariance,
 multi-chunk graph severing, and quantum Pareto ranking.
 """

@@ -216,7 +216,6 @@ def test_multi_batch_egnn_memory_cleaning(tmp_path):
             bg_batch_size=4,
             bg_samples=2,
             skip_bg=False,
-            force_egnn=True,
         )
         for _ in range(4)
     ]
@@ -233,7 +232,6 @@ def test_multi_batch_egnn_memory_cleaning(tmp_path):
             bg_batch_size=4,
             bg_samples=2,
             skip_bg=False,
-            force_egnn=True,
         )
         for _ in range(4)
     ]

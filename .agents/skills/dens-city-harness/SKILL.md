@@ -75,30 +75,29 @@ The LLM harness does **not** evaluate physics equations directly or handle raw 3
 
 ---
 
-## 3. The 10 MCP Tools Reference
+## 3. The 9 MCP Tools Reference
 
 | # | Tool Name | Scope | Input Summary | Output Summary |
 |---|---|---|---|---|
 | 1 | `run_full_pipeline` | End-to-End | `target_spec`, `train_steps`, `num_candidates`, `top_k` | `job_id` |
 | 2 | `train_swarm_agent` | Stage 1 (RL) | `target_spec`, `total_timesteps`, `curriculum`, `sa_penalty` | `job_id` $\to$ `model_weights_path` |
 | 3 | `sample_candidates` | Stage 2 (Sample) | `model_weights_path`, `num_samples`, `continue_pipeline` | `job_id` $\to$ `candidate_pool_id` |
-| 4 | `run_cdft_thermo` | Stage 3 (cDFT) | `candidate_pool_id` / `smiles_list`, `continue_pipeline` | `job_id` $\to$ `thermo_pool_id` |
-| 5 | `run_egnn_quantum` | Stage 4 (EGNN) | `thermo_pool_id` / `candidates_dir`, `continue_pipeline` | `job_id` $\to$ `egnn_scored_pool_id` |
-| 6 | `rank_pareto_frontier` | Stage 5 (Pareto) | `scored_pool_id`, `ranking_weights`, `max_sa_score` | `job_id` $\to$ `pareto_result_uri` |
-| 7 | `get_job_status` | Observability | `job_id`, `wait_for_completion=True`, `timeout_seconds` | Status, progress %, logs, result |
-| 8 | `cancel_job` | Control | `job_id` | `cancelled: bool` |
-| 9 | `validate_spec` | Pre-flight | `smiles_list`, `target_spec` | Valid bool, offending atoms, reasons |
-| 10 | `cleanup_artifacts` | Storage | `mode="keep_pareto_only"`, `older_than_hours` | Freed MB, deleted pools |
+| 4 | `run_cdft_thermo` | Stage 3 (Screening) | `candidate_pool_id` / `smiles_list`, `continue_pipeline` | `job_id` $\to$ `thermo_pool_id` |
+| 5 | `rank_pareto_frontier` | Stage 4 (Pareto) | `thermo_pool_id`, `ranking_weights`, `max_sa_score` | `job_id` $\to$ `pareto_result_uri` |
+| 6 | `get_job_status` | Observability | `job_id`, `wait_for_completion=True`, `timeout_seconds` | Status, progress %, logs, result |
+| 7 | `cancel_job` | Control | `job_id` | `cancelled: bool` |
+| 8 | `validate_spec` | Pre-flight | `smiles_list`, `target_spec` | Valid bool, offending atoms, reasons |
+| 9 | `cleanup_artifacts` | Storage | `mode="keep_pareto_only"`, `older_than_hours` | Freed MB, deleted pools |
 
 ---
 
 ## 4. Pipeline Continuation Flag (`continue_pipeline`)
 
-Tools 3, 4, and 5 support the `continue_pipeline: bool = False` argument:
+Tools 3 and 4 support the `continue_pipeline: bool = False` argument:
 - **`continue_pipeline=False` (Step-by-Step)**: Runs only that specific stage. Ideal when the LLM wants to inspect intermediate diversity, filter pools, or compare multiple models.
 - **`continue_pipeline=True` (Chained Execution)**: Continues from that stage through all remaining stages to final Pareto export. For example:
-  - `sample_candidates(..., continue_pipeline=True)`: Samples candidates and runs Stages 3, 4, 5 in one job.
-  - `run_cdft_thermo(smiles_list=[...], continue_pipeline=True)`: Takes external molecules and screens them through Stages 3, 4, 5.
+  - `sample_candidates(..., continue_pipeline=True)`: Samples candidates and runs Stages 3 and 4 in one job.
+  - `run_cdft_thermo(smiles_list=[...], continue_pipeline=True)`: Takes external molecules and screens them through Stages 3 and 4.
 
 ---
 

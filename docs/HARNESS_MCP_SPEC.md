@@ -32,7 +32,6 @@ This document describes the technical architecture, REST API routes, MCP tool sc
        │     runs/pools/{pool_id}/     │
        │  - candidate_pool             │
        │  - thermo_pool                │
-       │  - egnn_scored_pool           │
        │  - pareto_result              │
        └───────────────────────────────┘
 ```
@@ -70,12 +69,11 @@ uv run dens-city --cleanup-pools --cleanup-mode keep_pareto_only
 ## 3. REST API Routes Reference
 
 ### Submission Endpoints (Return `HTTP 202 Accepted` + `job_id`)
-- `POST /api/v1/pipeline/full`: Spawns 5-stage funnel.
+- `POST /api/v1/pipeline/full`: Spawns 4-stage funnel.
 - `POST /api/v1/stages/train-swarm`: Spawns Stage 1 PPO RL training.
 - `POST /api/v1/stages/sample-candidates`: Spawns Stage 2 candidate sampling.
-- `POST /api/v1/stages/run-cdft`: Spawns Stage 3 cDFT & Boltzmann flows. Synchronously rejects invalid SMILES with `HTTP 400`.
-- `POST /api/v1/stages/run-egnn`: Spawns Stage 4 EGNN quantum screening.
-- `POST /api/v1/stages/rank-pareto`: Spawns Stage 5 Pareto ranking & export.
+- `POST /api/v1/stages/run-cdft`: Spawns Stage 3 cDFT, Boltzmann flows & EGNN MLFF screening. Synchronously rejects invalid SMILES with `HTTP 400`.
+- `POST /api/v1/stages/rank-pareto`: Spawns Stage 4 Pareto ranking & export.
 
 ### Long-Polling Observability
 - `GET /api/v1/jobs/{job_id}?wait_for_completion=true&timeout_seconds=300`:

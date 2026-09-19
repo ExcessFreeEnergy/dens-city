@@ -132,7 +132,7 @@ class FunnelRanker:
     ) -> List[RankedCandidate]:
         """
         Combines Stage 1 RL swarm metrics with Stage 2/3 cDFT, Boltzmann Generator,
-        and Stage 4 EGNN quantum observables into a unified Pareto-ranked candidate list,
+        and EGNN quantum observables into a unified Pareto-ranked candidate list,
         applying an RDKit synthesizability safety gate (if SA > max_sa_score: drop).
         """
         results_by_name = {r.material_name: r for r in pipeline_results}

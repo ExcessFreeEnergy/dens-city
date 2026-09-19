@@ -472,8 +472,7 @@ def verify_pipeline_against_dataset(
     report_out: Optional[str | Path] = None,
     run_e2e: bool = False,
     populate_all: bool = False,
-    energy_engine: str = "classical",
-    force_egnn: bool = False,
+    energy_engine: str = "egnn",
     batch_size: Optional[int] = None,
     eval_loocv: bool = True,
 ) -> int:
@@ -496,22 +495,16 @@ def verify_pipeline_against_dataset(
                 dataset=ds.name,
             )
 
-        print(
-            f"Executing dens-city end-to-end benchmark (dataset: {ds.name}, engine: {energy_engine}, force_egnn={force_egnn})..."
-        )
-        engine_use = energy_engine if energy_engine != "classical" else "auto"
+        print(f"Executing dens-city end-to-end benchmark (dataset: {ds.name}, engine: {energy_engine})...")
+        engine_use = energy_engine if energy_engine in ("egnn", "classical") else "egnn"
         e2e_args = ["--materials", "all", "--benchmark", "--energy-engine", engine_use]
         e2e_args.extend(["--dataset", str(dataset)])
         if eval_loocv:
             e2e_args.append("--eval-loocv")
-        if force_egnn:
-            e2e_args.append("--force-egnn")
         if batch_size is not None:
             e2e_args.extend(["--batch-size", str(batch_size)])
-        elif energy_engine in ("egnn", "auto") or force_egnn:
-            e2e_args.extend(["--batch-size", "64"])
         else:
-            e2e_args.extend(["--batch-size", "512"])
+            e2e_args.extend(["--batch-size", "64"])
         if results_dir:
             e2e_args.extend(["--out-dir", str(results_dir)])
         cli_main(e2e_args)
@@ -559,8 +552,7 @@ def verify_pipeline_against_freesolv(
     report_out: Optional[str | Path] = None,
     run_e2e: bool = False,
     populate_all_freesolv: bool = False,
-    energy_engine: str = "classical",
-    force_egnn: bool = False,
+    energy_engine: str = "egnn",
     batch_size: Optional[int] = None,
 ) -> int:
     """Entrypoint function for FreeSolv verification and report generation."""
@@ -572,7 +564,6 @@ def verify_pipeline_against_freesolv(
         run_e2e=run_e2e,
         populate_all=populate_all_freesolv,
         energy_engine=energy_engine,
-        force_egnn=force_egnn,
         batch_size=batch_size,
     )
 
@@ -583,8 +574,7 @@ def verify_pipeline_against_solvatum(
     report_out: Optional[str | Path] = None,
     run_e2e: bool = False,
     populate_all_solvatum: bool = False,
-    energy_engine: str = "classical",
-    force_egnn: bool = False,
+    energy_engine: str = "egnn",
     batch_size: Optional[int] = None,
 ) -> int:
     """Entrypoint function for Solv@TUM (Solvatum) multi-solvent verification and report generation."""
@@ -596,6 +586,5 @@ def verify_pipeline_against_solvatum(
         run_e2e=run_e2e,
         populate_all=populate_all_solvatum,
         energy_engine=energy_engine,
-        force_egnn=force_egnn,
         batch_size=batch_size,
     )

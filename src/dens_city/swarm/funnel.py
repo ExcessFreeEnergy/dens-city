@@ -1,11 +1,10 @@
 """
-High-Throughput 5-Stage Generative Molecular Funnel Pipeline.
+High-Throughput 4-Stage Generative Molecular Funnel Pipeline.
 Couples:
 1. Stage 1: PufferLib RL Swarm Training & C-Native Vectorized Candidate Sampling
 2. Stage 2: In-Memory Contiguous Array Streaming & Zero-Copy GPU Batching
-3. Stage 3: Coupled tinygrad cDFT Thermodynamics + Batched L-BFGS Relaxation + Boltzmann Generator Refinement
-4. Stage 4: TinyJit 7-Layer Invariant EGNN MLFF Quantum Surrogate Screening
-5. Stage 5: Multi-Objective Pareto Frontier Ranking & Artifact Export
+3. Stage 3: Coupled tinygrad cDFT Thermodynamics + Batched L-BFGS Relaxation + Boltzmann Flow + EGNN MLFF
+4. Stage 4: Multi-Objective Pareto Frontier Ranking & Artifact Export
 """
 
 from __future__ import annotations
@@ -86,7 +85,7 @@ def run_generative_funnel(
     verbose: bool = True,
 ) -> Dict[str, Any]:
     """
-    Executes the complete 5-stage generative molecular funnel on a single material specification.
+    Executes the complete 4-stage generative molecular funnel on a single material specification.
     """
     batch_size = detect_optimal_gpu_batch_size(batch_size)
     egnn_batch_size = detect_optimal_gpu_batch_size(egnn_batch_size)
@@ -103,7 +102,7 @@ def run_generative_funnel(
 
     if verbose:
         print("=" * 80)
-        print(f"=== 5-STAGE GENERATIVE MOLECULAR FUNNEL: {spec_data.get('group_name', spec_path.stem)} ===")
+        print(f"=== 4-STAGE GENERATIVE MOLECULAR FUNNEL: {spec_data.get('group_name', spec_path.stem)} ===")
         print(f"Target Wall Pressure: >= {target_spec.get('min_wall_pressure_bar', 15.0):.1f} bar")
         print(f"Target Max Solvation: <= {target_spec.get('max_solvation_kcal', -3.0):.1f} kcal/mol")
         print(f"Target Max Weight:   <= {target_spec.get('max_molecular_weight', 850.0):.1f} amu")
@@ -296,11 +295,11 @@ def run_generative_funnel(
             f"  GPU screening finished in {t_gpu:.2f}s ({candidate_batch.num_candidates / max(1e-3, t_gpu):.1f} mol/s)"
         )
 
-    # STAGE 4: EGNN Quantum-Surrogate Filter
+    # STAGE 3b: EGNN Quantum-Surrogate Filter
     if enable_egnn:
         if verbose:
             print(
-                f"\n[Stage 4] Screening {candidate_batch.num_candidates} relaxed candidates via 7-Layer Invariant EGNN MLFF (B={egnn_batch_size})..."
+                f"\n[Stage 3b EGNN MLFF] Screening {candidate_batch.num_candidates} relaxed candidates via 7-Layer Invariant EGNN MLFF (B={egnn_batch_size})..."
             )
         t0_egnn = time.perf_counter()
         egnn = EGNNForceField(
@@ -374,9 +373,9 @@ def run_generative_funnel(
                 f"  EGNN quantum screening finished in {t_egnn:.2f}s ({candidate_batch.num_candidates / max(1e-3, t_egnn):.1f} mol/s)"
             )
 
-    # STAGE 5: Multi-Objective Funnel Ranking & Pareto Export
+    # STAGE 4: Multi-Objective Funnel Ranking & Pareto Export
     if verbose:
-        print(f"\n[Stage 5] Ranking and sorting Pareto frontier (Top {top_k} selection)...")
+        print(f"\n[Stage 4] Ranking and sorting Pareto frontier (Top {top_k} selection)...")
     ranker = FunnelRanker(
         target_spec=target_spec,
         max_sa_score=max_sa_score,
@@ -451,7 +450,7 @@ def run_all_specs_funnel_benchmark(
     enable_egnn: bool = True,
     recurrent: bool = False,
 ) -> int:
-    """Executes the full 5-stage funnel across all specification YAMLs in specs_dir."""
+    """Executes the full 4-stage funnel across all specification YAMLs in specs_dir."""
     base_out_dir = Path(out_dir)
     base_out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -469,7 +468,7 @@ def run_all_specs_funnel_benchmark(
         spec_out_dir.mkdir(parents=True, exist_ok=True)
 
         print("\n" + "=" * 100)
-        print(f"[{i + 1}/{len(spec_files)}] RUNNING 5-STAGE FUNNEL: {group_name}")
+        print(f"[{i + 1}/{len(spec_files)}] RUNNING 4-STAGE FUNNEL: {group_name}")
         print(f"Spec file: {spec_path}")
         print(f"Output directory: {spec_out_dir}")
         print("=" * 100)

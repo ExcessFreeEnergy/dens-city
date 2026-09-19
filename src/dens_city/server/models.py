@@ -25,7 +25,6 @@ class JobType(str, Enum):
     TRAIN_SWARM = "TRAIN_SWARM"
     SAMPLE_CANDIDATES = "SAMPLE_CANDIDATES"
     RUN_CDFT = "RUN_CDFT"
-    RUN_EGNN = "RUN_EGNN"
     RANK_PARETO = "RANK_PARETO"
 
 
@@ -139,34 +138,14 @@ class CDFTThermoRequest(BaseModel):
     bg_steps: int = Field(30, ge=0, le=200, description="Boltzmann Generator normalizing flow steps")
     batch_size: Optional[int] = Field(None, description="GPU batch size (auto-throttled to 32/64/128)")
     continue_pipeline: bool = Field(
-        False, description="If True, automatically continues through Stages 4 (EGNN) and 5 (Pareto ranking)"
-    )
-    top_k: int = Field(20, ge=1, description="Number of Pareto candidates to export if continuing pipeline")
-
-
-class EGNNQuantumRequest(BaseModel):
-    thermo_pool_id: Optional[str] = Field(
-        None, description="Pointer handle to a relaxed thermodynamics pool from run_cdft_thermo"
-    )
-    candidates_dir: Optional[str] = Field(
-        None, description="Directory containing external 3D .mol2 files to evaluate directly"
-    )
-    target_spec: Optional[Dict[str, Any] | str] = Field(
-        None, description="Target specification constraints dictionary or YAML path"
-    )
-    relax_steps: int = Field(50, ge=0, le=200, description="Unrolled GPU quantum relaxation steps")
-    egnn_layers: int = Field(7, ge=1, le=16, description="EGNN message passing layer count (default: 7)")
-    batch_size: Optional[int] = Field(None, description="EGNN GPU batch size (default: 32)")
-    continue_pipeline: bool = Field(
-        False, description="If True, automatically continues through Stage 5 (Pareto ranking)"
+        False, description="If True, automatically continues through Stage 4 (Pareto ranking)"
     )
     top_k: int = Field(20, ge=1, description="Number of Pareto candidates to export if continuing pipeline")
 
 
 class ParetoRankingRequest(BaseModel):
-    scored_pool_id: Optional[str] = Field(
-        None, description="Pointer handle to an EGNN-evaluated candidate pool from run_egnn_quantum"
-    )
+    thermo_pool_id: Optional[str] = Field(None, description="Pointer handle to a screened pool from run_cdft_thermo")
+    scored_pool_id: Optional[str] = Field(None, description="Alias for thermo_pool_id for backward compatibility")
     candidates_dir: Optional[str] = Field(
         None, description="Directory containing candidate .mol2 files or previous pipeline results"
     )

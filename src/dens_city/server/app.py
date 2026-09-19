@@ -20,7 +20,6 @@ from dens_city.server.models import (
     CleanupMode,
     CleanupRequest,
     CleanupResponse,
-    EGNNQuantumRequest,
     JobStatusResponse,
     JobSubmissionResponse,
     JobType,
@@ -167,26 +166,10 @@ async def submit_run_cdft(req: CDFTThermoRequest):
 
 
 @app.post(
-    "/api/v1/stages/run-egnn",
-    response_model=JobSubmissionResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    summary="Stage 4: Run EGNN Quantum Surrogate Screening",
-)
-async def submit_run_egnn(req: EGNNQuantumRequest):
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    job_id = job_manager.enqueue_job(JobType.RUN_EGNN, req.model_dump())
-    return JobSubmissionResponse(
-        job_id=job_id,
-        job_type=JobType.RUN_EGNN,
-        created_at=now,
-    )
-
-
-@app.post(
     "/api/v1/stages/rank-pareto",
     response_model=JobSubmissionResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Stage 5: Multi-Objective Pareto Ranking & Export",
+    summary="Stage 4: Multi-Objective Pareto Ranking & Export",
 )
 async def submit_rank_pareto(req: ParetoRankingRequest):
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

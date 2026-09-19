@@ -9,28 +9,19 @@ from dens_city.utils.pipeline import MaterialPipelineTask
 def test_engine_tier_routing_properties():
     """
     Verifies that MaterialPipelineTask respects engine options:
-    'classical', 'electronegativity', 'egnn', 'auto', and force_egnn.
+    'classical' and 'egnn'.
     """
-    # 1. Classical task
+    # 1. Default task -> classical
+    task_def = MaterialPipelineTask(material_path_or_name="water", out_dir="runs/test")
+    assert task_def.energy_engine == "classical"
+
+    # 2. Classical task
     task_c = MaterialPipelineTask(material_path_or_name="water", out_dir="runs/test", energy_engine="classical")
     assert task_c.energy_engine == "classical"
-    assert not task_c.force_egnn
 
-    # 2. Electronegativity task
-    task_el = MaterialPipelineTask(
-        material_path_or_name="water", out_dir="runs/test", energy_engine="electronegativity"
-    )
-    assert task_el.energy_engine == "electronegativity"
-
-    # 3. EGNN task
+    # 3. Explicit EGNN task
     task_egnn = MaterialPipelineTask(material_path_or_name="water", out_dir="runs/test", energy_engine="egnn")
     assert task_egnn.energy_engine == "egnn"
-
-    # 4. Auto task with force_egnn override
-    task_auto = MaterialPipelineTask(
-        material_path_or_name="water", out_dir="runs/test", energy_engine="auto", force_egnn=True
-    )
-    assert task_auto.force_egnn is True
 
 
 def test_auto_heuristic_classification():

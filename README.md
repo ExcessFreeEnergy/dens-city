@@ -48,7 +48,7 @@ uv run dens-city --verify-freesolv --run-e2e
 # 2. Run Multi-Solvent Validation on Solv@TUM / Solvatum (~5,952 solute-solvent pairs)
 uv run dens-city --verify-solvatum
 
-# 3. Run the 5-Stage Generative Molecular Funnel on an Example Spec (Conjugated OLEDs)
+# 3. Run the 4-Stage Generative Molecular Funnel on an Example Spec (Conjugated OLEDs)
 uv run dens-city --funnel --spec tests/data/conjugated_oled_semiconductors.yaml \
   --train-steps 25000 --num-candidates 512 --batch-size 512 --top-k 20
 
@@ -72,8 +72,8 @@ uv run dens-city [MODE_SELECTOR] [OPTIONS...]
 | :--- | :--- | :--- |
 | *(None / Default)* | **Coupled cDFT + Boltzmann Batch Screening** | Screen `.mol2` files through cDFT thermodynamics & Boltzmann flows |
 | `--interactive`, `-i` | **3D Interactive Raylib Visualizer** | Real-time orbital 3D viewer for molecular conformations |
-| `--funnel`, `--run-funnel` | **5-Stage Generative Molecular Funnel** | Run end-to-end RL design $\to$ cDFT $\to$ Boltzmann $\to$ EGNN $\to$ Pareto export |
-| `--benchmark-specs`, `--all-specs` | **Cross-Spec Funnel Benchmark** | Run the 5-stage funnel across all 10 material classes in `tests/data/` |
+| `--funnel`, `--run-funnel` | **4-Stage Generative Molecular Funnel** | Run end-to-end RL design $\to$ candidate sampling $\to$ unified cDFT/Boltzmann/EGNN $\to$ Pareto export |
+| `--benchmark-specs`, `--all-specs` | **Cross-Spec Funnel Benchmark** | Run the 4-stage funnel across all 10 material classes in `tests/data/` |
 | `--train-swarm`, `--train-rl` | **Stage 1 RL Swarm Training** | Train PPO policy with curriculum learning and export `trained_policy.pt` |
 | `--sweep`, `--curriculum-sweep` | **Constellation Curriculum Sweeps** | Run multi-trial hyperparameter sweep for Constellation 3D viewer |
 | `--eval-swarm`, `--evaluate-specs`| **Spec Evaluation & Diagnostics** | Evaluate validity %, SA score, diversity (1-T), and unique SMILES % |
@@ -129,9 +129,8 @@ uv run dens-city [MODE_SELECTOR] [OPTIONS...]
 - `--lbfgs-tol` : RMS force convergence threshold for L-BFGS (default: `1e-3`).
 
 #### Quantum MLFF & EGNN Force Field Options
-- `--energy-engine` : Microscopic Hamiltonian physics engine: `'classical'` (GAFF LJ + Coulomb), `'electronegativity'` (deterministic Pauling prior + GB), `'egnn'` (trained 7-layer $E(n)$-equivariant MLFF + GB), or `'auto'` (adaptive heuristic).
-- `--force-egnn` : Force Stage 4 EGNN quantum surrogate evaluation across 100% of batch slots, overriding speed heuristics.
-- `--enable-egnn` / `--no-enable-egnn` : Enable/disable Stage 4 EGNN quantum surrogate screening (default: `True`).
+- `--energy-engine` : Microscopic Hamiltonian physics engine: `'egnn'` (trained 7-layer $E(n)$-equivariant MLFF + GB, default) or `'classical'` (GAFF LJ + Coulomb).
+- `--enable-egnn` / `--no-enable-egnn` : Enable/disable EGNN quantum surrogate screening (default: `True`).
 - `--egnn-batch-size` : GPU batch size for EGNN message-passing evaluation (default: `32`).
 - `--egnn-layers` : Number of message-passing layers in the EGNN architecture (default: `7`).
 - `--egnn-relax-steps` : Unrolled GPU quantum geometry relaxation steps (default: `50`).
@@ -253,16 +252,15 @@ uv run dens-city --serve-api --host 0.0.0.0 --port 8000
 
 ### 3.3 Exposed MCP Tool Catalog
 
-The MCP server exposes 10 modular tools designed for context-window protection, asynchronous job polling, and stateless pipeline execution:
+The MCP server exposes 9 modular tools designed for context-window protection, asynchronous job polling, and stateless pipeline execution:
 
 | MCP Tool | Purpose | Key Parameters |
 | :--- | :--- | :--- |
-| `run_full_pipeline` | Complete 5-stage generative funnel from spec to Pareto `.mol2` export | `target_spec`, `train_steps`, `num_candidates`, `top_k`, `solvent_id` |
+| `run_full_pipeline` | Complete 4-stage generative funnel from spec to Pareto `.mol2` export | `target_spec`, `train_steps`, `num_candidates`, `top_k`, `solvent_id` |
 | `train_swarm_agent` | Stage 1: Trains PPO molecular swarm policy on target spec | `target_spec`, `total_timesteps`, `num_envs`, `horizon`, `learning_rate` |
 | `sample_candidates` | Stage 2: Samples molecular graphs from policy into candidate pool | `model_weights_path`, `num_samples`, `temperature`, `continue_pipeline` |
-| `run_cdft_thermo` | Stage 3: Evaluates cDFT wall pressures, L-BFGS, and Boltzmann flows | `candidate_pool_id`, `smiles_list`, `solvent_id`, `cdft_steps`, `bg_steps` |
-| `run_egnn_quantum` | Stage 4: Evaluates 7-layer EGNN quantum energy and conservative forces | `thermo_pool_id`, `candidates_dir`, `relax_steps`, `egnn_layers` |
-| `rank_pareto_frontier` | Stage 5: Gating (SA Score), topological deduplication, and Pareto export | `scored_pool_id`, `candidates_dir`, `max_sa_score`, `top_k` |
+| `run_cdft_thermo` | Stage 3: Evaluates cDFT wall pressures, Boltzmann flows, and EGNN MLFF | `candidate_pool_id`, `smiles_list`, `solvent_id`, `cdft_steps`, `bg_steps` |
+| `rank_pareto_frontier` | Stage 4: Gating (SA Score), topological deduplication, and Pareto export | `thermo_pool_id`, `candidates_dir`, `max_sa_score`, `top_k` |
 | `get_job_status` | Server-side long-polling status endpoint with native progress reporting | `job_id`, `wait_for_completion=True` (compresses turns into 1) |
 | `cancel_job` | Cooperatively cancels an active or queued background job | `job_id` |
 | `validate_spec` | Synchronously validates chemical SMILES and target constraints | `smiles_list`, `target_spec` (catches errors before running GPU jobs) |
@@ -270,7 +268,7 @@ The MCP server exposes 10 modular tools designed for context-window protection, 
 
 ### 3.4 MCP Server Verification & Direct Testing
 
-You can verify that the MCP server and all 10 exposed tools are active and working via automated tests or direct CLI invocations:
+You can verify that the MCP server and all 9 exposed tools are active and working via automated tests or direct CLI invocations:
 
 ```bash
 # 1. Run the comprehensive MCP & FastAPI test suite (15 tests, 100% passing)
@@ -326,9 +324,9 @@ uv run dens-city --interactive --materials argon
 uv run dens-city --interactive --materials water benzene 5cb
 ```
 
-### 3. 5-Stage Generative Molecular Funnel
+### 3. 4-Stage Generative Molecular Funnel
 ```bash
-# Run 5-stage generative funnel on OLED semiconductors (25k training steps, 512 candidates)
+# Run 4-stage generative funnel on OLED semiconductors (25k training steps, 512 candidates)
 uv run dens-city --funnel --spec tests/data/conjugated_oled_semiconductors.yaml \
   --train-steps 25000 --num-candidates 512 --batch-size 512 --top-k 20
 
@@ -339,7 +337,7 @@ uv run dens-city --funnel --spec electrolytes \
 
 ### 4. Cross-Material Multi-Specification Funnel Benchmark
 ```bash
-# Execute 5-stage funnel across all 10 material classes in tests/data/
+# Execute 4-stage funnel across all 10 material classes in tests/data/
 uv run dens-city --benchmark-specs --train-steps 25000 --num-candidates 64 --batch-size 64
 ```
 

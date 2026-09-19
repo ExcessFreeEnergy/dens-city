@@ -111,48 +111,12 @@ class ArtifactPoolStore:
                     "bg_energy_mean": float(r.bg_energy_mean),
                     "bg_energy_var": float(r.bg_energy_var),
                     "solvation_free_energy_kcal_mol": float(r.solvation_free_energy_kcal_mol),
-                    "metadata": meta,
-                }
-                f.write(json.dumps(rec) + "\n")
-
-        return pool_id
-
-    def create_egnn_scored_pool(
-        self,
-        pipeline_results: List[Any],
-        candidate_metadata: List[Dict[str, Any]],
-        parent_pool_id: Optional[str] = None,
-    ) -> str:
-        """
-        Stores EGNN quantum-scored pool (Stage 4 output).
-        """
-        pool_id = self._generate_pool_id("pool_egnn")
-        pool_dir = self.root_dir / pool_id
-        pool_dir.mkdir(parents=True, exist_ok=True)
-
-        manifest = {
-            "pool_id": pool_id,
-            "pool_type": "egnn_scored_pool",
-            "parent_pool_id": parent_pool_id,
-            "created_at": time.time(),
-            "count": len(pipeline_results),
-        }
-        (pool_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-
-        results_file = pool_dir / "scored_results.jsonl"
-        with open(results_file, "w", encoding="utf-8") as f:
-            for r, meta in zip(pipeline_results, candidate_metadata):
-                rec = {
-                    "material_name": r.material_name,
-                    "smiles": meta.get("smiles", ""),
-                    "wall_pressure_bar": float(r.wall_pressure_bar),
-                    "excess_adsorption_a2": float(r.excess_adsorption_a2),
-                    "bg_log_likelihood": float(r.bg_log_likelihood),
-                    "bg_energy_mean": float(r.bg_energy_mean),
-                    "bg_energy_var": float(r.bg_energy_var),
-                    "solvation_free_energy_kcal_mol": float(r.solvation_free_energy_kcal_mol),
-                    "egnn_energy": float(r.egnn_energy) if hasattr(r, "egnn_energy") else 0.0,
-                    "egnn_force_rms": float(r.egnn_force_rms) if hasattr(r, "egnn_force_rms") else 0.0,
+                    "egnn_energy": float(r.egnn_energy)
+                    if hasattr(r, "egnn_energy") and r.egnn_energy is not None
+                    else 0.0,
+                    "egnn_force_rms": float(r.egnn_force_rms)
+                    if hasattr(r, "egnn_force_rms") and r.egnn_force_rms is not None
+                    else 0.0,
                     "metadata": meta,
                 }
                 f.write(json.dumps(rec) + "\n")

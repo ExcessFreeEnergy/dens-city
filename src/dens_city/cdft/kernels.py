@@ -203,34 +203,3 @@ class KernelBuilder:
             wall_type=wall_type,
         )
         return Tensor(v_vals).reshape(1, 1, n_grid, 1).contiguous()
-
-    @staticmethod
-    def build_coulomb_1d_greens_matrix(n_grid: int, dz: float, dielectric_constant: float = 1.0) -> Tensor:
-        r"""
-        Constructs the exact 2-point 1D Poisson / Coulomb Green's function matrix G \in R^{N x N}
-        for electrostatics in a confined slit pore [0, L_z] with grounded Dirichlet boundary conditions
-        \phi(0) = \phi(L_z) = 0:
-        G_{ij} = -(4\pi \Delta z / \epsilon L_z) * \min(z_i, z_j) * (L_z - \max(z_i, z_j))
-
-        The electrostatic potential is evaluated via matrix multiplication: \phi = G * \rho_q.
-        """
-        l_z = n_grid * dz
-        pref = -(4.0 * math.pi * dz) / (dielectric_constant * l_z) if l_z > 0 else 0.0
-        g_matrix = []
-        for i in range(n_grid):
-            z_i = (i + 0.5) * dz
-            row = []
-            for j in range(n_grid):
-                z_j = (j + 0.5) * dz
-                min_z = min(z_i, z_j)
-                max_z = max(z_i, z_j)
-                g_val = pref * min_z * (l_z - max_z)
-                row.append(g_val)
-            g_matrix.append(row)
-        return Tensor(g_matrix).reshape(1, 1, n_grid, n_grid).contiguous()
-
-    @staticmethod
-    def build_coulomb_1d_kernel(n_grid: int, dz: float, dielectric_constant: float = 1.0) -> Tuple[Tensor, int]:
-        """Deprecated alias pointing to Greens matrix solver for backwards compatibility."""
-        g_matrix = KernelBuilder.build_coulomb_1d_greens_matrix(n_grid, dz, dielectric_constant)
-        return g_matrix, n_grid

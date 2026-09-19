@@ -10,7 +10,6 @@ from __future__ import annotations
 import contextlib
 import io
 import json
-import math
 import multiprocessing as mp
 import os
 import sqlite3
@@ -205,8 +204,6 @@ class GPUBackgroundWorker:
             return self._exec_sample_candidates(params, job_id)
         elif job_type == JobType.RUN_CDFT.value:
             return self._exec_run_cdft(params, job_id)
-        elif job_type == JobType.RUN_EGNN.value:
-            return self._exec_run_egnn(params, job_id)
         elif job_type == JobType.RANK_PARETO.value:
             return self._exec_rank_pareto(params, job_id)
         else:
@@ -445,7 +442,6 @@ class GPUBackgroundWorker:
                     skip_bg=bool(params.get("skip_bg", False)),
                     solvent_name=str(params.get("solvent_id", "vacuum")),
                     energy_engine=str(params.get("energy_engine", "auto")),
-                    force_egnn=bool(params.get("force_egnn", True)),
                     save_artifacts=False,
                 )
                 chunk_tasks.append(task)
@@ -472,63 +468,19 @@ class GPUBackgroundWorker:
         }
 
         if params.get("continue_pipeline", False):
-            print(f"[Stage 3 -> Pipeline Continuation] Chaining to Stage 4 for pool {pool_id}...")
-            egnn_params = dict(params)
-            egnn_params["thermo_pool_id"] = pool_id
-            egnn_params["continue_pipeline"] = True
-            return self._exec_run_egnn(egnn_params, job_id)
-
-        return result
-
-    def _exec_run_egnn(self, params: Dict[str, Any], job_id: str) -> Dict[str, Any]:
-        """Runs Stage 4: EGNN Quantum Surrogate Screening."""
-        parent_pool = params.get("thermo_pool_id")
-        candidate_meta, pipeline_results = [], []
-
-        if parent_pool:
-            candidate_meta, pipeline_results = self.pool_store.load_pool_candidates(parent_pool)
-
-        if not pipeline_results:
-            raise ValueError(f"No prior thermodynamics results found in pool: {parent_pool}")
-
-        total_mols = len(pipeline_results)
-        print(f"[Stage 4 EGNN] Verifying quantum surrogate observables on {total_mols} candidates...")
-
-        # Ensure egnn observables are populated dynamically (already evaluated in Stage 3 by run_batch_pipeline)
-        for idx, res in enumerate(pipeline_results):
-            if res.egnn_energy is None or math.isnan(res.egnn_energy):
-                res.egnn_energy = 0.0
-            if res.egnn_force_rms is None or math.isnan(res.egnn_force_rms):
-                res.egnn_force_rms = 0.0
-
-        self.update_job_progress(job_id, progress_percent=85.0)
-
-        pool_id = self.pool_store.create_egnn_scored_pool(
-            pipeline_results=pipeline_results,
-            candidate_metadata=candidate_meta,
-            parent_pool_id=parent_pool,
-        )
-
-        result = {
-            "egnn_scored_pool_id": pool_id,
-            "count": len(pipeline_results),
-            "pool_uri": str((self.pool_store.root_dir / pool_id).resolve()),
-        }
-
-        if params.get("continue_pipeline", False):
-            print(f"[Stage 4 -> Pipeline Continuation] Chaining to Stage 5 for pool {pool_id}...")
+            print(f"[Stage 3 -> Pipeline Continuation] Chaining to Stage 4 (Pareto Ranking) for pool {pool_id}...")
             rank_params = dict(params)
-            rank_params["scored_pool_id"] = pool_id
+            rank_params["thermo_pool_id"] = pool_id
             return self._exec_rank_pareto(rank_params, job_id)
 
         return result
 
     def _exec_rank_pareto(self, params: Dict[str, Any], job_id: str) -> Dict[str, Any]:
-        """Runs Stage 5: Multi-Objective Pareto Frontier Ranking & Export."""
+        """Runs Stage 4: Multi-Objective Pareto Frontier Ranking & Export."""
         from dens_city.swarm.spec_loader import SwarmSpecLoader
         from dens_city.utils.funnel_ranker import FunnelRanker
 
-        parent_pool = params.get("scored_pool_id")
+        parent_pool = params.get("thermo_pool_id") or params.get("scored_pool_id")
         candidate_meta, pipeline_results = [], []
 
         if parent_pool:

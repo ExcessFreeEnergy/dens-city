@@ -49,10 +49,10 @@ async def run_full_pipeline(
     batch_size: Optional[int] = None,
     out_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Executes the complete 5-stage generative molecular funnel on a target material specification.
+    """Executes the complete 4-stage generative molecular funnel on a target material specification.
 
-    Runs Stage 1 (RL Swarm PPO) -> Stage 2 (Candidate Sampling) -> Stage 3 (cDFT + L-BFGS + Boltzmann)
-    -> Stage 4 (EGNN Quantum Screening) -> Stage 5 (Pareto Ranking & .mol2 Export).
+    Runs Stage 1 (RL Swarm PPO) -> Stage 2 (Candidate Sampling) -> Stage 3 (Unified cDFT, Boltzmann & EGNN Screening)
+    -> Stage 4 (Pareto Ranking & .mol2 Export).
 
     Returns immediately with a job_id. Call get_job_status(job_id, wait_for_completion=True) to await results.
 
@@ -210,7 +210,7 @@ async def run_cdft_thermo(
         cdft_steps: Euler-Lagrange variational optimization steps (default: 50).
         bg_steps: Boltzmann Generator training steps (default: 30).
         batch_size: GPU power-of-2 batch size (e.g. 64, 128, 1024).
-        continue_pipeline: If True, automatically continues through Stages 4 (EGNN) and 5 (Pareto ranking).
+        continue_pipeline: If True, automatically continues to Stage 4 (Pareto ranking).
         top_k: Number of Pareto candidates to export if continuing pipeline (default: 20).
     """
     # Synchronous Chemical Intake Gate for direct SMILES
@@ -246,50 +246,8 @@ async def run_cdft_thermo(
 
 
 @mcp.tool()
-async def run_egnn_quantum(
-    thermo_pool_id: Optional[str] = None,
-    candidates_dir: Optional[str] = None,
-    target_spec: Optional[Dict[str, Any] | str] = None,
-    relax_steps: int = 50,
-    egnn_layers: int = 7,
-    batch_size: Optional[int] = None,
-    continue_pipeline: bool = False,
-    top_k: int = 20,
-) -> Dict[str, Any]:
-    """Stage 4: Evaluates quantum ground-state energy, force residuals, and electrostatic solvation via 7-layer EGNN.
-
-    Evaluates 3D coordinates from thermo_pool_id or an external candidates_dir.
-
-    Args:
-        thermo_pool_id: Pool handle from run_cdft_thermo.
-        candidates_dir: Directory containing external 3D .mol2 structures.
-        target_spec: Target specification constraints or YAML path.
-        relax_steps: Unrolled GPU quantum geometry relaxation steps (default: 50).
-        egnn_layers: Number of EGNN message passing layers (default: 7).
-        batch_size: EGNN GPU batch size (default: 32).
-        continue_pipeline: If True, automatically continues to Stage 5 (Pareto ranking).
-        top_k: Number of Pareto candidates to export if continuing pipeline (default: 20).
-    """
-    params = {
-        "thermo_pool_id": thermo_pool_id,
-        "candidates_dir": candidates_dir,
-        "target_spec": target_spec,
-        "relax_steps": relax_steps,
-        "egnn_layers": egnn_layers,
-        "batch_size": batch_size,
-        "continue_pipeline": continue_pipeline,
-        "top_k": top_k,
-    }
-    job_id = job_manager.enqueue_job(JobType.RUN_EGNN, params)
-    return {
-        "job_id": job_id,
-        "status": "PENDING",
-        "message": f"Queued Stage 4 EGNN quantum evaluation. Call get_job_status('{job_id}', wait_for_completion=True).",
-    }
-
-
-@mcp.tool()
 async def rank_pareto_frontier(
+    thermo_pool_id: Optional[str] = None,
     scored_pool_id: Optional[str] = None,
     candidates_dir: Optional[str] = None,
     target_spec: Optional[Dict[str, Any] | str] = None,
@@ -298,13 +256,14 @@ async def rank_pareto_frontier(
     disable_sa_filter: bool = False,
     top_k: int = 20,
 ) -> Dict[str, Any]:
-    """Stage 5: Performs topological deduplication, SA Score synthesizability safety gating, and non-dominated sorting.
+    """Stage 4: Performs topological deduplication, SA Score synthesizability safety gating, and non-dominated sorting.
 
     Exports top-K candidates to 3D .mol2 files, CSV summary, JSON summary, and Markdown report.
     Supports single molecules up to 10,000+ candidates.
 
     Args:
-        scored_pool_id: Pool handle from run_egnn_quantum.
+        thermo_pool_id: Pool handle from run_cdft_thermo.
+        scored_pool_id: Legacy alias for thermo_pool_id.
         candidates_dir: Directory containing candidate .mol2 files.
         target_spec: Target specification constraints or YAML path.
         ranking_weights: Importance weights dict (e.g. {'w_rl': 0.3, 'w_cdft': 0.3, 'w_boltzmann': 0.2, 'w_egnn': 0.2}).
@@ -313,7 +272,8 @@ async def rank_pareto_frontier(
         top_k: Number of top Pareto candidates to export to .mol2 (default: 20).
     """
     params = {
-        "scored_pool_id": scored_pool_id,
+        "thermo_pool_id": thermo_pool_id or scored_pool_id,
+        "scored_pool_id": scored_pool_id or thermo_pool_id,
         "candidates_dir": candidates_dir,
         "target_spec": target_spec,
         "ranking_weights": ranking_weights,
@@ -325,7 +285,7 @@ async def rank_pareto_frontier(
     return {
         "job_id": job_id,
         "status": "PENDING",
-        "message": f"Queued Stage 5 Pareto ranking. Call get_job_status('{job_id}', wait_for_completion=True).",
+        "message": f"Queued Stage 4 Pareto ranking. Call get_job_status('{job_id}', wait_for_completion=True).",
     }
 
 

@@ -106,7 +106,7 @@ def test_real_yaml_specs_validation():
 
 def test_semantic_error_translation_cuda_oom():
     cuda_exc = RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
-    sem_err = translate_exception_to_semantic_error(cuda_exc, stage_name="run_egnn")
+    sem_err = translate_exception_to_semantic_error(cuda_exc, stage_name="run_cdft")
     assert sem_err.error_code == "CUDA_OUT_OF_MEMORY"
     assert "batch_size" in sem_err.agent_action_required.lower()
 
@@ -257,13 +257,12 @@ def test_fastapi_cleanup_endpoint(client):
 
 
 def test_mcp_tools_registered():
-    # Verify all 10 tools exist in the MCPServer
+    # Verify all 9 tools exist in the MCPServer
     tool_names = [
         "run_full_pipeline",
         "train_swarm_agent",
         "sample_candidates",
         "run_cdft_thermo",
-        "run_egnn_quantum",
         "rank_pareto_frontier",
         "get_job_status",
         "cancel_job",

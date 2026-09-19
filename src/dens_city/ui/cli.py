@@ -4,7 +4,7 @@ dens-city: Unified Molecular Classical Density Functional Theory, RL Swarm, & 3D
 Supports:
 - Coupled cDFT screening -> Boltzmann Generator batch execution
 - High-performance 3D interactive Raylib visualization
-- 5-Stage Multi-Objective Generative Molecular Funnel & Pareto screening
+- 4-Stage Multi-Objective Generative Molecular Funnel & Pareto screening
 - RL Swarm PPO policy training & Constellation curriculum sweeps
 - Multi-specification chemical diversity & synthesizability diagnostics
 - High-performance combinatorial molecular library generation in C & Python
@@ -234,11 +234,11 @@ Execution Modes & Examples:
   # 2. 3D Interactive Raylib Visualizer
   uv run dens-city --interactive --materials argon
 
-  # 3. 5-Stage Generative Molecular Funnel (Single Material Spec)
+  # 3. 4-Stage Generative Molecular Funnel (Single Material Spec)
   uv run dens-city --funnel --spec tests/data/conjugated_oled_semiconductors.yaml --train-steps 25000 --num-candidates 512 --top-k 20
   uv run dens-city --funnel --spec fluorinated_battery_electrolytes --checkpoint runs/checkpoints/trained_policy.pt
 
-  # 4. Cross-Material 5-Stage Funnel Benchmark (All Specs in tests/data/)
+  # 4. Cross-Material 4-Stage Funnel Benchmark (All Specs in tests/data/)
   uv run dens-city --benchmark-specs --train-steps 25000 --num-candidates 64 --batch-size 64
 
   # 5. Stage 1 RL Swarm PPO Policy Training
@@ -290,14 +290,14 @@ Execution Modes & Examples:
         "--run-funnel",
         action="store_true",
         default=False,
-        help="Execute the 5-Stage Generative Molecular Funnel (RL Swarm -> C Sampling -> cDFT/L-BFGS/BG -> EGNN -> Pareto Export)",
+        help="Execute the 4-Stage Generative Molecular Funnel (RL Swarm -> C Sampling -> Coupled cDFT/BG/EGNN -> Pareto Export)",
     )
     mode_group.add_argument(
         "--benchmark-specs",
         "--all-specs",
         action="store_true",
         default=False,
-        help="Execute the 5-Stage Generative Funnel benchmark across all specification YAMLs in --specs-dir",
+        help="Execute the 4-Stage Generative Funnel benchmark across all specification YAMLs in --specs-dir",
     )
     mode_group.add_argument(
         "--train-swarm",
@@ -649,15 +649,9 @@ Execution Modes & Examples:
     egnn_group = parser.add_argument_group("EGNN Quantum Force Field Options")
     egnn_group.add_argument(
         "--energy-engine",
-        choices=["classical", "electronegativity", "egnn", "auto"],
-        default="classical",
-        help="Microscopic Hamiltonian physics engine: 'classical' (GAFF LJ+Coulomb), 'electronegativity' (deterministic Pauling prior + GB), 'egnn' (trained 7-layer E(n)-equivariant MLFF + GB), or 'auto' (adaptive heuristic).",
-    )
-    egnn_group.add_argument(
-        "--force-egnn",
-        action="store_true",
-        default=False,
-        help="Force Stage 4 EGNN quantum surrogate evaluation across 100%% of batch slots, overriding speed heuristics.",
+        choices=["egnn", "classical"],
+        default="egnn",
+        help="Microscopic Hamiltonian physics engine: 'egnn' (trained 7-layer E(n)-equivariant MLFF + GB, default) or 'classical' (GAFF LJ+Coulomb baseline).",
     )
     egnn_group.add_argument(
         "--enable-egnn",
@@ -1225,7 +1219,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     # =========================================================================
-    # MODE 2: 5-Stage Generative Molecular Funnel Mode
+    # MODE 2: 4-Stage Generative Molecular Funnel Mode
     # =========================================================================
     if args.funnel:
         from dens_city.swarm.funnel import run_generative_funnel
@@ -1272,7 +1266,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     # =========================================================================
-    # MODE 3: Cross-Material 5-Stage Funnel Benchmark Mode
+    # MODE 3: Cross-Material 4-Stage Funnel Benchmark Mode
     # =========================================================================
     if args.benchmark_specs:
         from dens_city.swarm.funnel import run_all_specs_funnel_benchmark
@@ -1425,7 +1419,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             target_dataset = "freesolv"
 
         is_pop_all = args.all_solvatum or args.all_freesolv
-        engine_choice = args.energy_engine if ("--energy-engine" in argv or "-e" in argv) else "auto"
+        engine_choice = args.energy_engine
         effective_eval_loocv = (
             False if args.no_eval_loocv else (True if args.eval_loocv is None else bool(args.eval_loocv))
         )
@@ -1437,7 +1431,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             run_e2e=args.run_e2e,
             populate_all=is_pop_all,
             energy_engine=engine_choice,
-            force_egnn=args.force_egnn,
             batch_size=args.batch_size if ("-b" in argv or "--batch-size" in argv) else None,
             eval_loocv=effective_eval_loocv,
         )
@@ -1491,8 +1484,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     jsonl_log_path = os.path.join(out_dir, "pipeline_summary.jsonl")
 
     # Optimal batch size for EGNN to maximize GPU throughput while fitting within VRAM
-    effective_engine = "egnn" if args.force_egnn else args.energy_engine
-    if effective_engine in ("egnn", "auto") and "--batch-size" not in argv and "-b" not in argv:
+    effective_engine = args.energy_engine
+    if effective_engine == "egnn" and "--batch-size" not in argv and "-b" not in argv:
         args.batch_size = 64
         print(
             colored(
@@ -1500,7 +1493,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "cyan",
             )
         )
-    elif effective_engine in ("egnn", "auto"):
+    elif effective_engine == "egnn":
         print(colored(f"[ENGINE] Routing to {effective_engine.upper()} engine (batch size: {args.batch_size})", "cyan"))
 
     debug_log_dir = None
@@ -1559,7 +1552,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                 skip_bg=args.skip_bg,
                 debug=args.debug,
                 energy_engine=args.energy_engine,
-                force_egnn=args.force_egnn,
                 solvent_name=e.solvent_name,
                 dielectric_constant=e.solvent_dielectric,
                 solute_id=e.solute_id,
@@ -1599,7 +1591,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                 debug=args.debug,
                 debug_log_path=str(debug_log_dir / f"{Path(m).stem}.log") if debug_log_dir else None,
                 energy_engine=args.energy_engine,
-                force_egnn=args.force_egnn,
                 solvent_name=target_solvent,
                 eval_loocv=effective_loocv_tasks,
                 save_artifacts=effective_save_artifacts,

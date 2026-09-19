@@ -6,7 +6,6 @@ Verifies exact geometric measure integrals, Boltzmann boundary conditions, steri
 import math
 
 import numpy as np
-from tinygrad import Tensor
 
 from dens_city.cdft import KernelBuilder, TinyCDFT
 from dens_city.utils.materials import MaterialLoader, compute_wca_dispersion_integral
@@ -89,36 +88,6 @@ def test_beam_jit_compilation():
     loss3 = solver.train_step().item()
 
     assert np.isfinite(loss1) and np.isfinite(loss2) and np.isfinite(loss3)
-
-
-def test_exact_1d_poisson_greens_matrix():
-    """
-    Validates that the 1D Poisson Green's matrix matches the exact analytical Dirichlet solution:
-    -d^2 phi / dz^2 = (4*pi/eps) * rho_q, phi(0) = phi(L_z) = 0.
-    For uniform rho_q, phi_exact(z) = -(2*pi*rho_q/eps) * z * (L_z - z).
-    """
-    n_grid = 128
-    dz = 0.2
-    l_z = n_grid * dz
-    dielectric_constant = 1.0
-
-    g_matrix = KernelBuilder.build_coulomb_1d_greens_matrix(
-        n_grid=n_grid, dz=dz, dielectric_constant=dielectric_constant
-    ).reshape(n_grid, n_grid)
-
-    # Uniform charge density rho_q = 0.5 e / A^3
-    rho_q = 0.5
-    rho_tensor = Tensor.full((n_grid, 1), rho_q)
-    phi_tensor = g_matrix.matmul(rho_tensor).numpy().flatten()
-
-    z_coords = np.linspace(0.5 * dz, l_z - 0.5 * dz, n_grid)
-    phi_exact = -(2.0 * math.pi * rho_q / dielectric_constant) * z_coords * (l_z - z_coords)
-
-    # Maximum relative error across channel
-    rel_err = np.abs((phi_tensor - phi_exact) / phi_exact)
-    assert np.max(rel_err) < 1e-2, f"Poisson Green's matrix max relative error {np.max(rel_err)} exceeds 1%"
-    # Verify exact grounded boundaries
-    assert phi_tensor[0] < 0.0 and phi_tensor[-1] < 0.0
 
 
 def test_large_molecule_wall_steric_exclusion():
